@@ -2,6 +2,12 @@ import { request, type Dispatcher } from "undici";
 import type {
   AgentDispatchParams,
   ApiErrorBody,
+  BuildId,
+  CreateDeploymentParams,
+  Deployment,
+  DeploymentBuild,
+  DeploymentId,
+  EnvVarPreview,
   FsEntry,
   Host,
   HostId,
@@ -321,6 +327,96 @@ export class MiosaClient {
     }
     if (res.statusCode >= 400) return this.parseError(res);
     return res;
+  }
+
+  // --- Deployments ---
+
+  async listDeployments(): Promise<Deployment[]> {
+    return this.get<{ data: Deployment[] }>("/api/v1/deployments").then(
+      (r) => r.data,
+    );
+  }
+
+  async getDeployment(id: DeploymentId): Promise<Deployment> {
+    return this.get<{ data: Deployment }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}`,
+    ).then((r) => r.data);
+  }
+
+  async createDeployment(
+    params: CreateDeploymentParams,
+  ): Promise<{ data: Deployment; webhook_secret: string }> {
+    return this.post<{ data: Deployment; webhook_secret: string }>(
+      "/api/v1/deployments",
+      params,
+    );
+  }
+
+  async deleteDeployment(
+    id: DeploymentId,
+  ): Promise<{ id: string; deleted: boolean }> {
+    return this.delete<{ id: string; deleted: boolean }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}`,
+    );
+  }
+
+  async redeployDeployment(id: DeploymentId): Promise<DeploymentBuild> {
+    return this.post<{ data: DeploymentBuild }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}/redeploy`,
+    ).then((r) => r.data);
+  }
+
+  async listBuilds(id: DeploymentId): Promise<DeploymentBuild[]> {
+    return this.get<{ data: DeploymentBuild[] }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}/builds`,
+    ).then((r) => r.data);
+  }
+
+  async getBuild(id: DeploymentId, bid: BuildId): Promise<DeploymentBuild> {
+    return this.get<{ data: DeploymentBuild }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}/builds/${encodeURIComponent(bid)}`,
+    ).then((r) => r.data);
+  }
+
+  /** Returns a raw SSE Response for deployment log streaming */
+  async streamDeploymentLogs(
+    id: DeploymentId,
+  ): Promise<Dispatcher.ResponseData> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(
+        this.url(`/api/v1/deployments/${encodeURIComponent(id)}/logs`),
+        {
+          method: "GET",
+          headers: {
+            ...this.headers(),
+            Accept: "text/event-stream",
+          },
+        },
+      );
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res;
+  }
+
+  async getDeploymentEnv(id: DeploymentId): Promise<EnvVarPreview[]> {
+    return this.get<{ data: EnvVarPreview[] }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}/env`,
+    ).then((r) => r.data);
+  }
+
+  async setDeploymentEnv(
+    id: DeploymentId,
+    env: Record<string, string>,
+  ): Promise<EnvVarPreview[]> {
+    return this.post<{ data: EnvVarPreview[] }>(
+      `/api/v1/deployments/${encodeURIComponent(id)}/env`,
+      { env },
+    ).then((r) => r.data);
   }
 
   // --- Watch ---

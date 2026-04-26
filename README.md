@@ -1,12 +1,102 @@
 # @miosa/cli
 
-The official MIOSA command-line interface. Manage OpenComputers hosts from your shell.
+The official MIOSA command-line interface. Deploy apps and manage OpenComputers hosts from your shell.
 
 ```bash
 npm install -g @miosa/cli
 ```
 
-## Getting started
+## Deploy — 60 seconds to first deploy
+
+Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
+
+```
+$ cd ~/my-project
+$ miosa login
+$ miosa deploy
+
+  Detected: Next.js 15 (confidence 95%)
+  Repo:     https://github.com/me/my-project
+  Branch:   main
+
+? Deployment name: my-project
+? Branch to deploy: main
+? Build command: npm run build
+? Run command: npm start
+? Create deployment? Yes
+
+  Deployment "my-project" created (slug: my-project-x7k2)
+  Saved .miosa.json
+
+  ACTION REQUIRED — GitHub Webhook
+  The webhook secret below is shown ONCE. Store it now.
+
+  Webhook URL:   https://api.miosa.ai/api/v1/integrations/github/webhook
+  Content type:  application/json
+  Secret:        a3f8b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9
+  Events:        push
+
+  Add this at: https://github.com/me/my-project/settings/hooks/new
+
+  Initial build queued
+
+  Build log:
+  ────────────────────────────────────────────────────────────
+  > npm run build
+  > next build
+  ✓ Compiled successfully
+  ────────────────────────────────────────────────────────────
+
+  Deployed
+
+  URL:    https://my-project-x7k2.me.miosa.app
+
+  Next steps:
+    miosa deploy logs                          — tail logs
+    miosa deploy domain add example.com        — add custom domain
+    miosa deploy env set KEY=VALUE             — set env var
+```
+
+On subsequent runs from the same directory, `miosa deploy` reads `.miosa.json` and skips all prompts — just queues a rebuild and streams logs.
+
+```bash
+# Trigger a rebuild any time
+miosa deploy
+
+# Or explicitly
+miosa deploy redeploy
+```
+
+### Deploy sub-commands
+
+```bash
+miosa deploy list                          # All deployments for this tenant
+miosa deploy logs [id]                     # Tail live build logs
+miosa deploy redeploy [id]                 # Manual rebuild
+miosa deploy env set KEY=VALUE [--id id]   # Set env var
+miosa deploy env list [id]                 # Show env vars (masked)
+miosa deploy domain add example.com [id]   # Add custom domain
+miosa deploy destroy [id]                  # Tear down deployment
+```
+
+### Supported frameworks (auto-detected)
+
+| Framework | Detection | Build | Run |
+|---|---|---|---|
+| Next.js | `next` in package.json | `npm run build` | `npm start` |
+| SvelteKit | `@sveltejs/kit` in package.json | `npm run build` | `node build` |
+| Vite + React | `vite` + `react` in package.json | `npm run build` | `npx serve dist` |
+| Phoenix (Elixir) | `mix.exs` with `:phoenix` | `mix release` | `_build/prod/rel/.../bin/... start` |
+| Django | `manage.py` + `requirements.txt` | `pip install` + `collectstatic` | `gunicorn` |
+| Flask | `requirements.txt` with flask | `pip install` | `gunicorn app:app` |
+| Ruby on Rails | `Gemfile` + `config/application.rb` | `bundle install` | `rails server` |
+| Go | `go.mod` | `go build -o app .` | `./app` |
+| Rust | `Cargo.toml` | `cargo build --release` | `./target/release/<name>` |
+| Static HTML | `index.html` (no build system) | — | `npx serve .` |
+
+---
+
+## OpenComputers hosts
 
 ```bash
 # Authenticate
@@ -51,6 +141,21 @@ Precedence: CLI flags > environment variables > config file > interactive prompt
 | `MIOSA_DEBUG` | Set to any value to enable debug output |
 
 ## Commands
+
+### `miosa deploy [sub-command]`
+
+Deploy a GitHub repo. See the [Deploy section](#deploy--60-seconds-to-first-deploy) above for the full flow.
+
+```bash
+miosa deploy                             # First deploy or redeploy from .miosa.json
+miosa deploy list [--json]               # List all deployments
+miosa deploy logs [id]                   # Tail live build logs
+miosa deploy redeploy [id] [--no-follow] # Manual rebuild
+miosa deploy env set KEY=VALUE [--id id] # Set env var
+miosa deploy env list [id]               # Show env vars (masked)
+miosa deploy domain add <domain> [id]    # Add custom domain
+miosa deploy destroy [id] [-f]           # Tear down deployment
+```
 
 ### `miosa login [--api-key key]`
 

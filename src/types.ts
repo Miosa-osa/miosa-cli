@@ -137,6 +137,95 @@ export interface ApiErrorBody {
   message?: string;
 }
 
+// ── Deploy product types ───────────────────────────────────────────────────
+
+export type DeploymentId = string & { __brand: "DeploymentId" };
+export type BuildId = string & { __brand: "BuildId" };
+
+export function toDeploymentId(s: string): DeploymentId {
+  return s as DeploymentId;
+}
+
+export type DeploymentState =
+  | "pending"
+  | "building"
+  | "running"
+  | "stopped"
+  | "failed";
+
+export type BuildState =
+  | "queued"
+  | "building"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface Deployment {
+  id: DeploymentId;
+  tenant_id: TenantId;
+  owner_id: string;
+  name: string;
+  slug: string;
+  repo_url: string;
+  repo_provider: "github";
+  branch: string;
+  build_command: string | null;
+  run_command: string | null;
+  runtime_image: string | null;
+  current_build_id: BuildId | null;
+  state: DeploymentState;
+  auto_deploy: boolean;
+  custom_domain_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeploymentBuild {
+  id: BuildId;
+  deployment_id: DeploymentId;
+  commit_sha: string | null;
+  commit_message: string | null;
+  triggered_by: "webhook" | "manual" | "scheduled";
+  state: BuildState;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  log_url: string | null;
+  image_digest: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface EnvVarPreview {
+  name: string;
+  preview: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateDeploymentParams {
+  name: string;
+  repo_url: string;
+  branch?: string;
+  build_command?: string;
+  run_command?: string;
+  auto_deploy?: boolean;
+  env?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+}
+
+/** Shape of the on-disk .miosa.json project config */
+export interface MiosaProjectConfig {
+  version: 1;
+  deploymentId: DeploymentId;
+  name: string;
+  framework: string;
+  buildCommand: string;
+  runCommand: string;
+  branch: string;
+}
+
 // Exit codes — documented contract
 export const EXIT_SUCCESS = 0;
 export const EXIT_USER_ERROR = 1;

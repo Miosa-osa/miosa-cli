@@ -30,6 +30,7 @@ Examples:
   miosa cp my-mac:/var/log/app.log . Download a file
   miosa tunnel open my-mac --port 3000  Expose a port publicly
   miosa agent my-mac "run the tests"    Dispatch an AI agent task
+  miosa deploy                       Deploy a GitHub repo (60s to first deploy)
   miosa status                       Show auth and account info
 
 Documentation: https://docs.miosa.ai/cli
@@ -52,6 +53,7 @@ const commandModules = [
   "../commands/agent.js",
   "../commands/watch.js",
   "../commands/status.js",
+  "../commands/deploy.js",
 ] as const;
 
 async function main(): Promise<void> {
