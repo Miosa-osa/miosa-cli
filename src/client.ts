@@ -111,6 +111,40 @@ export class MiosaClient {
     return res.body.json() as Promise<T>;
   }
 
+  /** Generic GET for command groups that map directly to stable API routes. */
+  async apiGet<T>(path: string): Promise<T> {
+    return this.get<T>(path);
+  }
+
+  /** Generic POST for command groups that map directly to stable API routes. */
+  async apiPost<T>(path: string, body?: unknown): Promise<T> {
+    return this.post<T>(path, body);
+  }
+
+  /** Generic PATCH for command groups that map directly to stable API routes. */
+  async apiPatch<T>(path: string, body?: unknown): Promise<T> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "PATCH",
+        headers: this.headers(),
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        "Check your connection and endpoint: miosa status",
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res.body.json() as Promise<T>;
+  }
+
+  /** Generic DELETE for command groups that map directly to stable API routes. */
+  async apiDelete<T>(path: string): Promise<T> {
+    return this.delete<T>(path);
+  }
+
   // --- Tenant ---
 
   async getTenant(): Promise<Tenant> {

@@ -39,10 +39,13 @@ Documentation: https://docs.miosa.ai/cli
 
 // Dynamically import and register all command modules
 const commandModules = [
+  "../commands/auth.js",
   "../commands/login.js",
   "../commands/logout.js",
+  "../commands/doctor.js",
   "../commands/hosts.js",
   "../commands/host.js",
+  "../commands/machines.js",
   "../commands/connect.js",
   "../commands/ssh.js",
   "../commands/exec.js",
@@ -54,6 +57,23 @@ const commandModules = [
   "../commands/watch.js",
   "../commands/status.js",
   "../commands/deploy.js",
+  "../commands/apps.js",
+  "../commands/logs.js",
+  "../commands/releases.js",
+  "../commands/secrets.js",
+  "../commands/volumes.js",
+  "../commands/regions.js",
+  "../commands/groups.js",
+  "../commands/meshes.js",
+  "../commands/schedules.js",
+  "../commands/alerts.js",
+  "../commands/audit.js",
+  "../commands/webhooks.js",
+  "../commands/gha-runners.js",
+  "../commands/backups.js",
+  "../commands/workspaces.js",
+  "../commands/services.js",
+  "../commands/containers.js",
 ] as const;
 
 async function main(): Promise<void> {

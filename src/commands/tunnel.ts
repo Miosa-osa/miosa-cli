@@ -12,6 +12,7 @@ export function register(program: Command): void {
   // miosa tunnel <host> --port <N> [--name slug] [--watch]
   const tunnelCmd = program
     .command("tunnel")
+    .alias("tunnels")
     .description("Manage tunnels on a host");
 
   tunnelCmd

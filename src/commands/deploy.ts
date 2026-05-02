@@ -209,6 +209,7 @@ function fmtDeployState(state: Deployment["state"]): string {
 export function register(program: Command): void {
   const deploy = program
     .command("deploy")
+    .alias("launch")
     .description("Deploy a GitHub repo to MIOSA Deploy")
     .addHelpText(
       "after",
