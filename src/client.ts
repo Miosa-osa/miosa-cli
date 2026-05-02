@@ -21,7 +21,7 @@ import type {
   TunnelCreateParams,
   TunnelSlug,
 } from "./types.js";
-import { mapHttpError, NetworkError } from "./errors.js";
+import { AuthError, mapHttpError, NetworkError } from "./errors.js";
 
 export class MiosaClient {
   private readonly endpoint: string;
@@ -29,7 +29,10 @@ export class MiosaClient {
 
   constructor(config: MiosaConfig) {
     if (!config.api_key) {
-      throw new Error("No API key configured. Run: miosa login");
+      throw new AuthError(
+        "You are not logged in. Run: miosa auth login",
+        "Install with `brew install Miosa-osa/tap/miosa`, then run `miosa auth login`.",
+      );
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
     this.apiKey = config.api_key;
