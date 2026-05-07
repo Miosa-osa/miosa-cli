@@ -16,24 +16,29 @@ const program = new Command();
 
 program
   .name("miosa")
-  .description("MIOSA CLI — manage OpenComputers hosts from your shell")
+  .description(
+    "MIOSA CLI — application module infrastructure for the Optimal System. Manage Computers, Sandboxes, and OpenComputers hosts from your shell.",
+  )
   .version(pkg.version, "-v, --version")
   .addHelpText(
     "after",
     `
 Examples:
-  miosa login                        Authenticate with your API key
-  miosa hosts                        List all hosts
-  miosa ssh my-mac                   Open interactive terminal
-  miosa exec my-mac "npm test"       Run a command and stream output
-  miosa cp ./file.txt my-mac:/tmp/   Upload a file
-  miosa cp my-mac:/var/log/app.log . Download a file
-  miosa tunnel open my-mac --port 3000  Expose a port publicly
-  miosa agent my-mac "run the tests"    Dispatch an AI agent task
-  miosa deploy                       Deploy a GitHub repo (60s to first deploy)
-  miosa status                       Show auth and account info
+  miosa login                                   Authenticate (opens browser)
+  miosa computers list                          List all Computers
+  miosa computers vnc <id>                      Open a Computer's VNC viewer
+  miosa sandbox list                            List all Sandboxes
+  miosa sandbox exec <id> --data '{"cmd":"…"}'  Run a command in a Sandbox
+  miosa hosts                                   List all OpenComputers hosts
+  miosa ssh my-mac                              Interactive terminal on a host
+  miosa exec my-mac "npm test"                  Run a command and stream output
+  miosa cp ./file.txt my-mac:/tmp/              Upload a file
+  miosa tunnel open my-mac --port 3000          Expose a port publicly
+  miosa agent my-mac "run the tests"            Dispatch an AI agent task
+  miosa deploy                                  Deploy a GitHub repo (60s)
+  miosa status                                  Show auth and account info
 
-Documentation: https://docs.miosa.ai/cli
+Documentation: https://miosa.ai/docs/cli/
 `,
   );
 
@@ -45,7 +50,8 @@ const commandModules = [
   "../commands/doctor.js",
   "../commands/hosts.js",
   "../commands/host.js",
-  "../commands/machines.js",
+  "../commands/computers.js",
+  "../commands/sandbox.js",
   "../commands/connect.js",
   "../commands/ssh.js",
   "../commands/exec.js",
