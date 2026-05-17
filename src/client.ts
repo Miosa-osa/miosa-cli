@@ -3,6 +3,9 @@ import type {
   AgentDispatchParams,
   ApiErrorBody,
   BuildId,
+  ComputerId,
+  ComputerFsEntry,
+  ComputerStatResult,
   CreateDeploymentParams,
   Deployment,
   DeploymentBuild,
@@ -122,6 +125,25 @@ export class MiosaClient {
   /** Generic POST for command groups that map directly to stable API routes. */
   async apiPost<T>(path: string, body?: unknown): Promise<T> {
     return this.post<T>(path, body);
+  }
+
+  /** Generic PUT for command groups that map directly to stable API routes. */
+  async apiPut<T>(path: string, body?: unknown): Promise<T> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "PUT",
+        headers: this.headers(),
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        "Check your connection and endpoint: miosa status",
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res.body.json() as Promise<T>;
   }
 
   /** Generic PATCH for command groups that map directly to stable API routes. */
@@ -312,6 +334,152 @@ export class MiosaClient {
     await this.delete<void>(
       `/api/v1/opencomputers/hosts/${hostId}/fs?path=${encodeURIComponent(path)}&recursive=${recursive}`,
     );
+  }
+
+  // --- Computers (Firecracker microVMs) filesystem ---
+
+  async computerListFiles(
+    computerId: ComputerId,
+    remotePath: string,
+  ): Promise<ComputerFsEntry[]> {
+    return this.get<{ data: ComputerFsEntry[] }>(
+      `/api/v1/computers/${computerId}/files?path=${encodeURIComponent(remotePath)}`,
+    ).then((r) => r.data);
+  }
+
+  async computerWriteFile(
+    computerId: ComputerId,
+    remotePath: string,
+    content: Buffer | string,
+  ): Promise<void> {
+    const body =
+      content instanceof Buffer ? content.toString("base64") : content;
+    await this.post<void>(`/api/v1/computers/${computerId}/files/write`, {
+      path: remotePath,
+      content: body,
+      encoding: content instanceof Buffer ? "base64" : "utf8",
+    });
+  }
+
+  async computerDownloadFile(
+    computerId: ComputerId,
+    remotePath: string,
+  ): Promise<Dispatcher.ResponseData> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(
+        this.url(
+          `/api/v1/computers/${computerId}/files/download?path=${encodeURIComponent(remotePath)}`,
+        ),
+        { method: "GET", headers: this.headers() },
+      );
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res;
+  }
+
+  async computerUploadFile(
+    computerId: ComputerId,
+    remotePath: string,
+    data: Buffer,
+    filename: string,
+  ): Promise<void> {
+    const boundary = `----MiosaComputerUpload${Date.now()}`;
+    const header =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`;
+    const footer = `\r\n--${boundary}--\r\n`;
+    const body = Buffer.concat([
+      Buffer.from(header),
+      data,
+      Buffer.from(footer),
+    ]);
+
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(
+        this.url(`/api/v1/computers/${computerId}/files/upload`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "X-Remote-Path": remotePath,
+            "User-Agent": `@miosa/cli/0.1.0`,
+          },
+          body,
+        },
+      );
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) await this.parseError(res);
+    await res.body.dump();
+  }
+
+  async computerMkdir(
+    computerId: ComputerId,
+    remotePath: string,
+  ): Promise<void> {
+    await this.post<void>(`/api/v1/computers/${computerId}/files/mkdir`, {
+      path: remotePath,
+    });
+  }
+
+  async computerDeleteFile(
+    computerId: ComputerId,
+    remotePath: string,
+  ): Promise<void> {
+    await this.delete<void>(
+      `/api/v1/computers/${computerId}/files?path=${encodeURIComponent(remotePath)}`,
+    );
+  }
+
+  async computerStat(
+    computerId: ComputerId,
+    remotePath: string,
+  ): Promise<ComputerStatResult> {
+    return this.post<{ data: ComputerStatResult }>(
+      `/api/v1/computers/${computerId}/files/stat`,
+      { path: remotePath },
+    ).then((r) => r.data);
+  }
+
+  // --- Computers exec ---
+
+  async computerExec(
+    computerId: ComputerId,
+    command: string,
+    opts?: { language?: "shell" | "python" },
+  ): Promise<Dispatcher.ResponseData> {
+    const path =
+      opts?.language === "python"
+        ? `/api/v1/computers/${computerId}/exec/python`
+        : `/api/v1/computers/${computerId}/exec`;
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "POST",
+        headers: {
+          ...this.headers(),
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({ command }),
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res;
   }
 
   // --- Tunnels ---

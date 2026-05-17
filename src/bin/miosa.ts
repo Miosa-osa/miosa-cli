@@ -80,6 +80,8 @@ const commandModules = [
   "../commands/workspaces.js",
   "../commands/services.js",
   "../commands/containers.js",
+  "../commands/functions.js",
+  "../commands/cron.js",
 ] as const;
 
 async function main(): Promise<void> {

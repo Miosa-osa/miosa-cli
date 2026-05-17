@@ -6,7 +6,10 @@ import { renderTable } from "../ui/table.js";
 import { handleError } from "./util.js";
 
 export type ApiObject = Record<string, unknown>;
-export type ApiClient = Pick<MiosaClient, "apiGet" | "apiPost" | "apiDelete">;
+export type ApiClient = Pick<
+  MiosaClient,
+  "apiGet" | "apiPost" | "apiPut" | "apiPatch" | "apiDelete"
+>;
 export type JsonOptions = { json?: boolean };
 export type DataOptions = JsonOptions & { data?: string };
 
@@ -51,7 +54,10 @@ export async function runAction(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-export async function getAndPrint(path: string, opts: JsonOptions): Promise<void> {
+export async function getAndPrint(
+  path: string,
+  opts: JsonOptions,
+): Promise<void> {
   const value = unwrap(await client().apiGet<unknown>(apiPath(path)));
   printValue(value, opts);
 }
@@ -66,7 +72,20 @@ export async function postAndPrint(
   printValue(value, opts);
 }
 
-export async function deleteAndPrint(path: string, opts: JsonOptions): Promise<void> {
+export async function putAndPrint(
+  path: string,
+  opts: DataOptions,
+  defaultBody?: ApiObject,
+): Promise<void> {
+  const body = parseData(opts.data) ?? defaultBody;
+  const value = unwrap(await client().apiPut<unknown>(apiPath(path), body));
+  printValue(value, opts);
+}
+
+export async function deleteAndPrint(
+  path: string,
+  opts: JsonOptions,
+): Promise<void> {
   const value = unwrap(await client().apiDelete<unknown>(apiPath(path)));
   if (opts.json) {
     console.log(JSON.stringify(value ?? { deleted: true }, null, 2));
@@ -182,9 +201,14 @@ export function resourceCommands(config: {
   }
 }
 
-export function requireAction(action: string, allowed: readonly string[]): void {
+export function requireAction(
+  action: string,
+  allowed: readonly string[],
+): void {
   if (!allowed.includes(action)) {
-    throw new Error(`Unsupported action "${action}". Use: ${allowed.join(", ")}`);
+    throw new Error(
+      `Unsupported action "${action}". Use: ${allowed.join(", ")}`,
+    );
   }
 }
 
@@ -207,11 +231,13 @@ function tableColumns(rows: ApiObject[]): string[] {
 }
 
 function formatCell(value: unknown): string {
-  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  if (value === null || value === undefined || value === "")
+    return chalk.dim("-");
   if (typeof value === "string") {
     return value.length > 48 ? `${value.slice(0, 45)}...` : value;
   }
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   return JSON.stringify(value);
 }
 

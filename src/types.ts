@@ -4,9 +4,37 @@ export type TenantId = string & { __brand: "TenantId" };
 export type JobId = string & { __brand: "JobId" };
 export type TunnelSlug = string & { __brand: "TunnelSlug" };
 export type ApiKey = string & { __brand: "ApiKey" };
+export type ComputerId = string & { __brand: "ComputerId" };
 
 export function toHostId(s: string): HostId {
   return s as HostId;
+}
+
+export function toComputerId(s: string): ComputerId {
+  return s as ComputerId;
+}
+
+export interface ComputerFsEntry {
+  name: string;
+  path: string;
+  type: "file" | "dir" | "symlink";
+  size: number | null;
+  mode: string | null;
+  modified_at: string | null;
+}
+
+export interface ComputerStatResult {
+  path: string;
+  type: "file" | "dir" | "symlink" | "not_found";
+  size: number | null;
+  mode: string | null;
+  modified_at: string | null;
+}
+
+export interface ComputerExecResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
 }
 
 // Config shape

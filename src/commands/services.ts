@@ -5,45 +5,134 @@ import {
   enc,
   getAndPrint,
   postAndPrint,
-  requireAction,
   runAction,
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
 
-const actions = ["start", "stop", "restart"] as const;
-
 export function register(program: Command): void {
-  const services = program.command("services").description("Manage long-running services on Computers");
+  const services = program
+    .command("services")
+    .description("Manage long-running services on Computers");
 
-  services.command("list <computer-id>").description("List services").option("--json", "Output as JSON").action((id: string, opts: JsonOptions) =>
-    runAction(() => getAndPrint(`/computers/${enc(id)}/services`, opts)),
-  );
-
-  addDataOption(services.command("create <computer-id>").description("Create a service"))
+  // services list <computer-id>
+  services
+    .command("list <computer-id>")
+    .description("List all services on a Computer")
     .option("--json", "Output as JSON")
-    .action((id: string, opts: DataOptions) =>
-      runAction(() => postAndPrint(`/computers/${enc(id)}/services`, opts, {})),
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/computers/${enc(id)}/services`, opts)),
     );
 
-  services.command("show <computer-id> <name>").description("Show a service").option("--json", "Output as JSON").action((id: string, name: string, opts: JsonOptions) =>
-    runAction(() => getAndPrint(`/computers/${enc(id)}/services/${enc(name)}`, opts)),
-  );
-
-  services.command("delete <computer-id> <name>").description("Delete a service").option("--json", "Output as JSON").action((id: string, name: string, opts: JsonOptions) =>
-    runAction(() => deleteAndPrint(`/computers/${enc(id)}/services/${enc(name)}`, opts)),
-  );
-
-  addDataOption(services.command("action <computer-id> <name> <action>").description("Run service action: start, stop, restart"))
+  // services create <computer-id> --name X --command "..."
+  addDataOption(
+    services
+      .command("create <computer-id>")
+      .description("Create a service on a Computer")
+      .option("--name <name>", "Service name")
+      .option("--command <cmd>", "Command to run")
+      .option("--working-dir <dir>", "Working directory")
+      .option("--port <port>", "Port the service listens on"),
+  )
     .option("--json", "Output as JSON")
-    .action((id: string, name: string, action: string, opts: DataOptions) =>
-      runAction(async () => {
-        requireAction(action, actions);
-        await postAndPrint(`/computers/${enc(id)}/services/${enc(name)}/${enc(action)}`, opts);
-      }),
+    .action(
+      (
+        id: string,
+        opts: DataOptions & {
+          name?: string;
+          command?: string;
+          workingDir?: string;
+          port?: string;
+        },
+      ) =>
+        runAction(() => {
+          const flagBody: Record<string, unknown> = {};
+          if (opts.name) flagBody["name"] = opts.name;
+          if (opts.command) flagBody["command"] = opts.command;
+          if (opts.workingDir) flagBody["working_dir"] = opts.workingDir;
+          if (opts.port) flagBody["port"] = Number(opts.port);
+          return postAndPrint(`/computers/${enc(id)}/services`, opts, flagBody);
+        }),
     );
 
-  services.command("logs <computer-id> <name>").description("Show service logs").option("--json", "Output as JSON").action((id: string, name: string, opts: JsonOptions) =>
-    runAction(() => getAndPrint(`/computers/${enc(id)}/services/${enc(name)}/logs`, opts)),
-  );
+  // services show <computer-id> <service-id>
+  services
+    .command("show <computer-id> <service-id>")
+    .description("Show a service")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(`/computers/${enc(id)}/services/${enc(serviceId)}`, opts),
+      ),
+    );
+
+  // services start <computer-id> <service-id>
+  services
+    .command("start <computer-id> <service-id>")
+    .description("Start a stopped service")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        postAndPrint(
+          `/computers/${enc(id)}/services/${enc(serviceId)}/start`,
+          opts,
+        ),
+      ),
+    );
+
+  // services stop <computer-id> <service-id>
+  services
+    .command("stop <computer-id> <service-id>")
+    .description("Stop a running service")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        postAndPrint(
+          `/computers/${enc(id)}/services/${enc(serviceId)}/stop`,
+          opts,
+        ),
+      ),
+    );
+
+  // services restart <computer-id> <service-id>
+  services
+    .command("restart <computer-id> <service-id>")
+    .description("Restart a service")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        postAndPrint(
+          `/computers/${enc(id)}/services/${enc(serviceId)}/restart`,
+          opts,
+        ),
+      ),
+    );
+
+  // services logs <computer-id> <service-id>
+  services
+    .command("logs <computer-id> <service-id>")
+    .description("Show service logs")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(
+          `/computers/${enc(id)}/services/${enc(serviceId)}/logs`,
+          opts,
+        ),
+      ),
+    );
+
+  // services delete <computer-id> <service-id>
+  services
+    .command("delete <computer-id> <service-id>")
+    .description("Delete a service (stops it first if running)")
+    .option("--json", "Output as JSON")
+    .action((id: string, serviceId: string, opts: JsonOptions) =>
+      runAction(() =>
+        deleteAndPrint(
+          `/computers/${enc(id)}/services/${enc(serviceId)}`,
+          opts,
+        ),
+      ),
+    );
 }

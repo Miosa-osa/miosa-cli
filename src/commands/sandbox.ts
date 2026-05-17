@@ -1,58 +1,414 @@
 import type { Command } from "commander";
+import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
+import chalk from "chalk";
 import {
   addDataOption,
+  client,
+  apiPath,
   deleteAndPrint,
   enc,
   getAndPrint,
   postAndPrint,
-  resourceCommands,
+  printValue,
   runAction,
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
-
-const actions = ["start", "stop", "restart"] as const;
+import { handleError } from "./util.js";
 
 export function register(program: Command): void {
-  resourceCommands({
-    program,
-    command: "sandbox",
-    description:
+  // -------------------------------------------------------------------------
+  // sandbox / sandboxes command group — built manually to avoid subcommand
+  // conflicts that arise when using the resourceCommands helper alongside
+  // custom create/exec/file subcommands.
+  // -------------------------------------------------------------------------
+  const sandbox = program
+    .command("sandbox")
+    .alias("sandboxes")
+    .description(
       "Manage Sandboxes — lightweight code-only Computers (Firecracker microVMs without a desktop)",
-    route: "/sandboxes",
-    itemName: "sandbox-id",
-    actions,
-  });
-
-  // Plural alias so `miosa sandboxes …` also works.
-  const sandbox = program.commands.find((cmd) => cmd.name() === "sandbox");
-  sandbox!.alias("sandboxes");
-
-  // Run a command inside a Sandbox via the raw exec API.
-  addDataOption(
-    sandbox!
-      .command("exec <sandbox-id>")
-      .description("Run a command inside a Sandbox via the raw exec API"),
-  )
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: DataOptions) =>
-      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {})),
     );
 
-  // Stream a command's output.
-  sandbox!
-    .command("logs <sandbox-id>")
-    .description("Show Sandbox logs")
+  // list
+  sandbox
+    .command("list")
+    .description("List all Sandboxes")
+    .option("--state <state>", "Filter by state (running, paused, …)")
+    .option("--json", "Output as JSON")
+    .action((opts: { state?: string } & JsonOptions) =>
+      runAction(async () => {
+        const qs = opts.state ? `?state=${enc(opts.state)}` : "";
+        await getAndPrint(`/sandboxes${qs}`, opts);
+      }),
+    );
+
+  // ls — muscle-memory alias for list
+  sandbox
+    .command("ls")
+    .description("Alias for list")
+    .option("--json", "Output as JSON")
+    .action((opts: JsonOptions) =>
+      runAction(() => getAndPrint("/sandboxes", opts)),
+    );
+
+  // show — canonical resourceCommands-style name
+  sandbox
+    .command("show <sandbox-id>")
+    .description("Show a Sandbox by ID")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`/sandboxes/${enc(id)}/logs`, opts)),
+      runAction(() => getAndPrint(`/sandboxes/${enc(id)}`, opts)),
     );
 
-  // SSH-style interactive shell. Routes through the platform's terminal/PTY
-  // endpoint; opens a browser session with a one-shot ticket.
-  sandbox!
+  // get — matches documented form: miosa sandboxes get <id>
+  sandbox
+    .command("get <sandbox-id>")
+    .description("Show a Sandbox by ID (alias for show)")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/sandboxes/${enc(id)}`, opts)),
+    );
+
+  // create — typed flags for common options; --data JSON overrides all flags
+  addDataOption(
+    sandbox
+      .command("create")
+      .description("Create a new Sandbox")
+      .option(
+        "--template <template>",
+        "Template / image ID (default: miosa-sandbox)",
+      )
+      .option("--name <name>", "Human-readable name for the Sandbox")
+      .option("--cpu <n>", "vCPU count", parseInt)
+      .option("--memory <mb>", "Memory in MB", parseInt)
+      .option("--disk <mb>", "Disk size in MB", parseInt)
+      .option("--timeout <sec>", "Idle timeout in seconds", parseInt)
+      .option("--always-on", "Disable auto-destroy on idle"),
+  )
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        opts: DataOptions & {
+          template?: string;
+          name?: string;
+          cpu?: number;
+          memory?: number;
+          disk?: number;
+          timeout?: number;
+          alwaysOn?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          if (opts.data) {
+            await postAndPrint("/sandboxes", opts, {});
+            return;
+          }
+          const body: Record<string, unknown> = {};
+          if (opts.template) body["template_id"] = opts.template;
+          if (opts.name) body["name"] = opts.name;
+          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
+          if (opts.memory != null) body["memory_mb"] = opts.memory;
+          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
+          if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+          if (opts.alwaysOn) body["always_on"] = true;
+          await postAndPrint("/sandboxes", opts, body);
+        }),
+    );
+
+  // delete
+  sandbox
+    .command("delete <sandbox-id>")
+    .description("Delete a Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
+    );
+
+  // destroy / rm — aliases for delete
+  sandbox
+    .command("destroy <sandbox-id>")
+    .alias("rm")
+    .description("Destroy a Sandbox (alias for delete)")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
+    );
+
+  // action — lifecycle operations: start, stop, restart
+  addDataOption(
+    sandbox
+      .command("action <sandbox-id> <action>")
+      .description("Run a lifecycle action: start, stop, restart"),
+  )
+    .option("--json", "Output as JSON")
+    .action((id: string, action: string, opts: DataOptions) =>
+      runAction(async () => {
+        const allowed = ["start", "stop", "restart"];
+        if (!allowed.includes(action)) {
+          throw new Error(
+            `Unsupported action "${action}". Use: ${allowed.join(", ")}`,
+          );
+        }
+        await postAndPrint(`/sandboxes/${enc(id)}/${enc(action)}`, opts, {});
+      }),
+    );
+
+  // exec — positional command arg; --data body overrides when supplied
+  addDataOption(
+    sandbox
+      .command("exec <sandbox-id> [command...]")
+      .description(
+        "Run a command inside a Sandbox (positional args joined as shell command)",
+      )
+      .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
+  )
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        words: string[],
+        opts: DataOptions & { cwd?: string; timeout?: number },
+      ) =>
+        runAction(async () => {
+          if (opts.data) {
+            await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
+            return;
+          }
+          const cmd = words.join(" ");
+          const body: Record<string, unknown> = cmd ? { command: cmd } : {};
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.timeout != null) body["timeout"] = opts.timeout;
+          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+        }),
+    );
+
+  // run — alias for exec with identical semantics
+  addDataOption(
+    sandbox
+      .command("run <sandbox-id> [command...]")
+      .description("Run a command inside a Sandbox (alias for exec)")
+      .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
+  )
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        words: string[],
+        opts: DataOptions & { cwd?: string; timeout?: number },
+      ) =>
+        runAction(async () => {
+          if (opts.data) {
+            await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
+            return;
+          }
+          const cmd = words.join(" ");
+          const body: Record<string, unknown> = cmd ? { command: cmd } : {};
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.timeout != null) body["timeout"] = opts.timeout;
+          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+        }),
+    );
+
+  // write-file — POST /sandboxes/:id/files with base64 content.
+  // If <content-or-file> is an existing local path, reads the file bytes;
+  // otherwise treats the argument as literal UTF-8 text.
+  sandbox
+    .command("write-file <sandbox-id> <remote-path> <content-or-file>")
+    .description(
+      "Write a file inside a Sandbox (pass literal text or a local file path)",
+    )
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        remotePath: string,
+        contentArg: string,
+        opts: JsonOptions,
+      ) => {
+        try {
+          const contentBytes: Buffer = fs.existsSync(contentArg)
+            ? fs.readFileSync(contentArg)
+            : Buffer.from(contentArg, "utf8");
+          const base64 = contentBytes.toString("base64");
+          const c = client();
+          const result = await c.apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/files`),
+            { path: remotePath, content: base64 },
+          );
+          if (!opts.json) {
+            console.log(chalk.green(`Written to ${remotePath}`));
+          } else {
+            printValue(result, opts);
+          }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // read-file — GET /sandboxes/:id/files/:path, decode base64 content and print.
+  sandbox
+    .command("read-file <sandbox-id> <remote-path>")
+    .description("Read a file from inside a Sandbox and print its contents")
+    .option("--json", "Output raw JSON response")
+    .action(async (id: string, remotePath: string, opts: JsonOptions) => {
+      try {
+        const encoded = enc(remotePath.replace(/^\//, ""));
+        const c = client();
+        const result = await c.apiGet<unknown>(
+          apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
+        );
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        const data =
+          result !== null &&
+          typeof result === "object" &&
+          !Array.isArray(result)
+            ? ((result as Record<string, unknown>)["data"] ?? result)
+            : result;
+        const contentVal =
+          data !== null &&
+          typeof data === "object" &&
+          !Array.isArray(data) &&
+          "content" in data &&
+          typeof (data as Record<string, unknown>)["content"] === "string"
+            ? ((data as Record<string, unknown>)["content"] as string)
+            : null;
+        if (contentVal !== null) {
+          process.stdout.write(Buffer.from(contentVal, "base64"));
+        } else {
+          console.log(JSON.stringify(data, null, 2));
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  // upload — read local binary file, POST to /sandboxes/:id/files as base64.
+  sandbox
+    .command("upload <sandbox-id> <local-path> <remote-path>")
+    .description("Upload a local file into a Sandbox")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        localPath: string,
+        remotePath: string,
+        opts: JsonOptions,
+      ) => {
+        try {
+          if (!fs.existsSync(localPath)) {
+            console.error(chalk.red(`File not found: ${localPath}`));
+            process.exit(1);
+          }
+          const data = fs.readFileSync(localPath);
+          const base64 = data.toString("base64");
+          const c = client();
+          const result = await c.apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/files`),
+            { path: remotePath, content: base64 },
+          );
+          if (opts.json) {
+            printValue(result, opts);
+          } else {
+            const filename = path.basename(localPath);
+            console.log(chalk.green(`Uploaded ${filename} → ${remotePath}`));
+          }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // download — GET /sandboxes/:id/files/:path; write to --output or stdout.
+  sandbox
+    .command("download <sandbox-id> <remote-path>")
+    .description("Download a file from a Sandbox to a local path or stdout")
+    .option("--output <file>", "Write to this local file instead of stdout")
+    .option("--json", "Output raw JSON response")
+    .action(
+      async (
+        id: string,
+        remotePath: string,
+        opts: { output?: string; json?: boolean },
+      ) => {
+        try {
+          const encoded = enc(remotePath.replace(/^\//, ""));
+          const c = client();
+          const result = await c.apiGet<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
+          );
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          const data =
+            result !== null &&
+            typeof result === "object" &&
+            !Array.isArray(result)
+              ? ((result as Record<string, unknown>)["data"] ?? result)
+              : result;
+
+          const downloadContent =
+            data !== null &&
+            typeof data === "object" &&
+            !Array.isArray(data) &&
+            "content" in data &&
+            typeof (data as Record<string, unknown>)["content"] === "string"
+              ? ((data as Record<string, unknown>)["content"] as string)
+              : null;
+          const bytes: Buffer =
+            downloadContent !== null
+              ? Buffer.from(downloadContent, "base64")
+              : Buffer.from(JSON.stringify(data, null, 2), "utf8");
+
+          if (opts.output) {
+            fs.writeFileSync(opts.output, bytes);
+            console.log(
+              chalk.green(`Downloaded ${remotePath} → ${opts.output}`),
+            );
+          } else {
+            process.stdout.write(bytes);
+          }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // ports — GET /sandboxes/:id/ports
+  sandbox
+    .command("ports <sandbox-id>")
+    .description("List exposed ports for a Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/sandboxes/${enc(id)}/ports`, opts)),
+    );
+
+  // logs — GET /sandboxes/:id/logs
+  sandbox
+    .command("logs <sandbox-id>")
+    .description("Show Sandbox logs")
+    .option("--lines <n>", "Number of log lines to fetch", parseInt)
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { lines?: number } & JsonOptions) =>
+      runAction(async () => {
+        const qs = opts.lines != null ? `?lines=${opts.lines}` : "";
+        await getAndPrint(`/sandboxes/${enc(id)}/logs${qs}`, opts);
+      }),
+    );
+
+  // ssh — open browser terminal via platform PTY endpoint
+  sandbox
     .command("ssh <sandbox-id>")
     .description("Open an interactive terminal session for a Sandbox")
     .option("--print-url", "Print the URL instead of opening a browser")
@@ -75,32 +431,13 @@ export function register(program: Command): void {
           return;
         }
         openUrl(url);
-        console.log(`Opening terminal for sandbox ${id}…`);
+        console.log(`Opening terminal for sandbox ${id}...`);
       },
     );
 
-  // ls — quick alias to `list` since muscle memory says `ls`.
-  sandbox!
-    .command("ls")
-    .description("Alias for `list`")
-    .option("--json", "Output as JSON")
-    .action((opts: JsonOptions) =>
-      runAction(() => getAndPrint("/sandboxes", opts)),
-    );
-
-  // destroy — alias to `delete` for consistency with `apps destroy` etc.
-  sandbox!
-    .command("destroy <sandbox-id>")
-    .alias("rm")
-    .description("Destroy a Sandbox (alias for `delete`)")
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
-      runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
-    );
-
-  // Checkpoint shortcuts.
+  // checkpoint — POST /sandboxes/:id/snapshots
   addDataOption(
-    sandbox!
+    sandbox
       .command("checkpoint <sandbox-id>")
       .description("Create a Checkpoint (memory state snapshot) of a Sandbox"),
   )
@@ -111,7 +448,8 @@ export function register(program: Command): void {
       ),
     );
 
-  sandbox!
+  // delete-checkpoint / delete-snapshot
+  sandbox
     .command("delete-checkpoint <sandbox-id> <checkpoint-id>")
     .alias("delete-snapshot")
     .description("Delete a Sandbox Checkpoint")
@@ -120,6 +458,33 @@ export function register(program: Command): void {
       runAction(() =>
         deleteAndPrint(`/sandboxes/${enc(id)}/snapshots/${enc(sid)}`, opts),
       ),
+    );
+
+  // -------------------------------------------------------------------------
+  // sandbox-templates — top-level command group for template management
+  // -------------------------------------------------------------------------
+  const templates = program
+    .command("sandbox-templates")
+    .description("Manage Sandbox templates");
+
+  templates
+    .command("list")
+    .description("List all available Sandbox templates")
+    .option("--include-aliases", "Include template aliases in the response")
+    .option("--json", "Output as JSON")
+    .action((opts: { includeAliases?: boolean } & JsonOptions) =>
+      runAction(async () => {
+        const qs = opts.includeAliases ? "?include_aliases=true" : "";
+        await getAndPrint(`/sandbox-templates${qs}`, opts);
+      }),
+    );
+
+  templates
+    .command("get <template-id>")
+    .description("Show a Sandbox template by ID or slug")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/sandbox-templates/${enc(id)}`, opts)),
     );
 }
 
