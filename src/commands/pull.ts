@@ -32,31 +32,34 @@ async function fetchSecretValues(
 
   if (previews.length === 0) return [];
 
-  // Attempt to reveal each secret through the tenant secrets endpoint.
-  // If the API does not support reveal, we surface the preview value with a
-  // warning rather than failing the whole command.
+  // Fetch tenant secrets — the list response includes host_id, which is
+  // required to build the reveal path: POST /opencomputers/hosts/:host_id/secrets/:secret_id/reveal
+  // Tenant-scoped secrets (host_id: null) have no reveal path; their preview
+  // value is surfaced as a sentinel so .env.local still contains the key.
   const tenantSecrets = await client
     .apiGet<{
-      data: Array<{ id: string; name: string }>;
+      data: Array<{ id: string; name: string; host_id: string | null }>;
     }>("/api/v1/opencomputers/secrets")
-    .catch(() => ({ data: [] as Array<{ id: string; name: string }> }));
+    .catch(() => ({
+      data: [] as Array<{ id: string; name: string; host_id: string | null }>,
+    }));
 
-  const secretsByName = new Map(tenantSecrets.data.map((s) => [s.name, s.id]));
+  const secretsByName = new Map(tenantSecrets.data.map((s) => [s.name, s]));
 
   const results: RevealedSecret[] = [];
 
   for (const preview of previews) {
-    const secretId = secretsByName.get(preview.name);
-    if (secretId) {
+    const secret = secretsByName.get(preview.name);
+    // Only host-scoped secrets have a reveal path (host_id is non-null)
+    if (secret?.host_id) {
       try {
-        const revealed = await client.apiPost<{
-          data?: { value?: string };
-          value?: string;
-        }>(
-          `/api/v1/opencomputers/secrets/${encodeURIComponent(secretId)}/reveal`,
+        const revealed = await client.apiPost<{ value?: string }>(
+          `/api/v1/opencomputers/hosts/${encodeURIComponent(secret.host_id)}/secrets/${encodeURIComponent(secret.id)}/reveal`,
         );
-        const value = revealed.data?.value ?? revealed.value ?? preview.preview;
-        results.push({ name: preview.name, value });
+        results.push({
+          name: preview.name,
+          value: revealed.value ?? preview.preview,
+        });
         continue;
       } catch {
         // Fall through to preview value

@@ -5,8 +5,8 @@
  * `desktop <action>` lines. Unique to MIOSA — SSH and desktop control in one.
  *
  * PTY lifecycle:
- *   POST /api/v1/computers/{id}/process/pty   → { id, ws_url }
- *   WebSocket ws_url                           → raw terminal I/O
+ *   POST /api/v1/computers/{id}/terminal   → { id, ws_url }
+ *   WebSocket ws_url                        → raw terminal I/O
  *
  * Desktop commands are intercepted client-side and dispatched to:
  *   /api/v1/computers/{id}/desktop/{action}
@@ -72,7 +72,7 @@ async function createPty(
   let res;
   try {
     res = await request(
-      `${endpoint}/api/v1/computers/${encodeURIComponent(computerId)}/process/pty`,
+      `${endpoint}/api/v1/computers/${encodeURIComponent(computerId)}/terminal`,
       {
         method: "POST",
         headers: {

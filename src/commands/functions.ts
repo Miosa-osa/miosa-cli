@@ -57,23 +57,6 @@ export function register(program: Command): void {
       }),
     );
 
-  // deploy <id> <path>
-  fns
-    .command("deploy <id> <path>")
-    .description("Deploy a function from a local file path")
-    .option("--json", "Output as JSON")
-    .action((id: string, filePath: string, opts: JsonOptions) =>
-      runAction(async () => {
-        const value = unwrap(
-          await client().apiPost<unknown>(
-            apiPath(`/functions/${enc(id)}/deploy`),
-            { path: filePath },
-          ),
-        );
-        printValue(value, opts);
-      }),
-    );
-
   // invoke <id> [--data '{}']
   addDataOption(
     fns.command("invoke <id>").description("Invoke a function synchronously"),
@@ -90,15 +73,6 @@ export function register(program: Command): void {
         );
         printValue(value, opts);
       }),
-    );
-
-  // logs <id>
-  fns
-    .command("logs <id>")
-    .description("Fetch function logs")
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`/functions/${enc(id)}/logs`, opts)),
     );
 
   // delete <id>

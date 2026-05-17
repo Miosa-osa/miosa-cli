@@ -251,7 +251,7 @@ const TOOL_LIST: McpTool[] = [
   },
   // Display info
   {
-    name: "computer_screen_size",
+    name: "computer_get_screen_size",
     description: "Get the screen resolution (width and height in pixels).",
     inputSchema: {
       type: "object",
@@ -262,7 +262,7 @@ const TOOL_LIST: McpTool[] = [
     },
   },
   {
-    name: "computer_cursor_position",
+    name: "computer_get_cursor_position",
     description: "Get the current mouse cursor position (x, y).",
     inputSchema: {
       type: "object",
@@ -274,7 +274,7 @@ const TOOL_LIST: McpTool[] = [
   },
   // Clipboard
   {
-    name: "computer_clipboard_get",
+    name: "computer_get_clipboard",
     description: "Read the current clipboard text content.",
     inputSchema: {
       type: "object",
@@ -285,7 +285,7 @@ const TOOL_LIST: McpTool[] = [
     },
   },
   {
-    name: "computer_clipboard_set",
+    name: "computer_set_clipboard",
     description: "Set the clipboard text content.",
     inputSchema: {
       type: "object",
@@ -485,8 +485,33 @@ async function dispatchTool(
       const data = unwrapData(computer) as Record<string, unknown>;
       const id = String(data["id"] ?? "");
       const compName = String(data["name"] ?? args["name"]);
-      const status = String(data["status"] ?? data["state"] ?? "created");
-      return ok(`Created computer '${compName}' (id=${id}, status=${status}).`);
+
+      // Poll until the computer reaches "active" state (mirrors Python MCP behaviour)
+      const POLL_INTERVAL_MS = 2_000;
+      const POLL_TIMEOUT_MS = 30_000;
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let finalStatus = String(data["status"] ?? data["state"] ?? "created");
+
+      while (finalStatus !== "active" && Date.now() < deadline) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, POLL_INTERVAL_MS),
+        );
+        try {
+          const poll = await client.apiGet<Record<string, unknown>>(
+            `/api/v1/computers/${encodeURIComponent(id)}`,
+          );
+          const pollData = unwrapData(poll) as Record<string, unknown>;
+          finalStatus = String(
+            pollData["status"] ?? pollData["state"] ?? finalStatus,
+          );
+        } catch {
+          // Transient error during poll — keep waiting
+        }
+      }
+
+      return ok(
+        `Created computer '${compName}' (id=${id}, status=${finalStatus}).`,
+      );
     }
 
     if (name === "computer_list") {
@@ -510,9 +535,8 @@ async function dispatchTool(
     // ── Screenshot ────────────────────────────────────────────────────────
     if (name === "computer_screenshot") {
       if (!cid) return err("computer_id is required");
-      const result = await client.apiPost<unknown>(
+      const result = await client.apiGet<unknown>(
         `/api/v1/computers/${encodeURIComponent(cid)}/desktop/screenshot`,
-        {},
       );
       // The API returns { data: { image: "<base64>", format: "png" } }
       const data = unwrapData(result) as Record<string, unknown>;
@@ -540,7 +564,7 @@ async function dispatchTool(
     if (name === "computer_double_click") {
       if (!cid) return err("computer_id is required");
       await client.apiPost(
-        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/double_click`,
+        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/double-click`,
         {
           x: args["x"],
           y: args["y"],
@@ -552,7 +576,7 @@ async function dispatchTool(
     if (name === "computer_move_cursor") {
       if (!cid) return err("computer_id is required");
       await client.apiPost(
-        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/move_cursor`,
+        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/move`,
         {
           x: args["x"],
           y: args["y"],
@@ -632,26 +656,26 @@ async function dispatchTool(
     }
 
     // ── Display info ──────────────────────────────────────────────────────
-    if (name === "computer_screen_size") {
+    if (name === "computer_get_screen_size") {
       if (!cid) return err("computer_id is required");
       const result = await client.apiGet<unknown>(
-        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/screen_size`,
+        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/screen-size`,
       );
       const data = unwrapData(result) as Record<string, unknown>;
       return ok(`Screen size: ${data["width"]}x${data["height"]} px`);
     }
 
-    if (name === "computer_cursor_position") {
+    if (name === "computer_get_cursor_position") {
       if (!cid) return err("computer_id is required");
       const result = await client.apiGet<unknown>(
-        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/cursor_position`,
+        `/api/v1/computers/${encodeURIComponent(cid)}/desktop/cursor`,
       );
       const data = unwrapData(result) as Record<string, unknown>;
       return ok(`Cursor position: x=${data["x"]}, y=${data["y"]}`);
     }
 
     // ── Clipboard ─────────────────────────────────────────────────────────
-    if (name === "computer_clipboard_get") {
+    if (name === "computer_get_clipboard") {
       if (!cid) return err("computer_id is required");
       const result = await client.apiGet<unknown>(
         `/api/v1/computers/${encodeURIComponent(cid)}/desktop/clipboard`,
@@ -660,7 +684,7 @@ async function dispatchTool(
       return ok(`Clipboard content:\n${data["text"] ?? ""}`);
     }
 
-    if (name === "computer_clipboard_set") {
+    if (name === "computer_set_clipboard") {
       if (!cid) return err("computer_id is required");
       await client.apiPost(
         `/api/v1/computers/${encodeURIComponent(cid)}/desktop/clipboard`,

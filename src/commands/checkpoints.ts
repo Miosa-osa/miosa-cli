@@ -21,7 +21,7 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((computerId: string, opts: JsonOptions) =>
       runAction(() =>
-        getAndPrint(`/computers/${enc(computerId)}/checkpoints`, opts),
+        getAndPrint(`/computers/${enc(computerId)}/snapshots`, opts),
       ),
     );
 
@@ -35,7 +35,7 @@ export function register(program: Command): void {
     .action((computerId: string, opts: DataOptions & { name?: string }) =>
       runAction(() =>
         postAndPrint(
-          `/computers/${enc(computerId)}/checkpoints`,
+          `/computers/${enc(computerId)}/snapshots`,
           opts,
           opts.name ? { comment: opts.name } : {},
         ),
@@ -49,7 +49,7 @@ export function register(program: Command): void {
     .action((computerId: string, checkpointId: string, opts: JsonOptions) =>
       runAction(() =>
         getAndPrint(
-          `/computers/${enc(computerId)}/checkpoints/${enc(checkpointId)}`,
+          `/computers/${enc(computerId)}/snapshots/${enc(checkpointId)}`,
           opts,
         ),
       ),
@@ -76,7 +76,7 @@ export function register(program: Command): void {
     .action((computerId: string, checkpointId: string, opts: JsonOptions) =>
       runAction(() =>
         deleteAndPrint(
-          `/computers/${enc(computerId)}/checkpoints/${enc(checkpointId)}`,
+          `/computers/${enc(computerId)}/snapshots/${enc(checkpointId)}`,
           opts,
         ),
       ),

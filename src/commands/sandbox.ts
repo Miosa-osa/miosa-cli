@@ -137,16 +137,16 @@ export function register(program: Command): void {
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
     );
 
-  // action — lifecycle operations: start, stop, restart
+  // action — lifecycle operations: pause, resume
   addDataOption(
     sandbox
       .command("action <sandbox-id> <action>")
-      .description("Run a lifecycle action: start, stop, restart"),
+      .description("Run a lifecycle action: pause, resume"),
   )
     .option("--json", "Output as JSON")
     .action((id: string, action: string, opts: DataOptions) =>
       runAction(async () => {
-        const allowed = ["start", "stop", "restart"];
+        const allowed = ["pause", "resume"];
         if (!allowed.includes(action)) {
           throw new Error(
             `Unsupported action "${action}". Use: ${allowed.join(", ")}`,
@@ -383,15 +383,6 @@ export function register(program: Command): void {
           handleError(err);
         }
       },
-    );
-
-  // ports — GET /sandboxes/:id/ports
-  sandbox
-    .command("ports <sandbox-id>")
-    .description("List exposed ports for a Sandbox")
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`/sandboxes/${enc(id)}/ports`, opts)),
     );
 
   // logs — GET /sandboxes/:id/logs

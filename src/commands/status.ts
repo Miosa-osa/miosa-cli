@@ -362,14 +362,30 @@ export function register(program: Command): void {
 
       try {
         // Parallel fetch — all requests fire simultaneously
-        const [tenant, computers, sandboxes, deployments, agentSessions] =
-          await Promise.all([
-            safeGetOne<TenantRow>(client, "/api/v1/platform/tenants/current"),
-            safeGet<ComputerRow>(client, "/api/v1/computers"),
-            safeGet<SandboxRow>(client, "/api/v1/sandboxes"),
-            safeGet<DeploymentRow>(client, "/api/v1/deployments"),
-            safeGet<AgentSessionRow>(client, "/api/v1/agent/sessions"),
-          ]);
+        const [tenant, computers, sandboxes, deployments] = await Promise.all([
+          safeGetOne<TenantRow>(client, "/api/v1/platform/tenants/current"),
+          safeGet<ComputerRow>(client, "/api/v1/computers"),
+          safeGet<SandboxRow>(client, "/api/v1/sandboxes"),
+          safeGet<DeploymentRow>(client, "/api/v1/deployments"),
+        ]);
+
+        // Sessions are scoped to each computer — fetch in parallel for running ones
+        const runningIds = computers
+          .filter((c) => (c.state ?? c.status) === "running")
+          .map((c) => c.id)
+          .filter((id): id is string => id !== undefined)
+          .slice(0, 6); // cap parallel requests
+
+        const sessionArrays = await Promise.all(
+          runningIds.map((id) =>
+            safeGet<AgentSessionRow>(
+              client,
+              `/api/v1/computers/${encodeURIComponent(id)}/cua/sessions`,
+            ),
+          ),
+        );
+
+        const agentSessions: AgentSessionRow[] = sessionArrays.flat();
 
         const project = loadProjectConfig();
 

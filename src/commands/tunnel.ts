@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import { createServer, type Socket } from "node:net";
+import * as http from "node:http";
+import * as https from "node:https";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
@@ -8,7 +10,6 @@ import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { parseSse } from "../client.js";
 import type { Tunnel } from "../types.js";
-import { WebSocket } from "ws";
 import { formatBytes } from "../ui/progress.js";
 
 // ── port-spec parser ───────────────────────────────────────────────────────
@@ -54,89 +55,175 @@ interface PortStats {
   bytesOut: number;
 }
 
-// ── WebSocket proxy for a single TCP socket ────────────────────────────────
+// ── HTTP proxy for a single TCP socket via the compute proxy ──────────────
+//
+// The compute proxy at {port}-{slug}.computer.miosa.ai already forwards HTTP
+// requests to the VM's internal IP at the given port. Each incoming TCP
+// connection is expected to speak HTTP. We relay it by acting as a transparent
+// HTTP reverse proxy: buffer the incoming request, issue it to the upstream
+// compute proxy URL, and pipe the response back.
+//
+// For WebSocket upgrade connections we handle the Upgrade header and pipe
+// bidirectionally so that WS-based services (like noVNC, live-reload) work.
 
 function proxySocket(
   socket: Socket,
-  wsUrl: string,
+  upstreamBase: string,
   apiKey: string,
   stats: PortStats,
 ): void {
   stats.activeConnections++;
   stats.totalConnections++;
 
-  let ws: WebSocket | null = null;
-  let reconnecting = false;
   let closed = false;
 
   function cleanup(): void {
     if (closed) return;
     closed = true;
     stats.activeConnections = Math.max(0, stats.activeConnections - 1);
-    socket.destroy();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    }
+    if (!socket.destroyed) socket.destroy();
   }
-
-  function connect(): void {
-    if (closed) return;
-
-    ws = new WebSocket(wsUrl, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "User-Agent": "@miosa/cli/0.1.0",
-      },
-    });
-
-    ws.on("open", () => {
-      reconnecting = false;
-      // Resume the TCP socket once WS is ready
-      socket.resume();
-    });
-
-    ws.on("message", (data: Buffer) => {
-      stats.bytesOut += data.length;
-      if (!socket.destroyed) {
-        socket.write(data);
-      }
-    });
-
-    ws.on("close", () => {
-      if (!closed && !reconnecting && !socket.destroyed) {
-        // Attempt a single reconnect after a brief back-off
-        reconnecting = true;
-        socket.pause();
-        setTimeout(() => {
-          if (!closed) connect();
-        }, 1_000);
-      } else {
-        cleanup();
-      }
-    });
-
-    ws.on("error", () => {
-      cleanup();
-    });
-  }
-
-  // Pause reads until WebSocket is open
-  socket.pause();
-
-  socket.on("data", (chunk: Buffer) => {
-    stats.bytesIn += chunk.length;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(chunk);
-    }
-  });
 
   socket.on("close", cleanup);
   socket.on("error", cleanup);
 
-  connect();
+  // Parse URL once — determine whether to use http or https module
+  const upstreamUrl = new URL(upstreamBase);
+  const isHttps = upstreamUrl.protocol === "https:";
+  const agent = isHttps
+    ? new https.Agent({ keepAlive: true })
+    : new http.Agent({ keepAlive: true });
+
+  // Read the raw incoming HTTP request from the local TCP socket, then replay
+  // it to the upstream compute proxy with the auth header injected.
+  //
+  // We collect the first chunk (which contains the HTTP request line + headers)
+  // and use Node's http.IncomingParser implicitly by building a one-shot server
+  // response for parsing. Instead, we create a temporary HTTP server bound to
+  // a pipe so Node parses the incoming request for us.
+
+  // Strategy: wrap the socket in a one-shot http.Server so Node parses the
+  // request headers; then replay to upstream.
+  const tempServer = http.createServer((req, res) => {
+    const targetUrl = new URL(req.url ?? "/", upstreamBase);
+
+    const options: http.RequestOptions | https.RequestOptions = {
+      hostname: upstreamUrl.hostname,
+      port: upstreamUrl.port || (isHttps ? 443 : 80),
+      path: `${targetUrl.pathname}${targetUrl.search}`,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        host: upstreamUrl.host,
+        authorization: `Bearer ${apiKey}`,
+      },
+      agent,
+    };
+
+    // Handle WebSocket upgrade
+    if (
+      req.headers.upgrade &&
+      req.headers.upgrade.toLowerCase() === "websocket"
+    ) {
+      // Emit upgrade via the same request — handled below
+      return;
+    }
+
+    const proxyReq = (isHttps ? https : http).request(
+      options as https.RequestOptions,
+      (proxyRes) => {
+        stats.bytesOut += 1;
+        res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+        proxyRes.on("data", (chunk: Buffer) => {
+          stats.bytesOut += chunk.length;
+        });
+        proxyRes.pipe(res, { end: true });
+      },
+    );
+
+    proxyReq.on("error", () => {
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end("Bad Gateway");
+      }
+      cleanup();
+    });
+
+    req.on("data", (chunk: Buffer) => {
+      stats.bytesIn += chunk.length;
+    });
+
+    req.pipe(proxyReq, { end: true });
+  });
+
+  // Handle WebSocket upgrades through the temp server
+  tempServer.on(
+    "upgrade",
+    (req: http.IncomingMessage, clientSocket: Socket, head: Buffer) => {
+      const options: http.RequestOptions | https.RequestOptions = {
+        hostname: upstreamUrl.hostname,
+        port: upstreamUrl.port || (isHttps ? 443 : 80),
+        path: req.url ?? "/",
+        method: "GET",
+        headers: {
+          ...req.headers,
+          host: upstreamUrl.host,
+          authorization: `Bearer ${apiKey}`,
+        },
+        agent,
+      };
+
+      const proxyReq = (isHttps ? https : http).request(
+        options as https.RequestOptions,
+      );
+
+      proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
+        clientSocket.write(
+          "HTTP/1.1 101 Switching Protocols\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n\r\n",
+        );
+        if (proxyHead && proxyHead.length) proxySocket.unshift(proxyHead);
+        proxySocket.pipe(clientSocket);
+        clientSocket.pipe(proxySocket);
+        stats.bytesIn += head.length;
+
+        proxySocket.on("error", () => clientSocket.destroy());
+        clientSocket.on("error", () => proxySocket.destroy());
+      });
+
+      proxyReq.on("error", () => clientSocket.destroy());
+      if (head && head.length) proxyReq.write(head);
+      proxyReq.end();
+    },
+  );
+
+  // Attach the raw socket to the temp HTTP server so Node parses the request
+  tempServer.emit("connection", socket);
 }
 
 // ── forward subcommand implementation ─────────────────────────────────────
+
+// Shape of the computer object returned by GET /api/v1/computers/:id
+interface ComputerRecord {
+  id: string;
+  slug?: string | null;
+  name?: string | null;
+  state?: string;
+}
+
+// Build the compute proxy base URL for a given port and computer slug.
+//
+// The compute proxy router handles the pattern:
+//   {port}-{slug}.computer.miosa.ai  →  VM internal IP : <port>  (HTTP)
+//
+// This is the only working path for computer port forwarding right now.
+// The proxy speaks HTTP only — connections that arrive as raw TCP (postgres,
+// redis, etc.) will not traverse it correctly.  HTTP and WebSocket-based
+// services (web apps, REST APIs, live-reload) work fine.
+function buildProxyBaseUrl(slug: string, remotePort: number): string {
+  return `https://${remotePort}-${slug}.computer.miosa.ai`;
+}
 
 async function runForward(
   computerId: string,
@@ -151,16 +238,21 @@ async function runForward(
     throw new Error("Not authenticated. Run: miosa auth login");
   }
 
-  // Verify the computer exists before opening any sockets
+  // Resolve the computer record to get its slug, which drives the proxy URL.
   const spinner = spin(`Resolving computer ${computerId}...`);
-  await client.apiGet<unknown>(
+  const record = await client.apiGet<{ data: ComputerRecord }>(
     `/api/v1/computers/${encodeURIComponent(computerId)}`,
   );
   spinner.stop();
 
-  const endpoint = config.endpoint.replace(/\/$/, "");
-  // Convert http(s) → ws(s) for WebSocket URL
-  const wsBase = endpoint.replace(/^https/, "wss").replace(/^http/, "ws");
+  const computer = record.data;
+  const slug = computer.slug ?? computer.id;
+
+  if (!slug) {
+    throw new Error(
+      `Could not determine slug for computer ${computerId}. Ensure the computer exists and is running.`,
+    );
+  }
 
   const allStats: PortStats[] = portSpecs.map((spec) => ({
     spec,
@@ -173,11 +265,13 @@ async function runForward(
   const servers = await Promise.all(
     portSpecs.map(async (spec, idx) => {
       const stats = allStats[idx]!;
-      const wsUrl = `${wsBase}/api/v1/computers/${encodeURIComponent(computerId)}/tunnel/${spec.remotePort}`;
+      // Build upstream URL: https://{port}-{slug}.computer.miosa.ai
+      // The compute proxy routes this to the VM's internal IP at `spec.remotePort`.
+      const upstreamBase = buildProxyBaseUrl(slug, spec.remotePort);
 
       return new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
         const server = createServer((socket) => {
-          proxySocket(socket, wsUrl, String(apiKey), stats);
+          proxySocket(socket, upstreamBase, String(apiKey), stats);
         });
 
         server.on("error", (err: NodeJS.ErrnoException) => {
@@ -395,16 +489,21 @@ export function register(program: Command): void {
     .alias("proxy")
     .description(
       [
-        "Forward local TCP port(s) to a Computer's internal ports.",
+        "Forward local port(s) to a Computer via the compute proxy.",
+        "",
+        "Traffic is routed through https://{port}-{slug}.computer.miosa.ai,",
+        "which the compute proxy forwards to the VM's internal port.",
+        "HTTP and WebSocket services work; raw TCP protocols (postgres, redis)",
+        "require the service to speak HTTP or use a separate relay.",
         "",
         "Ports can be specified as:",
-        "  5432          forward localhost:5432 → computer:5432",
-        "  5432:15432    forward localhost:15432 → computer:5432",
+        "  8080          forward localhost:8080 → computer:8080",
+        "  8080:3000     forward localhost:3000 → computer:8080",
         "",
         "Examples:",
-        "  miosa tunnel forward my-box 5432",
-        "  miosa tunnel forward my-box 5432 6379 8080",
-        "  miosa tunnel forward my-box 5432:15432",
+        "  miosa tunnel forward my-box 8080",
+        "  miosa tunnel forward my-box 8080 3000",
+        "  miosa tunnel forward my-box 8080:3000",
       ].join("\n"),
     )
     .option(

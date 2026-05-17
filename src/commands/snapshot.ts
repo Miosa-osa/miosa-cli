@@ -1,25 +1,20 @@
 /**
  * miosa snapshot — checkpoint/restore workflow for Computers.
  *
- * This is a polished UX wrapper around the checkpoints API, providing
- * human-readable sizes, timing, progress bars, and a new `export` subcommand.
+ * This is a polished UX wrapper around the snapshots API, providing
+ * human-readable sizes, timing, progress bars.
  * The raw `miosa checkpoints` commands remain available for scripting.
  */
 
 import type { Command } from "commander";
-import { createWriteStream } from "node:fs";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { handleError } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
-import { ProgressBar, formatBytes } from "../ui/progress.js";
+import { formatBytes } from "../ui/progress.js";
 import { enc } from "./enterprise-util.js";
-import { NetworkError } from "../errors.js";
-import { request } from "undici";
 import type { ComputerCheckpoint } from "../types.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -73,7 +68,7 @@ export function register(program: Command): void {
           const start = Date.now();
 
           const result = await client.apiPost<{ data: ComputerCheckpoint }>(
-            `/api/v1/computers/${enc(computerId)}/checkpoints`,
+            `/api/v1/computers/${enc(computerId)}/snapshots`,
             opts.name ? { comment: opts.name } : {},
           );
 
@@ -110,7 +105,7 @@ export function register(program: Command): void {
           const client = new MiosaClient(loadConfig());
           const result = await client.apiGet<{
             data: ComputerCheckpoint[];
-          }>(`/api/v1/computers/${enc(computerId)}/checkpoints`);
+          }>(`/api/v1/computers/${enc(computerId)}/snapshots`);
 
           const checkpoints = result.data;
 
@@ -171,7 +166,7 @@ export function register(program: Command): void {
           let label = snapshotId;
           try {
             const snap = await client.apiGet<{ data: ComputerCheckpoint }>(
-              `/api/v1/computers/${enc(computerId)}/checkpoints/${enc(snapshotId)}`,
+              `/api/v1/computers/${enc(computerId)}/snapshots/${enc(snapshotId)}`,
             );
             if (snap.data.comment) label = snap.data.comment;
           } catch {
@@ -223,7 +218,7 @@ export function register(program: Command): void {
           let label = snapshotId;
           try {
             const snap = await client.apiGet<{ data: ComputerCheckpoint }>(
-              `/api/v1/computers/${enc(computerId)}/checkpoints/${enc(snapshotId)}`,
+              `/api/v1/computers/${enc(computerId)}/snapshots/${enc(snapshotId)}`,
             );
             if (snap.data.comment) label = snap.data.comment;
           } catch {
@@ -231,7 +226,7 @@ export function register(program: Command): void {
           }
 
           await client.apiDelete<unknown>(
-            `/api/v1/computers/${enc(computerId)}/checkpoints/${enc(snapshotId)}`,
+            `/api/v1/computers/${enc(computerId)}/snapshots/${enc(snapshotId)}`,
           );
 
           if (opts.json) {
@@ -242,107 +237,6 @@ export function register(program: Command): void {
           }
 
           console.log(`${chalk.green("Deleted:")} ${label}`);
-        } catch (err) {
-          handleError(err);
-        }
-      },
-    );
-
-  // ── export ───────────────────────────────────────────────────────────────
-
-  snapshot
-    .command("export <computer-id> <snapshot-id>")
-    .description("Download a snapshot archive to disk")
-    .requiredOption("--output <path>", "Local path to write the snapshot file")
-    .option("--json", "Output as JSON")
-    .action(
-      async (
-        computerId: string,
-        snapshotId: string,
-        opts: { output: string; json?: boolean },
-      ): Promise<void> => {
-        try {
-          const config = loadConfig();
-          const endpoint = config.endpoint.replace(/\/$/, "");
-          const apiKey = config.api_key;
-
-          if (!apiKey) {
-            throw new Error("Not authenticated. Run: miosa auth login");
-          }
-
-          const url = `${endpoint}/api/v1/computers/${enc(computerId)}/checkpoints/${enc(snapshotId)}/export`;
-
-          let res: Awaited<ReturnType<typeof request>>;
-          try {
-            res = await request(url, {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${apiKey}`,
-                "User-Agent": "@miosa/cli/0.1.0",
-              },
-            });
-          } catch (err) {
-            throw new NetworkError(
-              `Network error: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-
-          if (res.statusCode >= 400) {
-            const body = await res.body.text();
-            throw new Error(`Export failed (HTTP ${res.statusCode}): ${body}`);
-          }
-
-          // Content-Length may not always be present but use it when available
-          const contentLength = res.headers["content-length"];
-          const totalBytes =
-            typeof contentLength === "string" ? parseInt(contentLength, 10) : 0;
-
-          if (opts.json) {
-            // In JSON mode, we still need to stream — just don't show progress
-            const dest = createWriteStream(opts.output);
-            await pipeline(Readable.fromWeb(res.body as never), dest);
-            console.log(
-              JSON.stringify(
-                { saved: opts.output, bytes: totalBytes },
-                null,
-                2,
-              ),
-            );
-            return;
-          }
-
-          const bar = new ProgressBar("Exporting...");
-          let bytesReceived = 0;
-
-          const dest = createWriteStream(opts.output);
-
-          // Stream with progress tracking
-          const nodeReadable = Readable.fromWeb(res.body as never);
-          const trackingStream = new Readable({
-            read() {},
-          });
-
-          nodeReadable.on("data", (chunk: Buffer) => {
-            bytesReceived += chunk.length;
-            const total = totalBytes > 0 ? totalBytes : bytesReceived;
-            bar.update(bytesReceived, total);
-            trackingStream.push(chunk);
-          });
-
-          nodeReadable.on("end", () => {
-            trackingStream.push(null);
-          });
-
-          nodeReadable.on("error", (err: Error) => {
-            trackingStream.destroy(err);
-          });
-
-          await pipeline(trackingStream, dest);
-          bar.done();
-
-          console.log(
-            `${chalk.green("Saved to")} ${chalk.cyan(opts.output)} ${chalk.dim(`(${formatBytes(bytesReceived)})`)}`,
-          );
         } catch (err) {
           handleError(err);
         }

@@ -14,8 +14,8 @@ export function register(program: Command): void {
   resourceCommands({
     program,
     command: "webhooks",
-    description: "Manage OpenComputers webhooks",
-    route: "/opencomputers/webhooks",
+    description: "Manage webhooks",
+    route: "/webhooks",
     itemName: "webhook-id",
     actions: ["test"],
   });
@@ -26,12 +26,16 @@ export function register(program: Command): void {
     .description("List webhook deliveries")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`/opencomputers/webhooks/${enc(id)}/deliveries`, opts)),
+      runAction(() => getAndPrint(`/webhooks/${enc(id)}/deliveries`, opts)),
     );
 
-  addDataOption(webhooks!.command("test <webhook-id>").description("Send a webhook test delivery"))
+  addDataOption(
+    webhooks!
+      .command("test <webhook-id>")
+      .description("Send a webhook test delivery"),
+  )
     .option("--json", "Output as JSON")
     .action((id: string, opts: DataOptions) =>
-      runAction(() => postAndPrint(`/opencomputers/webhooks/${enc(id)}/test`, opts)),
+      runAction(() => postAndPrint(`/webhooks/${enc(id)}/test`, opts)),
     );
 }

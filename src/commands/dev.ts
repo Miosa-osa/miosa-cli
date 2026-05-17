@@ -54,29 +54,29 @@ async function fetchEnvVars(
 
   if (previews.length === 0) return {};
 
-  // Attempt reveal through tenant secrets endpoint
+  // Fetch tenant secrets — the list response includes host_id, which is
+  // required to build the reveal path: POST /opencomputers/hosts/:host_id/secrets/:secret_id/reveal
   const tenantSecrets = await client
     .apiGet<{
-      data: Array<{ id: string; name: string }>;
+      data: Array<{ id: string; name: string; host_id: string | null }>;
     }>("/api/v1/opencomputers/secrets")
-    .catch(() => ({ data: [] as Array<{ id: string; name: string }> }));
+    .catch(() => ({
+      data: [] as Array<{ id: string; name: string; host_id: string | null }>,
+    }));
 
-  const secretIdByName = new Map(tenantSecrets.data.map((s) => [s.name, s.id]));
+  const secretByName = new Map(tenantSecrets.data.map((s) => [s.name, s]));
 
   const env: Record<string, string> = {};
 
   for (const preview of previews) {
-    const secretId = secretIdByName.get(preview.name);
-    if (secretId) {
+    const secret = secretByName.get(preview.name);
+    // Only host-scoped secrets have a reveal path (host_id is non-null)
+    if (secret?.host_id) {
       try {
-        const revealed = await client.apiPost<{
-          data?: { value?: string };
-          value?: string;
-        }>(
-          `/api/v1/opencomputers/secrets/${encodeURIComponent(secretId)}/reveal`,
+        const revealed = await client.apiPost<{ value?: string }>(
+          `/api/v1/opencomputers/hosts/${encodeURIComponent(secret.host_id)}/secrets/${encodeURIComponent(secret.id)}/reveal`,
         );
-        env[preview.name] =
-          revealed.data?.value ?? revealed.value ?? preview.preview;
+        env[preview.name] = revealed.value ?? preview.preview;
         continue;
       } catch {
         // Fall through to preview

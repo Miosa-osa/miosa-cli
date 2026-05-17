@@ -619,9 +619,8 @@ async function runComputerMode(
 
   while (Date.now() < deadline) {
     try {
-      const polled = await client.apiPost<ComputerCreateResponse>(
-        `/api/v1/computers/${encodeURIComponent(computer.id)}/show`,
-        {},
+      const polled = await client.apiGet<ComputerCreateResponse>(
+        `/api/v1/computers/${encodeURIComponent(computer.id)}`,
       );
       finalComputer = polled.data;
       if (finalComputer.state === "running") break;
