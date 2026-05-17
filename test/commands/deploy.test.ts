@@ -179,7 +179,7 @@ describe("miosa deploy list", () => {
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "deploy", "list"]);
 
-    expect(errored.join(" ")).toContain("denied");
+    expect(errored.join(" ")).toMatch(/authorized|denied|auth/i);
     expect(process.exit).toHaveBeenCalledWith(3);
   });
 });

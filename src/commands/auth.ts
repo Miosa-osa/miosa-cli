@@ -1,11 +1,18 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { clearApiKey, loadConfig, redactKey, saveConfig } from "../config.js";
+import {
+  clearApiKey,
+  loadAuthCache,
+  loadConfig,
+  redactKey,
+  saveAuthCache,
+  saveConfig,
+} from "../config.js";
 import { MiosaClient } from "../client.js";
 import { AuthError, UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, printJson } from "./util.js";
 import type { ApiKey } from "../types.js";
 import { request } from "undici";
 import { spawn } from "node:child_process";
@@ -106,10 +113,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function browserLogin(config: ReturnType<typeof loadConfig>): Promise<void> {
-  const start = await postJson<CliAuthStart>(config.endpoint, "/api/v1/auth/cli/start", {
-    client_name: "MIOSA CLI",
-  });
+async function browserLogin(
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  const start = await postJson<CliAuthStart>(
+    config.endpoint,
+    "/api/v1/auth/cli/start",
+    {
+      client_name: "MIOSA CLI",
+    },
+  );
 
   if (start.status >= 400) {
     throw new UserError(`Could not start CLI auth flow: HTTP ${start.status}`);
@@ -145,7 +158,9 @@ async function browserLogin(config: ReturnType<typeof loadConfig>): Promise<void
 
     if (poll.status === 200 && poll.body.api_key) {
       saveConfig({ api_key: poll.body.api_key as ApiKey });
-      console.log(chalk.green("Logged in. API key saved to ~/.miosa/config.json"));
+      console.log(
+        chalk.green("Logged in. API key saved to ~/.miosa/config.json"),
+      );
       return;
     }
 
@@ -158,10 +173,14 @@ async function browserLogin(config: ReturnType<typeof loadConfig>): Promise<void
     }
 
     if (poll.body.error === "expired_token" || poll.status === 410) {
-      throw new UserError("CLI login request expired. Run `miosa auth login` again.");
+      throw new UserError(
+        "CLI login request expired. Run `miosa auth login` again.",
+      );
     }
 
-    throw new UserError(`CLI login failed: ${poll.body.error ?? `HTTP ${poll.status}`}`);
+    throw new UserError(
+      `CLI login failed: ${poll.body.error ?? `HTTP ${poll.status}`}`,
+    );
   }
 
   throw new UserError("CLI login timed out. Run `miosa auth login` again.");
@@ -198,56 +217,148 @@ export function register(program: Command): void {
       }
 
       const config = loadConfig();
-      const client = new MiosaClient({ ...config, api_key: key as ApiKey });
+      const authConfig = { ...config, api_key: key as ApiKey };
+      const client = new MiosaClient(authConfig);
       const spinner = spin("Validating API key...");
       try {
         const tenant = await client.getTenant();
         saveConfig({ api_key: key as ApiKey });
-        spinner.succeed(`Logged in as ${tenant.name} (${tenant.slug})`);
+        saveAuthCache({
+          email: null,
+          name: tenant.name,
+          slug: tenant.slug,
+          plan: tenant.plan,
+          credit_balance: tenant.credit_balance,
+          region: config.region,
+          cached_at: new Date().toISOString(),
+        });
+        spinner.succeed(
+          `Authenticated as ${tenant.name}` +
+            chalk.dim(` (${tenant.plan} plan)`),
+        );
       } catch (err) {
         spinner.fail("Authentication failed");
         if (err instanceof AuthError) console.error(`  ${err.message}`);
-        else console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+        else
+          console.error(
+            `  ${err instanceof Error ? err.message : String(err)}`,
+          );
         process.exit(3);
       }
     });
 
   auth
     .command("logout")
-    .description("Remove stored API key")
+    .description("Remove stored credentials and auth cache")
     .action(() => {
       const config = loadConfig();
       if (!config.api_key) {
         console.log(chalk.dim("Not logged in."));
         return;
       }
-      clearApiKey();
-      console.log(chalk.green("Logged out. API key removed from config."));
+      clearApiKey(); // also clears auth cache
+      console.log(
+        chalk.green("Logged out. Credentials removed from ~/.miosa/"),
+      );
     });
 
   auth
     .command("whoami")
-    .description("Show current identity and tenant")
+    .description(
+      "Show current identity (instant from cache; use --refresh for live data)",
+    )
     .option("--json", "Output as JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .option("--refresh", "Force a network refresh of the cached identity")
+    .action(async (opts: { json?: boolean; refresh?: boolean }) => {
       try {
         const config = loadConfig();
-        const client = new MiosaClient(config);
-        const tenant = await client.getTenant();
 
-        if (opts.json) {
-          console.log(JSON.stringify({ tenant }, null, 2));
+        if (!config.api_key) {
+          if (opts.json) {
+            printJson({ authenticated: false });
+            return;
+          }
+          console.log(chalk.yellow("Not logged in. Run: miosa auth login"));
+          process.exit(1);
+        }
+
+        // Fast path: serve from local cache unless --refresh
+        const cached = opts.refresh ? null : loadAuthCache();
+
+        if (cached) {
+          if (opts.json) {
+            printJson({
+              authenticated: true,
+              name: cached.name,
+              slug: cached.slug,
+              plan: cached.plan,
+              credit_balance: cached.credit_balance,
+              region: cached.region ?? config.region ?? "auto",
+              api_key_prefix: redactKey(config.api_key),
+              cached_at: cached.cached_at,
+            });
+            return;
+          }
+
+          const region = cached.region ?? config.region ?? "auto";
+          console.log();
+          console.log(`  ${chalk.bold("Endpoint")}  ${config.endpoint}`);
+          console.log(
+            `  ${chalk.bold("API Key")}   ${redactKey(config.api_key)}`,
+          );
+          console.log(
+            `  ${chalk.bold("Tenant")}    ${cached.name} (${cached.slug})`,
+          );
+          console.log(`  ${chalk.bold("Plan")}      ${cached.plan}`);
+          console.log(
+            `  ${chalk.bold("Credits")}   ${cached.credit_balance.toLocaleString()}`,
+          );
+          console.log(`  ${chalk.bold("Region")}    ${region}`);
+          console.log();
           return;
         }
 
+        // Slow path: fetch live then cache
+        const client = new MiosaClient(config);
+        const tenant = await client.getTenant();
+
+        saveAuthCache({
+          email: null,
+          name: tenant.name,
+          slug: tenant.slug,
+          plan: tenant.plan,
+          credit_balance: tenant.credit_balance,
+          region: config.region,
+          cached_at: new Date().toISOString(),
+        });
+
+        if (opts.json) {
+          printJson({
+            authenticated: true,
+            name: tenant.name,
+            slug: tenant.slug,
+            plan: tenant.plan,
+            credit_balance: tenant.credit_balance,
+            region: config.region ?? "auto",
+            api_key_prefix: redactKey(config.api_key),
+          });
+          return;
+        }
+
+        const region = config.region ?? "auto";
         console.log();
         console.log(`  ${chalk.bold("Endpoint")}  ${config.endpoint}`);
-        console.log(`  ${chalk.bold("API Key")}   ${redactKey(config.api_key)}`);
-        console.log(`  ${chalk.bold("Tenant")}    ${tenant.name} (${tenant.slug})`);
+        console.log(
+          `  ${chalk.bold("API Key")}   ${redactKey(config.api_key)}`,
+        );
+        console.log(
+          `  ${chalk.bold("Tenant")}    ${tenant.name} (${tenant.slug})`,
+        );
         console.log(`  ${chalk.bold("Plan")}      ${tenant.plan}`);
         console.log(
           `  ${chalk.bold("Credits")}   ${tenant.credit_balance.toLocaleString()}`,
         );
+        console.log(`  ${chalk.bold("Region")}    ${region}`);
         console.log();
       } catch (err) {
         handleError(err);
@@ -327,11 +438,15 @@ export function register(program: Command): void {
             return;
           }
 
-          console.log(chalk.green(`Created token ${created.name} (${created.id})`));
+          console.log(
+            chalk.green(`Created token ${created.name} (${created.id})`),
+          );
           console.log();
           console.log(created.key);
           console.log();
-          console.log(chalk.dim("Store this token now. It will not be shown again."));
+          console.log(
+            chalk.dim("Store this token now. It will not be shown again."),
+          );
         } catch (err) {
           handleError(err);
         }
@@ -365,7 +480,9 @@ export function register(program: Command): void {
         const client = new MiosaClient(loadConfig());
         const api = requireApiMethods(client);
         const result = unwrapData<{ id: string; status: string }>(
-          await api.apiDelete<unknown>(`/api/v1/api-keys/${encodeURIComponent(id)}`),
+          await api.apiDelete<unknown>(
+            `/api/v1/api-keys/${encodeURIComponent(id)}`,
+          ),
         );
 
         if (opts.json) {

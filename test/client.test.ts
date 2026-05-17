@@ -17,7 +17,7 @@ describe("MiosaClient", () => {
   describe("constructor", () => {
     it("should throw if no api_key in config", () => {
       expect(() => new MiosaClient({ ...makeConfig(), api_key: null })).toThrow(
-        "No API key configured",
+        "You are not logged in.",
       );
     });
   });

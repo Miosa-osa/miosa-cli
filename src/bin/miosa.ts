@@ -25,6 +25,13 @@ program
     `
 Examples:
   miosa login                                   Authenticate (opens browser)
+  miosa login --api-key msk_u_...               Authenticate with an API key
+  miosa login --stdin                           Pipe an API key: echo 'msk_...' | miosa login --stdin
+  miosa whoami                                  Show current auth state (instant, cached)
+  miosa whoami --refresh                        Force live refresh of identity
+  miosa config ls                               List all config keys
+  miosa config set region us-nyc                Set a config value
+  miosa doctor                                  Diagnose CLI, auth, and toolchain
   miosa computers list                          List all Computers
   miosa computers vnc <id>                      Open a Computer's VNC viewer
   miosa sandbox list                            List all Sandboxes
@@ -35,6 +42,12 @@ Examples:
   miosa cp ./file.txt my-mac:/tmp/              Upload a file
   miosa tunnel open my-mac --port 3000          Expose a port publicly
   miosa agent my-mac "run the tests"            Dispatch an AI agent task
+  miosa watch my-dev-box                        Stream real-time events from a Computer
+  miosa watch my-dev-box --filter exec,desktop  Watch only exec and desktop events
+  miosa watch my-dev-box --json                 Machine-readable event stream (one JSON/line)
+  miosa up                                      Smart launch (auto-detects context)
+  miosa up --computer --os ubuntu               Create a desktop computer
+  miosa up --sandbox --image python-3.12        Create a sandbox
   miosa deploy                                  Deploy a GitHub repo (60s)
   miosa status                                  Show auth and account info
 
@@ -47,10 +60,13 @@ const commandModules = [
   "../commands/auth.js",
   "../commands/login.js",
   "../commands/logout.js",
+  "../commands/whoami.js",
+  "../commands/config.js",
   "../commands/doctor.js",
   "../commands/hosts.js",
   "../commands/host.js",
   "../commands/computers.js",
+  "../commands/snapshot.js",
   "../commands/sandbox.js",
   "../commands/connect.js",
   "../commands/ssh.js",
@@ -62,6 +78,7 @@ const commandModules = [
   "../commands/agent.js",
   "../commands/watch.js",
   "../commands/status.js",
+  "../commands/up.js",
   "../commands/deploy.js",
   "../commands/apps.js",
   "../commands/logs.js",
@@ -82,6 +99,12 @@ const commandModules = [
   "../commands/containers.js",
   "../commands/functions.js",
   "../commands/cron.js",
+  "../commands/shell.js",
+  "../commands/mcp.js",
+  "../commands/link.js",
+  "../commands/pull.js",
+  "../commands/dev.js",
+  "../commands/run.js",
 ] as const;
 
 async function main(): Promise<void> {

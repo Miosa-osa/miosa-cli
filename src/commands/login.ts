@@ -1,8 +1,8 @@
 import type { Command } from "commander";
-import { loadConfig, saveConfig } from "../config.js";
+import { loadConfig, saveConfig, saveAuthCache } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { AuthError, UserError } from "../errors.js";
-import type { ApiKey } from "../types.js";
+import type { ApiKey, Tenant } from "../types.js";
 import { spin } from "../ui/spinner.js";
 import { request } from "undici";
 import { spawn } from "node:child_process";
@@ -48,6 +48,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Persist identity info so `whoami` can return instantly from cache. */
+function cacheIdentity(
+  tenant: Tenant,
+  config: ReturnType<typeof loadConfig>,
+): void {
+  saveAuthCache({
+    email: null, // platform API returns tenant, not user email
+    name: tenant.name,
+    slug: tenant.slug,
+    plan: tenant.plan,
+    credit_balance: tenant.credit_balance,
+    region: config.region,
+    cached_at: new Date().toISOString(),
+  });
+}
+
 async function browserLogin(
   config: ReturnType<typeof loadConfig>,
 ): Promise<void> {
@@ -71,7 +87,7 @@ async function browserLogin(
 
   try {
     openUrl(flow.verification_uri_complete);
-    console.log(chalk.dim("  Browser opened. Waiting for approval…"));
+    console.log(chalk.dim("  Browser opened. Waiting for approval..."));
   } catch {
     console.log(chalk.dim("  Could not open a browser automatically."));
   }
@@ -90,10 +106,25 @@ async function browserLogin(
     });
 
     if (poll.status === 200 && poll.body.api_key) {
-      saveConfig({ api_key: poll.body.api_key as ApiKey });
-      console.log(
-        chalk.green("Logged in. API key saved to ~/.miosa/config.json"),
-      );
+      const apiKey = poll.body.api_key as ApiKey;
+      saveConfig({ api_key: apiKey });
+
+      // Fetch and cache identity for instant `whoami`
+      try {
+        const freshConfig = { ...config, api_key: apiKey };
+        const client = new MiosaClient(freshConfig);
+        const tenant = await client.getTenant();
+        cacheIdentity(tenant, freshConfig);
+        console.log(
+          chalk.green(`Logged in as ${tenant.name}`) +
+            chalk.dim(` (${tenant.plan} plan)`),
+        );
+      } catch {
+        // Cache unavailable — not fatal; `whoami` will fall back to network
+        console.log(
+          chalk.green("Logged in. API key saved to ~/.miosa/config.json"),
+        );
+      }
       return;
     }
 
@@ -125,12 +156,31 @@ export function register(program: Command): void {
     .description("Authenticate with MIOSA (opens browser by default)")
     .option(
       "--api-key <key>",
-      "Authenticate with an explicit API key (msk_…) instead of browser",
+      "Authenticate with an explicit API key (msk_...)",
     )
-    .action(async (opts: { apiKey?: string }) => {
+    .option(
+      "--stdin",
+      "Read API key from stdin (for piping: echo 'msk_...' | miosa login --stdin)",
+    )
+    .action(async (opts: { apiKey?: string; stdin?: boolean }) => {
       let key: string | undefined = opts.apiKey;
 
-      // No --api-key flag: prefer browser OAuth on a TTY; accept piped key otherwise.
+      // --stdin: read key from pipe regardless of TTY state
+      if (!key && opts.stdin) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(chunk as Buffer);
+        }
+        key = Buffer.concat(chunks).toString().trim();
+        if (!key) {
+          console.error(
+            "No API key received on stdin. Usage: echo 'msk_...' | miosa login --stdin",
+          );
+          process.exit(1);
+        }
+      }
+
+      // No explicit key and not --stdin: prefer browser OAuth on TTY, accept piped key otherwise
       if (!key) {
         if (!process.stdin.isTTY) {
           const chunks: Buffer[] = [];
@@ -140,12 +190,12 @@ export function register(program: Command): void {
           key = Buffer.concat(chunks).toString().trim();
           if (!key) {
             console.error(
-              "No API key provided. Either run `miosa login` from a TTY (browser OAuth) or pipe a key:\n  echo 'msk_…' | miosa login",
+              "No API key provided. Either run `miosa login` from a TTY (browser OAuth) or pipe a key:\n  echo 'msk_...' | miosa login",
             );
             process.exit(1);
           }
         } else {
-          // TTY mode: do browser OAuth via the same flow as `miosa auth login`.
+          // TTY — browser OAuth flow
           try {
             await browserLogin(loadConfig());
           } catch (err) {
@@ -159,17 +209,19 @@ export function register(program: Command): void {
         }
       }
 
-      // Validate the explicit key.
+      // Validate the explicit key against the API
       const config = loadConfig();
       const testConfig = { ...config, api_key: key as ApiKey };
       const client = new MiosaClient(testConfig);
 
-      const spinner = spin("Validating API key…");
+      const spinner = spin("Validating API key...");
       try {
         const tenant = await client.getTenant();
         saveConfig({ api_key: key as ApiKey });
+        cacheIdentity(tenant, testConfig);
         spinner.succeed(
-          `Logged in as ${tenant.name} (${tenant.plan} plan, ${tenant.credit_balance} credits)`,
+          `Authenticated as ${tenant.name}` +
+            chalk.dim(` (${tenant.plan} plan)`),
         );
       } catch (err) {
         spinner.fail("Authentication failed");

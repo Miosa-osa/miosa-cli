@@ -1,3 +1,13 @@
+export interface ComputerCheckpoint {
+  id: string;
+  computer_id: string;
+  comment: string | null;
+  size_bytes: number | null;
+  state: "creating" | "ready" | "restoring" | "error";
+  inserted_at: string;
+  updated_at: string;
+}
+
 // Branded types for type-safe IDs
 export type HostId = string & { __brand: "HostId" };
 export type TenantId = string & { __brand: "TenantId" };
@@ -42,6 +52,8 @@ export interface MiosaConfig {
   endpoint: string;
   api_key: ApiKey | null;
   default_host: string | null;
+  region: string | null;
+  output: string;
 }
 
 // API resource types — match backend shapes exactly
@@ -243,7 +255,7 @@ export interface CreateDeploymentParams {
   metadata?: Record<string, unknown>;
 }
 
-/** Shape of the on-disk .miosa.json project config */
+/** Shape of the on-disk .miosa.json project config (created by `miosa deploy`) */
 export interface MiosaProjectConfig {
   version: 1;
   deploymentId: DeploymentId;
@@ -253,6 +265,120 @@ export interface MiosaProjectConfig {
   runCommand: string;
   branch: string;
 }
+
+/** Shape of the on-disk .miosa.json written by `miosa link` */
+export interface LocalProjectLink {
+  version: 1;
+  deploymentId: DeploymentId;
+  name: string;
+  environment: string;
+}
+
+// ── Computer event stream types ───────────────────────────────────────────────
+
+/** Discriminated union of all event types emitted by the computer event stream. */
+export type ComputerEventType =
+  | "desktop_action"
+  | "exec"
+  | "file"
+  | "screenshot"
+  | "error"
+  | "heartbeat"
+  | "unknown";
+
+export type DesktopActionKind =
+  | "click"
+  | "double_click"
+  | "right_click"
+  | "type"
+  | "key"
+  | "scroll"
+  | "move"
+  | "drag";
+
+export interface DesktopActionEvent {
+  type: "desktop_action";
+  kind: DesktopActionKind;
+  /** For click/move/drag events */
+  x?: number;
+  y?: number;
+  /** For click events */
+  button?: "left" | "right" | "middle";
+  /** For type events */
+  text?: string;
+  /** For key events */
+  key?: string;
+  /** For scroll events */
+  dx?: number;
+  dy?: number;
+  timestamp: string;
+}
+
+export interface ExecEvent {
+  type: "exec";
+  command: string;
+  /** Present only when the command has completed */
+  exit_code?: number;
+  /** Milliseconds, present only when command has completed */
+  duration_ms?: number;
+  /** Whether this is the start or end of an exec */
+  phase: "start" | "done";
+  timestamp: string;
+}
+
+export interface FileEvent {
+  type: "file";
+  operation: "read" | "write" | "delete" | "rename" | "mkdir";
+  path: string;
+  /** Bytes, if known */
+  size?: number;
+  timestamp: string;
+}
+
+export interface ScreenshotEvent {
+  type: "screenshot";
+  width: number;
+  height: number;
+  /** Bytes */
+  size: number;
+  /** Base64-encoded PNG, only present when data is requested */
+  data?: string;
+  timestamp: string;
+}
+
+export interface ComputerErrorEvent {
+  type: "error";
+  message: string;
+  code?: string;
+  timestamp: string;
+}
+
+export interface HeartbeatEvent {
+  type: "heartbeat";
+  timestamp: string;
+}
+
+export interface UnknownComputerEvent {
+  type: "unknown";
+  raw: string;
+}
+
+export type ComputerEvent =
+  | DesktopActionEvent
+  | ExecEvent
+  | FileEvent
+  | ScreenshotEvent
+  | ComputerErrorEvent
+  | HeartbeatEvent
+  | UnknownComputerEvent;
+
+/** Filter category names accepted by --filter */
+export type WatchFilterCategory =
+  | "desktop"
+  | "exec"
+  | "file"
+  | "screenshot"
+  | "error";
 
 // Exit codes — documented contract
 export const EXIT_SUCCESS = 0;

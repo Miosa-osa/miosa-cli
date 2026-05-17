@@ -647,6 +647,28 @@ export class MiosaClient {
     if (res.statusCode >= 400) return this.parseError(res);
     return res;
   }
+
+  /** Open an SSE event stream for a Computer (Firecracker microVM). */
+  async watchComputerEvents(
+    computerId: ComputerId,
+  ): Promise<Dispatcher.ResponseData> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(`/api/v1/computers/${computerId}/events`), {
+        method: "GET",
+        headers: {
+          ...this.headers(),
+          Accept: "text/event-stream",
+        },
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res;
+  }
 }
 
 // SSE parser — consumes undici body stream, yields parsed events
