@@ -378,10 +378,15 @@ export function register(program: Command): void {
 
         const sessionArrays = await Promise.all(
           runningIds.map((id) =>
-            safeGet<AgentSessionRow>(
-              client,
-              `/api/v1/computers/${encodeURIComponent(id)}/cua/sessions`,
-            ),
+            Promise.race([
+              safeGet<AgentSessionRow>(
+                client,
+                `/api/v1/computers/${encodeURIComponent(id)}/cua/sessions`,
+              ),
+              new Promise<AgentSessionRow[]>((resolve) =>
+                setTimeout(() => resolve([]), 3000),
+              ),
+            ]),
           ),
         );
 
