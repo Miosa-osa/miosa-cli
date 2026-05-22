@@ -1,0 +1,25 @@
+# Source — only dist/ is shipped
+src/
+*.ts
+!*.d.ts
+
+# Tests
+test/
+*.test.ts
+*.spec.ts
+vitest.config.ts
+
+# CI / tooling
+.github/
+.eslintrc*
+.prettierrc*
+tsconfig.json
+
+# Runtime deps excluded by npm automatically, listed for clarity
+node_modules/
+
+# Misc
+*.log
+.env
+.env.*
+install.sh

@@ -16,7 +16,9 @@ interface Region {
   headroom?: Record<string, number>;
 }
 
-function unwrapRegions(raw: { data?: Region[]; regions?: Region[] } | Region[]): Region[] {
+function unwrapRegions(
+  raw: { data?: Region[]; regions?: Region[] } | Region[],
+): Region[] {
   if (Array.isArray(raw)) return raw;
   return raw.data ?? raw.regions ?? [];
 }
@@ -68,7 +70,7 @@ export function register(program: Command): void {
 
   const regions = program
     .command("regions")
-    .description("List available MIOSA regions")
+    .description("List or inspect MIOSA regions")
     .option("--json", "Output raw JSON")
     .action(list);
 
@@ -77,4 +79,54 @@ export function register(program: Command): void {
     .description("List available MIOSA regions")
     .option("--json", "Output raw JSON")
     .action(list);
+
+  regions
+    .command("get <region-id>")
+    .description("Show details for a single region")
+    .option("--json", "Output raw JSON")
+    .action(async (regionId: string, opts: { json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const spinner = spin("Fetching region...");
+        const raw = await client.apiGet<unknown>(
+          `/api/v1/regions/${encodeURIComponent(regionId)}`,
+        );
+        spinner.stop();
+
+        // Unwrap { data: Region } envelope if present
+        const region: Region =
+          raw && typeof raw === "object" && "data" in raw
+            ? (raw as { data: Region }).data
+            : (raw as Region);
+
+        if (opts.json) {
+          console.log(JSON.stringify(region, null, 2));
+          return;
+        }
+
+        console.log();
+        console.log(`  ${chalk.bold("ID")}          ${region.id}`);
+        console.log(
+          `  ${chalk.bold("Name")}        ${region.label ?? region.name ?? region.id}`,
+        );
+        console.log(`  ${chalk.bold("Status")}      ${fmtStatus(region)}`);
+        console.log(
+          `  ${chalk.bold("Nodes")}       ${region.active_nodes ?? 0}`,
+        );
+        if (region.small_slots_free !== undefined) {
+          console.log(
+            `  ${chalk.bold("Small free")}  ${region.small_slots_free}`,
+          );
+        }
+        if (region.headroom) {
+          console.log(
+            `  ${chalk.bold("Headroom")}    ${JSON.stringify(region.headroom)}`,
+          );
+        }
+        console.log();
+      } catch (err) {
+        handleError(err);
+      }
+    });
 }

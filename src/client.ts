@@ -608,6 +608,34 @@ export class MiosaClient {
     return res;
   }
 
+  /** Returns a raw SSE Response for build log streaming */
+  async streamBuildLogs(
+    id: DeploymentId,
+    buildId: BuildId,
+  ): Promise<Dispatcher.ResponseData> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(
+        this.url(
+          `/api/v1/deployments/${encodeURIComponent(id)}/builds/${encodeURIComponent(buildId)}/logs`,
+        ),
+        {
+          method: "GET",
+          headers: {
+            ...this.headers(),
+            Accept: "text/event-stream",
+          },
+        },
+      );
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res);
+    return res;
+  }
+
   async getDeploymentEnv(id: DeploymentId): Promise<EnvVarPreview[]> {
     return this.get<{ data: EnvVarPreview[] }>(
       `/api/v1/deployments/${encodeURIComponent(id)}/env`,

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { MiosaError } from "../errors.js";
+import { scheduleUpdateCheck } from "../update-check.js";
 
 // Dynamically read version from package.json so it stays in sync
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,7 @@ program
   .description(
     "MIOSA CLI — application module infrastructure for the Optimal System. Manage Computers, Sandboxes, and OpenComputers hosts from your shell.",
   )
-  .version(pkg.version, "-v, --version")
+  .version(pkg.version, "-v, --version", "Print version number and exit")
   .addHelpText(
     "after",
     `
@@ -54,6 +55,14 @@ Examples:
 Documentation: https://miosa.ai/docs/cli/
 `,
   );
+
+// `miosa version` — explicit subcommand (mirrors `miosa --version`)
+program
+  .command("version")
+  .description("Print the current @miosa/cli version")
+  .action(() => {
+    console.log(pkg.version);
+  });
 
 // Dynamically import and register all command modules
 const commandModules = [
@@ -107,6 +116,15 @@ const commandModules = [
   "../commands/run.js",
   "../commands/tenant.js",
   "../commands/db.js",
+  "../commands/env.js",
+  "../commands/scale.js",
+  "../commands/rollback.js",
+  "../commands/builds.js",
+  "../commands/storage.js",
+  "../commands/databases.js",
+  "../commands/teams.js",
+  "../commands/billing.js",
+  "../commands/templates.js",
 ] as const;
 
 async function main(): Promise<void> {
@@ -142,6 +160,9 @@ async function main(): Promise<void> {
   });
 
   await program.parseAsync(process.argv);
+
+  // Schedule async update check — never blocks, prints notice after command output
+  scheduleUpdateCheck(pkg.version);
 }
 
 main().catch((err: unknown) => {

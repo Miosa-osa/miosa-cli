@@ -1,6 +1,6 @@
 {
   "name": "@miosa/cli",
-  "version": "0.2.0",
+  "version": "1.0.1",
   "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
@@ -19,7 +19,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "miosa",

@@ -29,7 +29,10 @@ function stateColor(state: DeploymentBuild["state"]): string {
   }
 }
 
-async function resolveApp(client: MiosaClient, nameOrId: string): Promise<Deployment> {
+async function resolveApp(
+  client: MiosaClient,
+  nameOrId: string,
+): Promise<Deployment> {
   try {
     return await client.getDeployment(nameOrId as Deployment["id"]);
   } catch {
@@ -114,10 +117,7 @@ export function register(program: Command): void {
     .option("--app <app>", "App name, slug, or deployment ID")
     .option("--json", "Output as JSON")
     .action(
-      async (
-        releaseId: string,
-        opts: { app?: string; json?: boolean },
-      ) => {
+      async (releaseId: string, opts: { app?: string; json?: boolean }) => {
         try {
           const client = new MiosaClient(loadConfig());
           let app: Deployment;
@@ -138,16 +138,125 @@ export function register(program: Command): void {
           console.log();
           console.log(`  ${chalk.bold("Release")}  ${release.id}`);
           console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
-          console.log(`  ${chalk.bold("State")}    ${stateColor(release.state)}`);
-          console.log(`  ${chalk.bold("Commit")}   ${release.commit_sha ?? chalk.dim("none")}`);
+          console.log(
+            `  ${chalk.bold("State")}    ${stateColor(release.state)}`,
+          );
+          console.log(
+            `  ${chalk.bold("Commit")}   ${release.commit_sha ?? chalk.dim("none")}`,
+          );
           if (release.commit_message) {
-            console.log(`  ${chalk.bold("Message")}  ${release.commit_message}`);
+            console.log(
+              `  ${chalk.bold("Message")}  ${release.commit_message}`,
+            );
           }
           if (release.error_message) {
-            console.log(`  ${chalk.bold("Error")}    ${chalk.red(release.error_message)}`);
+            console.log(
+              `  ${chalk.bold("Error")}    ${chalk.red(release.error_message)}`,
+            );
           }
           console.log(`  ${chalk.bold("Created")}  ${release.created_at}`);
           console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // ── releases get (alias for show) ──────────────────────────────────────────
+
+  releases
+    .command("get <deployment-id> <release-id>")
+    .description("Get a release by deployment ID and release ID")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        deploymentId: string,
+        releaseId: string,
+        opts: { json?: boolean },
+      ) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const app = await resolveApp(client, deploymentId);
+          const release = await client.getBuild(app.id, releaseId as BuildId);
+
+          if (opts.json) {
+            console.log(JSON.stringify(release, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(`  ${chalk.bold("Release")}  ${release.id}`);
+          console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
+          console.log(
+            `  ${chalk.bold("State")}    ${stateColor(release.state)}`,
+          );
+          console.log(
+            `  ${chalk.bold("Commit")}   ${release.commit_sha ?? chalk.dim("none")}`,
+          );
+          if (release.commit_message) {
+            console.log(
+              `  ${chalk.bold("Message")}  ${release.commit_message}`,
+            );
+          }
+          if (release.error_message) {
+            console.log(
+              `  ${chalk.bold("Error")}    ${chalk.red(release.error_message)}`,
+            );
+          }
+          console.log(`  ${chalk.bold("Created")}  ${release.created_at}`);
+          console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // ── releases promote ────────────────────────────────────────────────────────
+
+  releases
+    .command("promote <deployment-id> <version-id>")
+    .description("Promote a version to active")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        deploymentId: string,
+        versionId: string,
+        opts: { yes?: boolean; json?: boolean },
+      ) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const app = await resolveApp(client, deploymentId);
+
+          if (!opts.yes) {
+            const { default: inquirer } = await import("inquirer");
+            const { ok } = await inquirer.prompt<{ ok: boolean }>([
+              {
+                type: "confirm",
+                name: "ok",
+                message: `Promote version ${shortId(versionId)} on ${app.name}?`,
+                default: false,
+              },
+            ]);
+            if (!ok) {
+              console.log(chalk.dim("Cancelled."));
+              return;
+            }
+          }
+
+          const result = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(app.id)}/versions/${encodeURIComponent(versionId)}/promote`,
+          );
+
+          console.log(
+            chalk.green(
+              `Version ${shortId(versionId)} promoted on ${app.name}.`,
+            ),
+          );
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+          }
         } catch (err) {
           handleError(err);
         }
@@ -160,10 +269,7 @@ export function register(program: Command): void {
     .option("--app <app>", "App name, slug, or deployment ID")
     .option("-y, --yes", "Skip confirmation prompt")
     .action(
-      async (
-        releaseId: string,
-        opts: { app?: string; yes?: boolean },
-      ) => {
+      async (releaseId: string, opts: { app?: string; yes?: boolean }) => {
         try {
           const client = new MiosaClient(loadConfig());
           const app = opts.app
@@ -217,7 +323,9 @@ export function register(program: Command): void {
             throw err;
           }
 
-          console.log(chalk.green(`Rollback queued for ${app.name} to ${releaseId}.`));
+          console.log(
+            chalk.green(`Rollback queued for ${app.name} to ${releaseId}.`),
+          );
         } catch (err) {
           handleError(err);
         }
