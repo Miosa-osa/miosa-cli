@@ -18,7 +18,10 @@
  */
 
 import { createInterface } from "node:readline";
+import { spawn, spawnSync } from "node:child_process";
 import type { Command } from "commander";
+import { request } from "undici";
+import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 
@@ -974,6 +977,262 @@ async function runServer(): Promise<void> {
   }
 }
 
+// ── install: device-flow auth + auto-wire the host MCP into a client ────────
+
+interface DeviceFlow {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+}
+
+interface TokenResponse {
+  api_key?: string;
+  error?: string;
+}
+
+const MCP_REMOTE_URL = "https://api.miosa.ai/api/v1/mcp";
+const MCP_SERVER_NAME = "miosa";
+
+type SupportedClient = "claude" | "cursor" | "gemini" | "manual";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function openUrl(url: string): void {
+  const command =
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
+async function postJson<T>(
+  endpoint: string,
+  path: string,
+  body: unknown,
+): Promise<{ status: number; body: T }> {
+  const res = await request(`${endpoint.replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.body.text();
+  const parsed = text ? (JSON.parse(text) as T) : ({} as T);
+  return { status: res.statusCode, body: parsed };
+}
+
+async function runDeviceFlow(
+  endpoint: string,
+  clientName: string,
+): Promise<string> {
+  const start = await postJson<DeviceFlow>(endpoint, "/api/v1/auth/cli/start", {
+    client_name: clientName,
+  });
+  if (start.status >= 400) {
+    throw new Error(`Failed to start auth flow (HTTP ${start.status})`);
+  }
+  const flow = start.body;
+
+  console.log();
+  console.log(chalk.bold("Authorize MIOSA MCP for this device"));
+  console.log();
+  console.log(`  Open: ${chalk.cyan(flow.verification_uri_complete)}`);
+  console.log(`  Code: ${chalk.bold(flow.user_code)}`);
+  console.log();
+
+  try {
+    openUrl(flow.verification_uri_complete);
+    console.log(chalk.dim("  Browser opened. Waiting for approval..."));
+  } catch {
+    console.log(chalk.dim("  Could not open a browser automatically."));
+  }
+
+  const deadline = Date.now() + flow.expires_in * 1000;
+  const intervalMs = Math.max(flow.interval || 3, 1) * 1000;
+
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+    const poll = await postJson<TokenResponse>(
+      endpoint,
+      "/api/v1/auth/cli/token",
+      { device_code: flow.device_code },
+    );
+    if (poll.status === 200 && poll.body.api_key) {
+      return poll.body.api_key;
+    }
+    if (poll.status === 428 || poll.body.error === "authorization_pending") {
+      continue;
+    }
+    if (poll.body.error === "access_denied") {
+      throw new Error("Login was denied in the browser.");
+    }
+    if (poll.body.error === "expired_token" || poll.status === 410) {
+      throw new Error("Login request expired. Run the command again.");
+    }
+    throw new Error(
+      `Login failed: ${poll.body.error ?? `HTTP ${poll.status}`}`,
+    );
+  }
+
+  throw new Error("Login timed out. Run the command again.");
+}
+
+function wireClaudeCode(
+  apiKey: string,
+  remoteUrl: string,
+  scope: "local" | "user" | "project",
+): { ok: true } | { ok: false; reason: string } {
+  // `claude mcp remove` first so re-running install replaces cleanly.
+  spawnSync("claude", ["mcp", "remove", MCP_SERVER_NAME, "--scope", scope], {
+    stdio: "ignore",
+  });
+
+  const result = spawnSync(
+    "claude",
+    [
+      "mcp",
+      "add",
+      "--transport",
+      "http",
+      "--scope",
+      scope,
+      MCP_SERVER_NAME,
+      remoteUrl,
+      "--header",
+      `Authorization: Bearer ${apiKey}`,
+    ],
+    { stdio: "pipe", encoding: "utf8" },
+  );
+
+  if (result.error) {
+    return {
+      ok: false,
+      reason: `Could not run \`claude\` CLI: ${result.error.message}`,
+    };
+  }
+  if (typeof result.status === "number" && result.status !== 0) {
+    return {
+      ok: false,
+      reason: result.stderr?.trim() || `claude mcp add exited ${result.status}`,
+    };
+  }
+  return { ok: true };
+}
+
+function printManualSnippet(
+  client: SupportedClient,
+  apiKey: string,
+  remoteUrl: string,
+): void {
+  const masked =
+    apiKey.length > 12
+      ? apiKey.slice(0, 6) + "…" + apiKey.slice(-4)
+      : "msk_u_…";
+  console.log();
+  console.log(chalk.bold("Manual install snippet"));
+  console.log(
+    chalk.dim(`  (your key: ${masked} — saved to ~/.miosa/config.json)`),
+  );
+  console.log();
+
+  if (client === "cursor") {
+    console.log(chalk.dim("  Add to ~/.cursor/mcp.json:"));
+    console.log();
+    console.log(
+      JSON.stringify(
+        {
+          mcpServers: {
+            miosa: {
+              transport: "http",
+              url: remoteUrl,
+              headers: { Authorization: `Bearer ${apiKey}` },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  if (client === "gemini") {
+    console.log(
+      `  ${chalk.cyan(`gemini mcp add ${MCP_SERVER_NAME} ${remoteUrl} \\`)}`,
+    );
+    console.log(
+      `    ${chalk.cyan(`--header "Authorization: Bearer ${apiKey}"`)}`,
+    );
+    return;
+  }
+
+  // claude / manual
+  console.log(
+    `  ${chalk.cyan(`claude mcp add --transport http --scope user ${MCP_SERVER_NAME} \\`)}`,
+  );
+  console.log(`    ${chalk.cyan(remoteUrl + " \\")}`);
+  console.log(
+    `    ${chalk.cyan(`--header "Authorization: Bearer ${apiKey}"`)}`,
+  );
+}
+
+async function runInstall(opts: {
+  client: SupportedClient;
+  scope: "local" | "user" | "project";
+  remoteUrl: string;
+}): Promise<void> {
+  const config = loadConfig();
+  const clientName = `MIOSA MCP (${opts.client === "manual" ? "manual" : opts.client})`;
+
+  console.log(
+    chalk.bold("MIOSA MCP installer"),
+    chalk.dim(`— wiring ${opts.client} → ${opts.remoteUrl}`),
+  );
+
+  const apiKey = await runDeviceFlow(config.endpoint, clientName);
+
+  if (opts.client === "claude") {
+    const wired = wireClaudeCode(apiKey, opts.remoteUrl, opts.scope);
+    if (wired.ok) {
+      console.log();
+      console.log(
+        chalk.green("✓"),
+        `MCP server '${MCP_SERVER_NAME}' added to Claude Code (${opts.scope} scope).`,
+      );
+      console.log();
+      console.log(chalk.dim("Verify:"));
+      console.log(`  ${chalk.cyan("claude mcp list")}`);
+      console.log();
+      console.log(chalk.dim("Try in a fresh Claude Code session:"));
+      console.log(
+        chalk.dim(
+          `  "Create a MIOSA sandbox, run \`python -c 'print(2+2)'\`, then destroy it."`,
+        ),
+      );
+      return;
+    }
+    console.log();
+    console.log(
+      chalk.yellow("!"),
+      `Could not auto-wire Claude Code: ${wired.reason}`,
+    );
+    console.log(chalk.yellow("  Falling back to manual snippet:"));
+    printManualSnippet("claude", apiKey, opts.remoteUrl);
+    return;
+  }
+
+  // cursor / gemini / manual — print the snippet
+  printManualSnippet(opts.client, apiKey, opts.remoteUrl);
+}
+
 // ── Commander registration ────────────────────────────────────────────────────
 
 export function register(program: Command): void {
@@ -987,11 +1246,48 @@ export function register(program: Command): void {
       "Start an MCP server over stdio (JSON-RPC 2.0). Add to .claude/mcp.json to use with Claude.",
     )
     .action(() => {
-      // runServer() is an infinite async loop; attach an unhandled-rejection guard
       runServer().catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
         process.stderr.write(`miosa mcp serve fatal: ${msg}\n`);
         process.exit(1);
       });
+    });
+
+  mcp
+    .command("install")
+    .description(
+      "Install the hosted MIOSA MCP server (https://api.miosa.ai/api/v1/mcp) into your AI client. Opens a browser to log in and wire your account.",
+    )
+    .option(
+      "-c, --client <client>",
+      "Which AI client to wire: claude (default), cursor, gemini, manual",
+      "claude",
+    )
+    .option(
+      "-s, --scope <scope>",
+      "Claude Code config scope: local, user (default), or project",
+      "user",
+    )
+    .option(
+      "--url <url>",
+      "Override the hosted MCP URL (default: https://api.miosa.ai/api/v1/mcp)",
+      MCP_REMOTE_URL,
+    )
+    .action(async (opts: { client: string; scope: string; url: string }) => {
+      const client = (
+        ["claude", "cursor", "gemini", "manual"].includes(opts.client)
+          ? opts.client
+          : "claude"
+      ) as SupportedClient;
+      const scope = (
+        ["local", "user", "project"].includes(opts.scope) ? opts.scope : "user"
+      ) as "local" | "user" | "project";
+      try {
+        await runInstall({ client, scope, remoteUrl: opts.url });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(chalk.red(`Error: ${msg}`));
+        process.exit(3);
+      }
     });
 }
