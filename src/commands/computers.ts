@@ -2,10 +2,13 @@ import type { Command } from "commander";
 import { spawn } from "node:child_process";
 import {
   addDataOption,
+  apiPath,
+  client,
   deleteAndPrint,
   enc,
   getAndPrint,
   postAndPrint,
+  printValue,
   resourceCommands,
   runAction,
   type DataOptions,
@@ -43,12 +46,89 @@ export function register(program: Command): void {
     route: "/computers",
     itemName: "computer-id",
     actions,
+    // Both list and create are registered below with workspace-aware overrides.
+    skipCommands: ["list", "create"],
   });
 
   const computers = program.commands.find((cmd) => cmd.name() === "computers");
 
   // Back-compat alias: `miosa machines` continues to work for one release.
   computers!.alias("machines");
+
+  // Workspace-aware list (skipped in resourceCommands via skipCommands).
+  computers!
+    .command("list")
+    .description("List computers, optionally filtered to a workspace")
+    .option("--workspace <workspace-id>", "Filter by workspace ID")
+    .option("--json", "Output as JSON")
+    .action((opts: JsonOptions & { workspace?: string }) =>
+      runAction(async () => {
+        const url = new URL(
+          apiPath("/computers"),
+          "https://placeholder.invalid",
+        );
+        if (opts.workspace)
+          url.searchParams.set("workspace_id", opts.workspace);
+        const path = url.pathname + (url.search ? url.search : "");
+        await getAndPrint(path, opts);
+      }),
+    );
+
+  // Workspace-aware create (skipped in resourceCommands via skipCommands).
+  addDataOption(
+    computers!
+      .command("create")
+      .description("Create a computer")
+      .option("--name <name>", "Computer name")
+      .option(
+        "--workspace <workspace-id>",
+        "Workspace to assign the computer to",
+      )
+      .option(
+        "--external-workspace <id>",
+        "Your internal workspace ID (attribution)",
+      )
+      .option(
+        "--external-project <id>",
+        "Your internal project ID (attribution)",
+      ),
+  )
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        opts: DataOptions & {
+          name?: string;
+          workspace?: string;
+          externalWorkspace?: string;
+          externalProject?: string;
+        },
+      ) =>
+        runAction(async () => {
+          // Merge --name / --workspace flags into the body so callers don't
+          // have to pass a full --data JSON blob for common use-cases.
+          const base: Record<string, unknown> = opts.data
+            ? JSON.parse(opts.data)
+            : {};
+          if (opts.name) base["name"] = opts.name;
+          if (opts.workspace) base["workspace_id"] = opts.workspace;
+          if (opts.externalWorkspace)
+            base["external_workspace_id"] = opts.externalWorkspace;
+          if (opts.externalProject)
+            base["external_project_id"] = opts.externalProject;
+          const result = await client().apiPost<unknown>(
+            apiPath("/computers"),
+            base,
+          );
+          const value =
+            result !== null &&
+            typeof result === "object" &&
+            !Array.isArray(result) &&
+            "data" in (result as Record<string, unknown>)
+              ? (result as Record<string, unknown>)["data"]
+              : result;
+          printValue(value, opts);
+        }),
+    );
 
   addDataOption(
     computers!

@@ -1,7 +1,7 @@
 {
   "name": "@miosa/cli",
-  "version": "0.1.1",
-  "description": "MIOSA command-line interface — manage OpenComputers hosts from your shell",
+  "version": "0.2.0",
+  "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
     "miosa": "./dist/bin/miosa.js"
@@ -24,6 +24,11 @@
   "keywords": [
     "miosa",
     "cli",
+    "platform",
+    "paas",
+    "deploy",
+    "sandbox",
+    "serverless",
     "opencomputers",
     "devtools"
   ],

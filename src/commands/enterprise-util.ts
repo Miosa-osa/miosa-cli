@@ -82,6 +82,16 @@ export async function putAndPrint(
   printValue(value, opts);
 }
 
+export async function patchAndPrint(
+  path: string,
+  opts: DataOptions,
+  defaultBody?: ApiObject,
+): Promise<void> {
+  const body = parseData(opts.data) ?? defaultBody;
+  const value = unwrap(await client().apiPatch<unknown>(apiPath(path), body));
+  printValue(value, opts);
+}
+
 export async function deleteAndPrint(
   path: string,
   opts: JsonOptions,
@@ -147,19 +157,24 @@ export function resourceCommands(config: {
   route: string;
   itemName?: string;
   actions?: readonly string[];
+  /** Subcommand names to skip so callers can register their own override. */
+  skipCommands?: string[];
 }): void {
   const group = config.program
     .command(config.command)
     .description(config.description);
   const itemName = config.itemName ?? "id";
+  const skip = new Set(config.skipCommands ?? []);
 
-  group
-    .command("list")
-    .description(`List ${config.command}`)
-    .option("--json", "Output as JSON")
-    .action((opts: JsonOptions) =>
-      runAction(() => getAndPrint(config.route, opts)),
-    );
+  if (!skip.has("list")) {
+    group
+      .command("list")
+      .description(`List ${config.command}`)
+      .option("--json", "Output as JSON")
+      .action((opts: JsonOptions) =>
+        runAction(() => getAndPrint(config.route, opts)),
+      );
+  }
 
   group
     .command(`show <${itemName}>`)
@@ -169,13 +184,15 @@ export function resourceCommands(config: {
       runAction(() => getAndPrint(`${config.route}/${enc(id)}`, opts)),
     );
 
-  addDataOption(
-    group.command("create").description(`Create a ${config.command} item`),
-  )
-    .option("--json", "Output as JSON")
-    .action((opts: DataOptions) =>
-      runAction(() => postAndPrint(config.route, opts, {})),
-    );
+  if (!skip.has("create")) {
+    addDataOption(
+      group.command("create").description(`Create a ${config.command} item`),
+    )
+      .option("--json", "Output as JSON")
+      .action((opts: DataOptions) =>
+        runAction(() => postAndPrint(config.route, opts, {})),
+      );
+  }
 
   group
     .command(`delete <${itemName}>`)

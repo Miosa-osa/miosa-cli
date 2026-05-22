@@ -59,7 +59,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints",
+          path: "/api/v1/computers/comp-xyz/snapshots",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: [mockCheckpoint] }), {
@@ -87,7 +87,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints",
+          path: "/api/v1/computers/comp-xyz/snapshots",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: [mockCheckpoint] }), {
@@ -122,7 +122,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints",
+          path: "/api/v1/computers/comp-xyz/snapshots",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: [] }), {
@@ -150,7 +150,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints",
+          path: "/api/v1/computers/comp-xyz/snapshots",
           method: "POST",
         })
         .reply(200, JSON.stringify({ data: mockCheckpoint }), {
@@ -180,7 +180,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints",
+          path: "/api/v1/computers/comp-xyz/snapshots",
           method: "POST",
         })
         .reply(200, JSON.stringify({ data: mockCheckpoint }), {
@@ -218,7 +218,7 @@ describe("miosa snapshot", () => {
       // GET checkpoint for name resolution
       pool
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints/snap-abc123",
+          path: "/api/v1/computers/comp-xyz/snapshots/snap-abc123",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: mockCheckpoint }), {
@@ -260,7 +260,7 @@ describe("miosa snapshot", () => {
       // GET for name resolution
       pool
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints/snap-abc123",
+          path: "/api/v1/computers/comp-xyz/snapshots/snap-abc123",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: mockCheckpoint }), {
@@ -270,7 +270,7 @@ describe("miosa snapshot", () => {
       // DELETE
       pool
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints/snap-abc123",
+          path: "/api/v1/computers/comp-xyz/snapshots/snap-abc123",
           method: "DELETE",
         })
         .reply(204, "", { headers: {} });
@@ -302,7 +302,7 @@ describe("miosa snapshot", () => {
 
       pool
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints/snap-abc123",
+          path: "/api/v1/computers/comp-xyz/snapshots/snap-abc123",
           method: "GET",
         })
         .reply(200, JSON.stringify({ data: mockCheckpoint }), {
@@ -311,7 +311,7 @@ describe("miosa snapshot", () => {
 
       pool
         .intercept({
-          path: "/api/v1/computers/comp-xyz/checkpoints/snap-abc123",
+          path: "/api/v1/computers/comp-xyz/snapshots/snap-abc123",
           method: "DELETE",
         })
         .reply(204, "", { headers: {} });
@@ -347,7 +347,7 @@ describe("miosa snapshot", () => {
       mock
         .get("https://api.miosa.ai")
         .intercept({
-          path: "/api/v1/computers/bad-id/checkpoints",
+          path: "/api/v1/computers/bad-id/snapshots",
           method: "GET",
         })
         .reply(404, JSON.stringify({ message: "Not found" }), {

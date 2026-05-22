@@ -105,6 +105,8 @@ const commandModules = [
   "../commands/pull.js",
   "../commands/dev.js",
   "../commands/run.js",
+  "../commands/tenant.js",
+  "../commands/db.js",
 ] as const;
 
 async function main(): Promise<void> {

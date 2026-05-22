@@ -85,6 +85,18 @@ const TOOL_LIST: McpTool[] = [
           description: "VM size (default: small)",
           default: "small",
         },
+        workspace_id: {
+          type: "string",
+          description: "Workspace ID to assign the computer to (optional)",
+        },
+        external_workspace_id: {
+          type: "string",
+          description: "Your internal workspace ID for attribution (optional)",
+        },
+        external_project_id: {
+          type: "string",
+          description: "Your internal project ID for attribution (optional)",
+        },
       },
       required: ["name"],
     },
@@ -478,6 +490,11 @@ async function dispatchTool(
       const body: Record<string, unknown> = { name: args["name"] };
       if (args["template_type"]) body["template_type"] = args["template_type"];
       if (args["size"]) body["size"] = args["size"];
+      if (args["workspace_id"]) body["workspace_id"] = args["workspace_id"];
+      if (args["external_workspace_id"])
+        body["external_workspace_id"] = args["external_workspace_id"];
+      if (args["external_project_id"])
+        body["external_project_id"] = args["external_project_id"];
       const computer = await client.apiPost<Record<string, unknown>>(
         "/api/v1/computers",
         body,
