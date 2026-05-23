@@ -125,6 +125,11 @@ const commandModules = [
   "../commands/teams.js",
   "../commands/billing.js",
   "../commands/templates.js",
+  "../commands/dashboard.js",
+  // Keep last — registers the default `program.action()` that fires only
+  // when no other subcommand matched. Registering earlier would risk it
+  // intercepting commands that haven't been wired up yet.
+  "../commands/menu.js",
 ] as const;
 
 async function main(): Promise<void> {

@@ -1,6 +1,6 @@
 {
   "name": "@miosa/cli",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
@@ -38,14 +38,17 @@
   "dependencies": {
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
+    "ink": "^7.0.3",
     "inquirer": "^9.3.7",
     "ora": "^8.1.1",
+    "react": "^19.2.6",
     "undici": "^6.19.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.8",
     "@types/node": "^20.17.9",
+    "@types/react": "^19.2.15",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

@@ -4,6 +4,15 @@ import { MiosaClient } from "../client.js";
 import { AuthError, UserError } from "../errors.js";
 import type { ApiKey, Tenant } from "../types.js";
 import { spin } from "../ui/spinner.js";
+import {
+  banner,
+  errorEnvelope,
+  hintBlock,
+  icon,
+  kvPanel,
+  printElapsed,
+  formatDuration,
+} from "../ui/render.js";
 import { request } from "undici";
 import { spawn } from "node:child_process";
 import chalk from "chalk";
@@ -78,18 +87,27 @@ async function browserLogin(
   }
 
   const flow = start.body;
+  const flowStart = Date.now();
   console.log();
-  console.log(chalk.bold("Authorize MIOSA CLI"));
+  console.log(`  ${banner({ subtitle: "Sign in" })}`);
   console.log();
-  console.log(`  Open: ${chalk.cyan(flow.verification_uri_complete)}`);
-  console.log(`  Code: ${chalk.bold(flow.user_code)}`);
+  console.log(
+    kvPanel([
+      { label: "Open", value: chalk.cyan(flow.verification_uri_complete) },
+      { label: "Code", value: chalk.bold(flow.user_code) },
+    ]),
+  );
   console.log();
 
   try {
     openUrl(flow.verification_uri_complete);
-    console.log(chalk.dim("  Browser opened. Waiting for approval..."));
+    console.log(
+      `  ${icon.pending} ${chalk.dim("Browser opened. Waiting for approval…")}`,
+    );
   } catch {
-    console.log(chalk.dim("  Could not open a browser automatically."));
+    console.log(
+      `  ${icon.warn}  ${chalk.dim("Could not open a browser automatically.")}`,
+    );
   }
 
   const deadline = Date.now() + flow.expires_in * 1000;
@@ -109,22 +127,47 @@ async function browserLogin(
       const apiKey = poll.body.api_key as ApiKey;
       saveConfig({ api_key: apiKey });
 
-      // Fetch and cache identity for instant `whoami`
+      // Fetch and cache identity for instant `whoami`. Cache failure is
+      // non-fatal — the key still works, `whoami` will refetch on demand.
+      let tenantName: string | undefined;
+      let tenantPlan: string | undefined;
       try {
         const freshConfig = { ...config, api_key: apiKey };
         const client = new MiosaClient(freshConfig);
         const tenant = await client.getTenant();
         cacheIdentity(tenant, freshConfig);
-        console.log(
-          chalk.green(`Logged in as ${tenant.name}`) +
-            chalk.dim(` (${tenant.plan} plan)`),
-        );
+        tenantName = tenant.name;
+        tenantPlan = tenant.plan;
       } catch {
-        // Cache unavailable — not fatal; `whoami` will fall back to network
-        console.log(
-          chalk.green("Logged in. API key saved to ~/.miosa/config.json"),
-        );
+        /* cache unavailable */
       }
+
+      console.log();
+      console.log(
+        kvPanel([
+          {
+            icon: icon.ok,
+            label: "Authenticated",
+            value: tenantName
+              ? `${chalk.bold(tenantName)}${tenantPlan ? chalk.dim(` · ${tenantPlan} plan`) : ""}`
+              : chalk.dim("(identity cache unavailable)"),
+          },
+          {
+            icon: icon.ok,
+            label: "Token saved",
+            value: chalk.dim("~/.miosa/config.json"),
+          },
+        ]),
+      );
+      console.log();
+      console.log(
+        hintBlock("Next", [
+          "miosa whoami",
+          "miosa mcp install",
+          "miosa computers list",
+        ]),
+      );
+      printElapsed(formatDuration(Date.now() - flowStart));
       return;
     }
 
@@ -200,7 +243,18 @@ export function register(program: Command): void {
             await browserLogin(loadConfig());
           } catch (err) {
             if (err instanceof UserError || err instanceof AuthError) {
-              console.error(chalk.red(`Error: ${err.message}`));
+              console.log();
+              console.log(
+                errorEnvelope({
+                  title: "Sign-in failed",
+                  body: err.message,
+                  suggest: [
+                    "miosa login  # try again",
+                    "miosa login --api-key msk_u_…  # paste a key instead",
+                  ],
+                  withDebugHint: true,
+                }),
+              );
               process.exit(3);
             }
             throw err;
@@ -214,24 +268,61 @@ export function register(program: Command): void {
       const testConfig = { ...config, api_key: key as ApiKey };
       const client = new MiosaClient(testConfig);
 
-      const spinner = spin("Validating API key...");
+      const validateStart = Date.now();
+      const spinner = spin("Validating API key…");
       try {
         const tenant = await client.getTenant();
         saveConfig({ api_key: key as ApiKey });
         cacheIdentity(tenant, testConfig);
-        spinner.succeed(
-          `Authenticated as ${tenant.name}` +
-            chalk.dim(` (${tenant.plan} plan)`),
+        spinner.stop();
+
+        console.log();
+        console.log(`  ${banner({ subtitle: "Sign in" })}`);
+        console.log();
+        console.log(
+          kvPanel([
+            {
+              icon: icon.ok,
+              label: "Authenticated",
+              value:
+                chalk.bold(tenant.name) + chalk.dim(` · ${tenant.plan} plan`),
+            },
+            {
+              icon: icon.ok,
+              label: "Token saved",
+              value: chalk.dim("~/.miosa/config.json"),
+            },
+          ]),
         );
+        console.log();
+        console.log(
+          hintBlock("Next", [
+            "miosa whoami",
+            "miosa mcp install",
+            "miosa computers list",
+          ]),
+        );
+        printElapsed(formatDuration(Date.now() - validateStart));
       } catch (err) {
-        spinner.fail("Authentication failed");
-        if (err instanceof AuthError) {
-          console.error(`  ${err.message}`);
-        } else {
-          console.error(
-            `  ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        spinner.stop();
+        const message =
+          err instanceof AuthError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        console.log();
+        console.log(
+          errorEnvelope({
+            title: "Authentication failed",
+            body: message,
+            suggest: [
+              "miosa login  # use browser device flow instead",
+              "https://miosa.ai/dashboard/api-keys  # rotate your key",
+            ],
+            withDebugHint: true,
+          }),
+        );
         process.exit(3);
       }
     });

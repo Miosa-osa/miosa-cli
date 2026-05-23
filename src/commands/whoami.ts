@@ -7,7 +7,14 @@ import {
   redactKey,
 } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { handleError, printJson } from "./util.js";
+import {
+  banner,
+  errorEnvelope,
+  hintBlock,
+  icon,
+  kvPanel,
+} from "../ui/render.js";
+import { printJson } from "./util.js";
 
 export function register(program: Command): void {
   program
@@ -18,16 +25,20 @@ export function register(program: Command): void {
     .action(async (opts: { json?: boolean; refresh?: boolean }) => {
       const config = loadConfig();
 
+      // ── Not signed in ────────────────────────────────────────────────
       if (!config.api_key) {
         if (opts.json) {
           printJson({ authenticated: false });
           return;
         }
-        console.log(chalk.yellow("Not logged in. Run: miosa login"));
+        console.log();
+        console.log(`  ${icon.warn}  ${chalk.bold("Not signed in")}`);
+        console.log();
+        console.log(hintBlock("Sign in", ["miosa login"]));
         process.exit(1);
       }
 
-      // Fast path: serve from cache unless --refresh requested
+      // ── Fast path: serve from cache ─────────────────────────────────
       const cached = opts.refresh ? null : loadAuthCache();
 
       if (cached) {
@@ -44,20 +55,19 @@ export function register(program: Command): void {
           });
           return;
         }
-
-        const region = cached.region ?? config.region ?? "auto";
-        console.log();
-        console.log(
-          `  ${chalk.bold(cached.name)}` + chalk.dim(` (${cached.plan} plan)`),
-        );
-        console.log(`  Tenant:   ${cached.slug}`);
-        console.log(`  API Key:  ${redactKey(config.api_key)}`);
-        console.log(`  Region:   ${region}`);
-        console.log();
+        renderIdentity({
+          name: cached.name,
+          slug: cached.slug,
+          plan: cached.plan,
+          credit_balance: cached.credit_balance,
+          region: cached.region ?? config.region ?? "auto",
+          api_key: config.api_key,
+          fromCache: true,
+        });
         return;
       }
 
-      // Slow path: fetch from API, then cache the result
+      // ── Slow path: fetch + cache ────────────────────────────────────
       try {
         const client = new MiosaClient(config);
         const tenant = await client.getTenant();
@@ -85,17 +95,83 @@ export function register(program: Command): void {
           return;
         }
 
-        const region = config.region ?? "auto";
+        renderIdentity({
+          name: tenant.name,
+          slug: tenant.slug,
+          plan: tenant.plan,
+          credit_balance: tenant.credit_balance,
+          region: config.region ?? "auto",
+          api_key: config.api_key,
+          fromCache: false,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.log();
         console.log(
-          `  ${chalk.bold(tenant.name)}` + chalk.dim(` (${tenant.plan} plan)`),
+          errorEnvelope({
+            title: "Could not load identity",
+            body: message,
+            suggest: [
+              "miosa whoami --refresh  # bypass the local cache",
+              "miosa login  # re-authenticate if your key was revoked",
+            ],
+            withDebugHint: true,
+          }),
         );
-        console.log(`  Tenant:   ${tenant.slug}`);
-        console.log(`  API Key:  ${redactKey(config.api_key)}`);
-        console.log(`  Region:   ${region}`);
-        console.log();
-      } catch (err) {
-        handleError(err);
+        process.exit(1);
       }
     });
+}
+
+interface IdentitySummary {
+  name: string;
+  slug: string;
+  plan: string;
+  credit_balance: number;
+  region: string;
+  api_key: string;
+  fromCache: boolean;
+}
+
+function renderIdentity(s: IdentitySummary): void {
+  console.log();
+  console.log(`  ${banner({ subtitle: "Identity" })}`);
+  console.log();
+  console.log(
+    kvPanel([
+      {
+        icon: icon.ok,
+        label: "Tenant",
+        value: chalk.bold(s.name) + chalk.dim(`  (${s.slug})`),
+      },
+      {
+        label: "Plan",
+        value: chalk.bold(s.plan),
+      },
+      {
+        label: "Credits",
+        value:
+          s.credit_balance > 0
+            ? chalk.bold(s.credit_balance.toLocaleString())
+            : chalk.yellow("0  — top up at https://miosa.ai/billing"),
+      },
+      {
+        label: "Region",
+        value: s.region,
+      },
+      {
+        label: "API key",
+        value: chalk.dim(redactKey(s.api_key)),
+      },
+    ]),
+  );
+  if (s.fromCache) {
+    console.log();
+    console.log(
+      `  ${chalk.dim("(cached — use ")}` +
+        chalk.cyan("miosa whoami --refresh") +
+        chalk.dim(" for live data)"),
+    );
+  }
+  console.log();
 }
