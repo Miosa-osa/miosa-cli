@@ -61,12 +61,32 @@ function buildChoices(authenticated: boolean): MenuChoice[] {
   ];
 }
 
+// Module-level guard. Prevents the default `program.action()` from
+// re-entering itself if `parseAsync` for the chosen subcommand somehow
+// falls through to the default action again (e.g. a typo in the picker
+// argv, a Commander parsing edge case). The previous version of this
+// file had exactly that recursion bug — the user picked "Sign in to
+// MIOSA", a malformed `parseAsync` call re-triggered the default
+// action, and the menu re-printed itself on every cycle.
+let menuActive = false;
+
 export function register(program: Command): void {
   program.action(async () => {
     // We only run the menu when Commander dispatched here because no
     // subcommand matched. If argv is longer than "node miosa", the user
     // typed something that Commander has already handled (or errored on).
     if (process.argv.length > 2) return;
+
+    // Hard reentry guard — see comment above. If `menuActive` is true
+    // we're being called recursively from inside our own parseAsync
+    // re-invocation, which means the chosen argv didn't match any
+    // subcommand. Bail and print help so the user sees SOMETHING rather
+    // than the menu looping forever.
+    if (menuActive) {
+      program.help();
+      return;
+    }
+    menuActive = true;
 
     // Non-TTY → fall back to default help text. Prompting would hang.
     if (!process.stdin.isTTY) {
@@ -122,9 +142,16 @@ export function register(program: Command): void {
     // Re-invoke Commander with the chosen argv. This goes through the
     // normal command lifecycle (option parsing, help, error handling) —
     // we don't need to duplicate any of that here.
+    //
+    // CRITICAL: with `{ from: "user" }` Commander expects argv WITHOUT
+    // the node/script prefix — just the bare user-typed args. The prior
+    // version passed ["node", "miosa", ...chosen.argv] here, which
+    // Commander treated as user-typed positional args. It found no
+    // matching subcommand for "node", fell through to THIS default
+    // action again, and the menu re-printed in an infinite loop. The
+    // bug only affected non-empty argv branches; "Read the docs" had
+    // an early return and worked, which is exactly what the user saw.
     console.log();
-    await program.parseAsync(["node", "miosa", ...chosen.argv], {
-      from: "user",
-    });
+    await program.parseAsync(chosen.argv, { from: "user" });
   });
 }
