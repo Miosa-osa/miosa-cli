@@ -9,6 +9,15 @@ import { handleError } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
 import {
+  errorEnvelope,
+  hintBlock,
+  icon,
+  kvPanel,
+  printBanner,
+  printElapsed,
+  formatDuration,
+} from "../ui/render.js";
+import {
   detectFramework,
   FRAMEWORK_LABELS,
   type Framework,
@@ -496,6 +505,27 @@ Examples:
           return;
         }
 
+        const n = deployments.length;
+        console.log();
+        console.log(
+          `  ${icon.info}  ${chalk.bold(String(n))} ${chalk.dim(n === 1 ? "deployment" : "deployment(s)")}`,
+        );
+        console.log();
+
+        if (n === 0) {
+          console.log(
+            kvPanel([{ label: "Deployments", value: chalk.dim("none yet") }]),
+          );
+          console.log();
+          console.log(
+            hintBlock("Try", [
+              "miosa deploy  # deploy a project from the current directory",
+            ]),
+          );
+          console.log();
+          return;
+        }
+
         renderTable(deployments, [
           { header: "ID", key: (d) => d.id.slice(0, 8), width: 10 },
           { header: "NAME", key: "name", width: 24 },
@@ -512,6 +542,101 @@ Examples:
             width: 20,
           },
         ]);
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            "miosa deploy show <id>",
+            "miosa deploy redeploy <id>  # redeploy",
+            "miosa deploy rollback <id>",
+          ]),
+        );
+        console.log();
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  // ── deploy show ─────────────────────────────────────────────────────────────
+
+  deploy
+    .command("show <id>")
+    .description("Show details for a single deployment")
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const deploymentId = toDeploymentId(id);
+
+        const spinner = spin("Fetching deployment...");
+        const dep = await client.getDeployment(deploymentId);
+        spinner.stop();
+
+        if (opts.json) {
+          console.log(JSON.stringify(dep, null, 2));
+          return;
+        }
+
+        const truncate = (s: string | null, max: number): string => {
+          if (!s) return chalk.dim("—");
+          return s.length > max ? s.slice(0, max - 1) + "…" : s;
+        };
+
+        const colorizeState = (state: Deployment["state"]): string => {
+          switch (state) {
+            case "running":
+              return chalk.green(state);
+            case "building":
+              return chalk.yellow(state);
+            case "failed":
+              return chalk.red(state);
+            default:
+              return chalk.dim(state);
+          }
+        };
+
+        const tenantSlug = config.endpoint
+          .replace(/^https?:\/\//, "")
+          .split(".")[0];
+        const publicUrl = dep.slug
+          ? `https://${dep.slug}.${tenantSlug}.miosa.app`
+          : chalk.dim("—");
+
+        printBanner({ subtitle: "Deployment" });
+        console.log(
+          kvPanel([
+            { label: "id", value: chalk.dim(dep.id) },
+            { label: "name", value: chalk.bold(dep.name) },
+            { label: "state", value: colorizeState(dep.state) },
+            {
+              label: "current_build_id",
+              value: dep.current_build_id
+                ? chalk.dim(dep.current_build_id)
+                : chalk.dim("—"),
+            },
+            { label: "repo_url", value: chalk.cyan(dep.repo_url) },
+            { label: "branch", value: dep.branch },
+            {
+              label: "build_command",
+              value: truncate(dep.build_command, 60),
+            },
+            { label: "run_command", value: truncate(dep.run_command, 60) },
+            {
+              label: "created_at",
+              value: chalk.dim(new Date(dep.created_at).toLocaleString()),
+            },
+            { label: "public_url", value: chalk.cyan(publicUrl) },
+          ]),
+        );
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            "miosa deploy redeploy <id>  # redeploy",
+            "miosa logs <id>  # tail build/runtime logs",
+            "miosa deploy rollback <id>",
+          ]),
+        );
+        console.log();
       } catch (err) {
         handleError(err);
       }
@@ -549,6 +674,7 @@ Examples:
     .description("Trigger a manual rebuild (auto-detected from .miosa.json)")
     .option("--no-follow", "Queue the build without tailing logs")
     .action(async (id?: string, opts?: { follow: boolean }) => {
+      const actionStart = Date.now();
       try {
         const cwd = process.cwd();
         const config = loadConfig();
@@ -556,8 +682,48 @@ Examples:
         const deploymentId = resolveDeploymentId(id, cwd);
 
         const spinner = spin("Queuing build...");
-        const build = await client.redeployDeployment(deploymentId);
-        spinner.succeed(`Build queued (id: ${build.id.slice(0, 8)})`);
+        let build: DeploymentBuild;
+        try {
+          build = await client.redeployDeployment(deploymentId);
+          spinner.stop();
+        } catch (err) {
+          spinner.stop();
+          console.log();
+          console.log(
+            errorEnvelope({
+              title: "Redeploy failed",
+              body: err instanceof Error ? err.message : String(err),
+              suggest: [
+                "miosa deploy show <id>  # check deployment state",
+                "miosa deploy list       # list all deployments",
+              ],
+              withDebugHint: true,
+            }),
+          );
+          console.log();
+          process.exit(4);
+        }
+
+        printBanner({ subtitle: "Redeploy queued" });
+        console.log(
+          kvPanel([
+            {
+              icon: icon.ok,
+              label: "deployment_id",
+              value: chalk.dim(deploymentId),
+            },
+            { label: "new_build_id", value: chalk.dim(build.id) },
+            { label: "state", value: chalk.yellow("queued") },
+          ]),
+        );
+        console.log();
+        console.log(
+          hintBlock("Watch", [
+            `miosa logs ${deploymentId} --follow`,
+            `miosa deploy show ${deploymentId}`,
+          ]),
+        );
+        printElapsed(formatDuration(Date.now() - actionStart));
 
         if (opts?.follow !== false) {
           console.log();

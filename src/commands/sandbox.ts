@@ -13,11 +13,21 @@ import {
   postAndPrint,
   printValue,
   runAction,
+  unwrap,
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
 import { handleError } from "./util.js";
+import { renderTable } from "../ui/table.js";
+import {
+  formatDuration,
+  hintBlock,
+  icon,
+  kvPanel,
+  printBanner,
+  printElapsed,
+} from "../ui/render.js";
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -41,7 +51,64 @@ export function register(program: Command): void {
     .action((opts: { state?: string } & JsonOptions) =>
       runAction(async () => {
         const qs = opts.state ? `?state=${enc(opts.state)}` : "";
-        await getAndPrint(`/sandboxes${qs}`, opts);
+
+        if (opts.json) {
+          await getAndPrint(`/sandboxes${qs}`, opts);
+          return;
+        }
+
+        const raw = unwrap(
+          await client().apiGet<unknown>(apiPath(`/sandboxes${qs}`)),
+        );
+        const items: Record<string, unknown>[] = Array.isArray(raw)
+          ? (raw as Record<string, unknown>[])
+          : [];
+
+        console.log();
+        console.log(
+          `  ${icon.info}  ${chalk.bold(String(items.length))} ${chalk.dim("sandbox(es)")}`,
+        );
+        console.log();
+
+        if (items.length === 0) {
+          console.log(
+            kvPanel([
+              { label: "Sandboxes", value: chalk.dim("0  — none created yet") },
+            ]),
+          );
+          console.log();
+          console.log(hintBlock("Try", ["miosa sandbox create"]));
+          console.log();
+          return;
+        }
+
+        renderTable(items, [
+          { header: "ID", key: "id" as keyof Record<string, unknown> },
+          { header: "NAME", key: "name" as keyof Record<string, unknown> },
+          {
+            header: "STATUS",
+            key: "status" as keyof Record<string, unknown>,
+            color: (val) => statusColor(val.trim()),
+          },
+          {
+            header: "TEMPLATE",
+            key: "template_id" as keyof Record<string, unknown>,
+          },
+          {
+            header: "CREATED",
+            key: "created_at" as keyof Record<string, unknown>,
+          },
+        ]);
+
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            "miosa sandbox show <id>",
+            "miosa sandbox exec <id> --command ...",
+            "miosa sandbox create",
+          ]),
+        );
+        console.log();
       }),
     );
 
@@ -60,7 +127,71 @@ export function register(program: Command): void {
     .description("Show a Sandbox by ID")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`/sandboxes/${enc(id)}`, opts)),
+      runAction(async () => {
+        if (opts.json) {
+          await getAndPrint(`/sandboxes/${enc(id)}`, opts);
+          return;
+        }
+
+        const raw = unwrap(
+          await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}`)),
+        );
+        const sb = (raw ?? {}) as Record<string, unknown>;
+
+        printBanner({ subtitle: "Sandbox" });
+
+        const rows = [
+          { label: "ID", value: chalk.bold(str(sb["id"])), icon: icon.info },
+          { label: "Name", value: str(sb["name"]) },
+          {
+            label: "Status",
+            value: statusColor(str(sb["status"])),
+          },
+        ];
+        if (sb["template_id"]) {
+          rows.push({ label: "Template", value: str(sb["template_id"]) });
+        }
+        if (sb["cpu_count"] != null) {
+          rows.push({ label: "CPU", value: str(sb["cpu_count"]) });
+        }
+        if (sb["memory_mb"] != null) {
+          rows.push({
+            label: "Memory",
+            value: `${str(sb["memory_mb"])} MB`,
+          });
+        }
+        if (sb["timeout_sec"] != null) {
+          rows.push({
+            label: "Timeout",
+            value: `${str(sb["timeout_sec"])} sec`,
+          });
+        }
+        if (sb["ip_address"]) {
+          rows.push({ label: "IP", value: str(sb["ip_address"]) });
+        }
+        if (sb["public_url"]) {
+          rows.push({
+            label: "URL",
+            value: chalk.cyan(str(sb["public_url"])),
+          });
+        }
+        if (sb["created_at"]) {
+          rows.push({
+            label: "Created",
+            value: chalk.dim(str(sb["created_at"])),
+          });
+        }
+
+        console.log(kvPanel(rows));
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            `miosa sandbox exec ${str(sb["id"])} --command ...`,
+            `miosa sandbox destroy ${str(sb["id"])}`,
+          ]),
+        );
+        console.log();
+      }),
     );
 
   // get — matches documented form: miosa sandboxes get <id>
@@ -102,10 +233,20 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
+          const t0 = Date.now();
+
           if (opts.data) {
-            await postAndPrint("/sandboxes", opts, {});
+            if (opts.json) {
+              await postAndPrint("/sandboxes", opts, {});
+              return;
+            }
+            const raw = unwrap(
+              await client().apiPost<unknown>(apiPath("/sandboxes"), {}),
+            );
+            renderCreateSuccess(raw, Date.now() - t0);
             return;
           }
+
           const body: Record<string, unknown> = {};
           if (opts.template) body["template_id"] = opts.template;
           if (opts.name) body["name"] = opts.name;
@@ -114,7 +255,16 @@ export function register(program: Command): void {
           if (opts.disk != null) body["disk_size_mb"] = opts.disk;
           if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
           if (opts.alwaysOn) body["always_on"] = true;
-          await postAndPrint("/sandboxes", opts, body);
+
+          if (opts.json) {
+            await postAndPrint("/sandboxes", opts, body);
+            return;
+          }
+
+          const raw = unwrap(
+            await client().apiPost<unknown>(apiPath("/sandboxes"), body),
+          );
+          renderCreateSuccess(raw, Date.now() - t0);
         }),
     );
 
@@ -489,4 +639,53 @@ function openUrl(url: string): void {
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   const child = spawn(command, args, { detached: true, stdio: "ignore" });
   child.unref();
+}
+
+// ── Sandbox render helpers ────────────────────────────────────────────────
+
+/** Coerce an unknown API field to a display string. */
+function str(v: unknown): string {
+  if (v === null || v === undefined) return chalk.dim("—");
+  return String(v);
+}
+
+/** Apply semantic color to a sandbox status string. */
+function statusColor(s: string): string {
+  const lower = s.toLowerCase().trim();
+  if (lower === "running") return chalk.green(s);
+  if (lower === "paused" || lower === "suspended") return chalk.yellow(s);
+  if (
+    lower === "stopped" ||
+    lower === "error" ||
+    lower === "failed" ||
+    lower === "destroyed"
+  )
+    return chalk.red(s);
+  if (lower === "starting" || lower === "provisioning" || lower === "pending")
+    return chalk.cyan(s);
+  return chalk.dim(s);
+}
+
+/** Render the create-success panel. */
+function renderCreateSuccess(raw: unknown, elapsedMs: number): void {
+  const sb = (raw ?? {}) as Record<string, unknown>;
+  const id = str(sb["id"]);
+
+  printBanner({ subtitle: "Create sandbox" });
+
+  console.log(
+    kvPanel([
+      { icon: icon.ok, label: "ID", value: chalk.bold(id) },
+      { label: "Name", value: str(sb["name"]) },
+      { label: "Status", value: statusColor(str(sb["status"])) },
+    ]),
+  );
+  console.log();
+  console.log(
+    hintBlock("Next", [
+      `miosa sandbox show ${id}`,
+      `miosa sandbox exec ${id} --command 'python -c print(2+2)'`,
+    ]),
+  );
+  printElapsed(formatDuration(elapsedMs));
 }

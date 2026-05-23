@@ -13,7 +13,15 @@ import {
   redactKey,
 } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { handleError, printJson } from "./util.js";
+import { printJson } from "./util.js";
+import {
+  banner,
+  errorEnvelope,
+  hintBlock,
+  icon,
+  kvPanel,
+  sectionHeader,
+} from "../ui/render.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,16 +30,10 @@ interface Check {
   ok: boolean;
   detail: string;
   fix?: string;
-}
-
-const PASS = chalk.green("✓");
-const FAIL = chalk.red("✗");
-const WARN = chalk.yellow("~");
-
-function mark(ok: boolean, warn = false): string {
-  if (ok) return PASS;
-  if (warn) return WARN;
-  return FAIL;
+  /** When true the row renders with icon.warn instead of icon.fail */
+  warn?: boolean;
+  /** Section this check belongs to — used to group output */
+  section: "Identity" | "Network" | "Toolchain" | "Project";
 }
 
 async function getCommandVersion(
@@ -119,6 +121,7 @@ export function register(program: Command): void {
           name: "CLI version",
           ok: true,
           detail: cliVersion,
+          section: "Identity",
         });
 
         // ── Config file ──────────────────────────────────────────────────────
@@ -127,6 +130,7 @@ export function register(program: Command): void {
           ok: configExists(),
           detail: configExists() ? getConfigPath() : "not found",
           fix: configExists() ? undefined : "Run: miosa login",
+          section: "Identity",
         });
 
         // ── Authentication ───────────────────────────────────────────────────
@@ -136,6 +140,7 @@ export function register(program: Command): void {
           ok: hasKey,
           detail: hasKey ? redactKey(config.api_key) : "not set",
           fix: hasKey ? undefined : "Run: miosa login",
+          section: "Identity",
         });
 
         // ── API reachability ─────────────────────────────────────────────────
@@ -152,6 +157,7 @@ export function register(program: Command): void {
             latencyMs === null
               ? `Check connectivity or set a custom endpoint: miosa config set api_url <url>`
               : undefined,
+          section: "Network",
         });
 
         // ── Auth validation (only if we have a key and the API is reachable) ─
@@ -163,6 +169,7 @@ export function register(program: Command): void {
               name: "Authentication",
               ok: true,
               detail: `valid (${tenant.name}, ${tenant.slug})`,
+              section: "Identity",
             });
           } catch (err) {
             checks.push({
@@ -170,6 +177,7 @@ export function register(program: Command): void {
               ok: false,
               detail: err instanceof Error ? err.message : String(err),
               fix: "Run: miosa login",
+              section: "Identity",
             });
           }
         }
@@ -188,6 +196,7 @@ export function register(program: Command): void {
           fix: nodeOk
             ? undefined
             : "Node.js 20+ required. See https://nodejs.org",
+          section: "Toolchain",
         });
 
         // ── Python (for MCP server) ──────────────────────────────────────────
@@ -202,6 +211,8 @@ export function register(program: Command): void {
           fix: pythonOk
             ? undefined
             : "Install Python 3.9+ from https://python.org (needed for miosa-mcp)",
+          warn: !pythonOk,
+          section: "Toolchain",
         });
 
         // ── miosa-mcp ────────────────────────────────────────────────────────
@@ -218,6 +229,8 @@ export function register(program: Command): void {
           fix: mcpInstalled
             ? undefined
             : "pip install miosa-mcp  (MCP server for AI agent integration)",
+          warn: !mcpInstalled,
+          section: "Toolchain",
         });
 
         // ── .claude/mcp.json ─────────────────────────────────────────────────
@@ -232,6 +245,8 @@ export function register(program: Command): void {
             fix: mcpJson.configured
               ? undefined
               : "Add miosa-mcp to your .claude/mcp.json servers block",
+            warn: !mcpJson.configured,
+            section: "Project",
           });
         } else {
           checks.push({
@@ -239,6 +254,8 @@ export function register(program: Command): void {
             ok: false,
             detail: "not found",
             fix: "Create ~/.claude/mcp.json with miosa-mcp server config",
+            warn: true,
+            section: "Project",
           });
         }
 
@@ -255,31 +272,87 @@ export function register(program: Command): void {
           });
         }
 
+        // ── Human-readable output ────────────────────────────────────────────
+        const sections = [
+          "Identity",
+          "Network",
+          "Toolchain",
+          "Project",
+        ] as const;
+
         console.log();
-        for (const check of checks) {
-          const symbol = mark(check.ok);
-          const nameCol = check.name.padEnd(22);
-          console.log(`  ${symbol} ${chalk.bold(nameCol)}${check.detail}`);
-          if (!check.ok && check.fix) {
-            console.log(`      ${chalk.dim(check.fix)}`);
-          }
+        console.log(`  ${banner({ subtitle: "Doctor" })}`);
+
+        for (const section of sections) {
+          const group = checks.filter((c) => c.section === section);
+          if (group.length === 0) continue;
+
+          sectionHeader(section);
+          console.log(
+            kvPanel(
+              group.map((c) => ({
+                icon: c.ok ? icon.ok : c.warn ? icon.warn : icon.fail,
+                label: c.name,
+                value: c.ok
+                  ? chalk.dim(c.detail)
+                  : c.warn
+                    ? chalk.yellow(c.detail)
+                    : chalk.red(c.detail),
+              })),
+            ),
+          );
         }
+
+        // ── Summary ──────────────────────────────────────────────────────────
+        const okCount = checks.filter((c) => c.ok).length;
+        const warnCount = checks.filter((c) => !c.ok && c.warn).length;
+        const failCount = checks.filter((c) => !c.ok && !c.warn).length;
+
+        const summaryParts: string[] = [chalk.green(`${okCount} ok`)];
+        if (warnCount > 0) summaryParts.push(chalk.yellow(`${warnCount} warn`));
+        if (failCount > 0) summaryParts.push(chalk.red(`${failCount} fail`));
+
+        console.log();
+        console.log(`  ${summaryParts.join(chalk.dim("  /  "))}`);
+
+        // ── Fix hints for hard failures only ────────────────────────────────
+        const hardfails = checks.filter((c) => !c.ok && !c.warn && c.fix);
+        const softfails = checks.filter((c) => !c.ok && c.warn && c.fix);
+
+        if (hardfails.length > 0) {
+          console.log();
+          console.log(
+            hintBlock(
+              "Fix",
+              hardfails.map((c) => c.fix as string),
+            ),
+          );
+        } else if (softfails.length > 0) {
+          console.log();
+          console.log(
+            hintBlock(
+              "Try",
+              softfails.map((c) => c.fix as string),
+            ),
+          );
+        }
+
         console.log();
 
-        const failures = checks.filter((c) => !c.ok);
-        if (failures.length > 0) {
-          console.log(
-            chalk.red(`  ${failures.length} check(s) failed.`) +
-              chalk.dim(" Address the items above."),
-          );
-          console.log();
+        if (failCount > 0) {
           process.exit(1);
         }
-
-        console.log(chalk.green("  All checks passed."));
-        console.log();
       } catch (err) {
-        handleError(err);
+        console.log();
+        console.log(
+          errorEnvelope({
+            title: "Doctor crashed",
+            body: err instanceof Error ? err.message : String(err),
+            withDebugHint: true,
+          }),
+        );
+        console.log();
+        process.exit(2);
       }
     });
 }

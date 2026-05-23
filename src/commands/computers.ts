@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { spawn } from "node:child_process";
+import chalk from "chalk";
 import {
   addDataOption,
   apiPath,
@@ -11,10 +12,20 @@ import {
   printValue,
   resourceCommands,
   runAction,
+  unwrap,
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
+import {
+  formatDuration,
+  hintBlock,
+  icon,
+  kvPanel,
+  printBanner,
+  printElapsed,
+} from "../ui/render.js";
+import { renderTable } from "../ui/table.js";
 
 const actions = [
   "start",
@@ -37,6 +48,16 @@ function openUrl(url: string): void {
   child.unref();
 }
 
+function colorStatus(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "running") return chalk.green(status);
+  if (s === "provisioning" || s === "starting" || s === "pending")
+    return chalk.yellow(status);
+  if (s === "error" || s === "failed" || s === "stopped")
+    return chalk.red(status);
+  return chalk.dim(status || "—");
+}
+
 export function register(program: Command): void {
   resourceCommands({
     program,
@@ -46,8 +67,8 @@ export function register(program: Command): void {
     route: "/computers",
     itemName: "computer-id",
     actions,
-    // Both list and create are registered below with workspace-aware overrides.
-    skipCommands: ["list", "create"],
+    // list, show, and create are registered below with styled overrides.
+    skipCommands: ["list", "show", "create"],
   });
 
   const computers = program.commands.find((cmd) => cmd.name() === "computers");
@@ -70,7 +91,153 @@ export function register(program: Command): void {
         if (opts.workspace)
           url.searchParams.set("workspace_id", opts.workspace);
         const path = url.pathname + (url.search ? url.search : "");
-        await getAndPrint(path, opts);
+
+        const raw = unwrap<unknown>(
+          await client().apiGet<unknown>(apiPath(path)),
+        );
+
+        if (opts.json) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        const rows: Record<string, unknown>[] = Array.isArray(raw)
+          ? (raw as Record<string, unknown>[])
+          : [];
+
+        console.log();
+        if (rows.length === 0) {
+          console.log(
+            kvPanel([
+              {
+                icon: icon.info,
+                label: "Computers",
+                value: chalk.dim("0  — none created yet"),
+              },
+            ]),
+          );
+          console.log();
+          console.log(
+            hintBlock("Try", ["miosa computers create --name <name>"]),
+          );
+          console.log();
+          return;
+        }
+
+        console.log(
+          `  ${icon.info}  ${chalk.bold(String(rows.length))} ${chalk.dim("computer(s)")}`,
+        );
+        console.log();
+
+        renderTable(rows, [
+          {
+            header: "ID",
+            key: (r) => String(r["id"] ?? ""),
+            width: 12,
+          },
+          {
+            header: "NAME",
+            key: (r) => String(r["name"] ?? chalk.dim("—")),
+          },
+          {
+            header: "STATUS",
+            key: (r) => String(r["status"] ?? ""),
+            color: (val) => colorStatus(val.trim()),
+          },
+          {
+            header: "TEMPLATE",
+            key: (r) =>
+              String(r["template_type"] ?? r["template"] ?? chalk.dim("—")),
+          },
+          {
+            header: "REGION",
+            key: (r) => String(r["region"] ?? chalk.dim("—")),
+          },
+          {
+            header: "CREATED",
+            key: (r) => String(r["created_at"] ?? chalk.dim("—")),
+          },
+        ]);
+
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            "miosa computers show <id>",
+            "miosa computers create --name <name>",
+          ]),
+        );
+        console.log();
+      }),
+    );
+
+  // Styled show (skipped in resourceCommands via skipCommands).
+  computers!
+    .command("show <computer-id>")
+    .description("Show a computer")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap<Record<string, unknown>>(
+          await client().apiGet<unknown>(apiPath(`/computers/${enc(id)}`)),
+        );
+
+        if (opts.json) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        const c = raw as Record<string, unknown>;
+        const status = String(c["status"] ?? "");
+
+        printBanner({ subtitle: "Computer" });
+        console.log(
+          kvPanel([
+            {
+              icon: icon.ok,
+              label: "id",
+              value: chalk.dim(String(c["id"] ?? "—")),
+            },
+            { label: "name", value: chalk.bold(String(c["name"] ?? "—")) },
+            { label: "status", value: colorStatus(status) },
+            {
+              label: "template",
+              value: String(
+                c["template_type"] ?? c["template"] ?? chalk.dim("—"),
+              ),
+            },
+            { label: "size", value: String(c["size"] ?? chalk.dim("—")) },
+            { label: "region", value: String(c["region"] ?? chalk.dim("—")) },
+            ...(c["ip_address"]
+              ? [
+                  {
+                    label: "ip_address",
+                    value: chalk.cyan(String(c["ip_address"])),
+                  },
+                ]
+              : []),
+            {
+              label: "created_at",
+              value: chalk.dim(String(c["created_at"] ?? "—")),
+            },
+            ...(c["public_url"]
+              ? [
+                  {
+                    label: "public_url",
+                    value: chalk.cyan(String(c["public_url"])),
+                  },
+                ]
+              : []),
+          ]),
+        );
+        console.log();
+        console.log(
+          hintBlock("Try", [
+            `miosa exec ${id} ...`,
+            `miosa watch ${id}`,
+            `miosa computers action ${id} stop`,
+          ]),
+        );
+        console.log();
       }),
     );
 
@@ -115,6 +282,8 @@ export function register(program: Command): void {
             base["external_workspace_id"] = opts.externalWorkspace;
           if (opts.externalProject)
             base["external_project_id"] = opts.externalProject;
+
+          const createStart = Date.now();
           const result = await client().apiPost<unknown>(
             apiPath("/computers"),
             base,
@@ -126,7 +295,50 @@ export function register(program: Command): void {
             "data" in (result as Record<string, unknown>)
               ? (result as Record<string, unknown>)["data"]
               : result;
-          printValue(value, opts);
+
+          if (opts.json) {
+            printValue(value, opts);
+            return;
+          }
+
+          const c =
+            value !== null && typeof value === "object" && !Array.isArray(value)
+              ? (value as Record<string, unknown>)
+              : ({} as Record<string, unknown>);
+          const newId = String(c["id"] ?? "—");
+
+          printBanner({ subtitle: "Create computer" });
+          console.log(
+            kvPanel([
+              { icon: icon.ok, label: "id", value: chalk.dim(newId) },
+              {
+                label: "name",
+                value: chalk.bold(String(c["name"] ?? base["name"] ?? "—")),
+              },
+              { label: "status", value: colorStatus("provisioning") },
+              {
+                label: "template",
+                value: String(
+                  c["template_type"] ??
+                    c["template"] ??
+                    base["template_type"] ??
+                    chalk.dim("—"),
+                ),
+              },
+              {
+                label: "size",
+                value: String(c["size"] ?? base["size"] ?? chalk.dim("—")),
+              },
+            ]),
+          );
+          console.log();
+          console.log(
+            hintBlock("Next", [
+              `miosa computers show ${newId}  # poll until status=running`,
+              `miosa exec ${newId} ...`,
+            ]),
+          );
+          printElapsed(formatDuration(Date.now() - createStart));
         }),
     );
 

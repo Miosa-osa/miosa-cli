@@ -1,10 +1,12 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import React from "react";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
 import { UserError } from "../errors.js";
 import { handleError } from "./util.js";
 import { resolveDeploymentId } from "./project.js";
+import { errorEnvelope } from "../ui/render.js";
 import type { Deployment } from "../types.js";
 
 // ── Resource type detection ───────────────────────────────────────────────────
@@ -142,6 +144,7 @@ export function register(program: Command): void {
     .option("--machine <id>", "Explicitly fetch logs for a computer/machine")
     .option("--sandbox <id>", "Explicitly fetch logs for a sandbox")
     .option("--json", "Output raw JSON")
+    .option("-f, --follow", "Open live TUI log tail (requires a TTY)")
     .addHelpText(
       "after",
       `
@@ -152,15 +155,81 @@ Examples:
   miosa logs <sandbox-id>             Stream sandbox logs (auto-detected)
   miosa logs --machine <id>           Explicit computer logs
   miosa logs --sandbox <id>           Explicit sandbox logs
+  miosa logs <id> --follow            Live TUI tail (interactive)
+  miosa logs <id> -f                  Same as --follow
 `,
     )
     .action(
       async (
         resourceId: string | undefined,
-        opts: { machine?: string; sandbox?: string; json?: boolean },
+        opts: {
+          machine?: string;
+          sandbox?: string;
+          json?: boolean;
+          follow?: boolean;
+        },
       ) => {
         try {
-          const client = new MiosaClient(loadConfig());
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+
+          // ── --follow: mount ink TUI ───────────────────────────────────────
+          if (opts.follow) {
+            if (!process.stdout.isTTY) {
+              console.log();
+              console.log(
+                errorEnvelope({
+                  title: "TTY required for --follow",
+                  body: "The live log tail renders interactively and cannot be piped.",
+                  suggest: ["miosa logs <id>  # one-shot dump, scriptable"],
+                }),
+              );
+              process.exit(2);
+            }
+
+            // Resolve the resource kind the same way the one-shot path does.
+            let followId = resourceId ?? opts.machine ?? opts.sandbox;
+            let followKind: "computer" | "sandbox" | "deployment" | "database" =
+              "deployment";
+
+            if (opts.machine) {
+              followId = opts.machine;
+              followKind = "computer";
+            } else if (opts.sandbox) {
+              followId = opts.sandbox;
+              followKind = "sandbox";
+            } else if (resourceId) {
+              const hint = await detectResource(client, resourceId);
+              followId = hint.id;
+              followKind =
+                hint.kind === "computer" || hint.kind === "sandbox"
+                  ? hint.kind
+                  : "deployment";
+            } else {
+              followId = await resolveAppId(client, undefined);
+              followKind = "deployment";
+            }
+
+            // Dynamic import keeps cold-start cost off non-TUI invocations.
+            const { render } = await import("ink");
+            const { LogsTUI } = await import("../tui/logs.js");
+
+            const { waitUntilExit } = render(
+              React.createElement(LogsTUI, {
+                resourceId: followId as string,
+                resourceKind: followKind,
+                config,
+              }),
+            );
+            try {
+              await waitUntilExit();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(chalk.red(`logs TUI crashed: ${msg}`));
+              process.exit(1);
+            }
+            return;
+          }
 
           // ── Explicit computer flag ────────────────────────────────────────
           if (opts.machine) {

@@ -176,13 +176,15 @@ export function resourceCommands(config: {
       );
   }
 
-  group
-    .command(`show <${itemName}>`)
-    .description(`Show a ${config.command} item`)
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
-      runAction(() => getAndPrint(`${config.route}/${enc(id)}`, opts)),
-    );
+  if (!skip.has("show")) {
+    group
+      .command(`show <${itemName}>`)
+      .description(`Show a ${config.command} item`)
+      .option("--json", "Output as JSON")
+      .action((id: string, opts: JsonOptions) =>
+        runAction(() => getAndPrint(`${config.route}/${enc(id)}`, opts)),
+      );
+  }
 
   if (!skip.has("create")) {
     addDataOption(
@@ -194,13 +196,15 @@ export function resourceCommands(config: {
       );
   }
 
-  group
-    .command(`delete <${itemName}>`)
-    .description(`Delete a ${config.command} item`)
-    .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
-      runAction(() => deleteAndPrint(`${config.route}/${enc(id)}`, opts)),
-    );
+  if (!skip.has("delete")) {
+    group
+      .command(`delete <${itemName}>`)
+      .description(`Delete a ${config.command} item`)
+      .option("--json", "Output as JSON")
+      .action((id: string, opts: JsonOptions) =>
+        runAction(() => deleteAndPrint(`${config.route}/${enc(id)}`, opts)),
+      );
+  }
 
   if (config.actions && config.actions.length > 0) {
     addDataOption(
