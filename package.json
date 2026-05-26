@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:linux": "bun build src/bin/miosa.ts --compile --target=bun-linux-x64 --outfile dist/miosa-linux-x64",
     "dev": "tsx src/bin/miosa.ts",
     "test": "vitest run",
     "test:watch": "vitest",
