@@ -24,6 +24,15 @@ import { request } from "undici";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
+import {
+  banner,
+  errorEnvelope,
+  hintBlock,
+  icon,
+  kvPanel,
+  printElapsed,
+  formatDuration,
+} from "../ui/render.js";
 
 // ── JSON-RPC 2.0 wire types ──────────────────────────────────────────────────
 
@@ -99,6 +108,17 @@ const TOOL_LIST: McpTool[] = [
         external_project_id: {
           type: "string",
           description: "Your internal project ID for attribution (optional)",
+        },
+        gpu_model: {
+          type: "string",
+          description:
+            "GPU model to attach (e.g. 'nvidia-a10g', 'nvidia-t4'). Omit for CPU-only.",
+        },
+        gpu_count: {
+          type: "integer",
+          description:
+            "Number of GPUs to attach (default: 1 when gpu_model is set).",
+          default: 1,
         },
       },
       required: ["name"],
@@ -1376,370 +1396,991 @@ const TOOL_LIST: McpTool[] = [
   },
   // Deployments
   {
-    name: 'deployment_list',
-    description: 'List all deployments in the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "deployment_list",
+    description: "List all deployments in the tenant.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: 'deployment_get',
-    description: 'Get details of a specific deployment.',
+    name: "deployment_get",
+    description: "Get details of a specific deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
+        deployment_id: { type: "string", description: "Deployment ID" },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_create',
-    description: 'Create a new deployment.',
+    name: "deployment_create",
+    description: "Create a new deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        name: { type: 'string', description: 'Deployment name' },
-        type: { type: 'string', description: 'Deployment type (e.g. web, worker)' },
-        source: { type: 'object', description: 'Source configuration' },
-        env_vars: { type: 'object', description: 'Environment variables as key-value pairs' },
-        region: { type: 'string', description: 'Deployment region (optional)' },
+        name: { type: "string", description: "Deployment name" },
+        type: {
+          type: "string",
+          description: "Deployment type (e.g. web, worker)",
+        },
+        source: { type: "object", description: "Source configuration" },
+        env_vars: {
+          type: "object",
+          description: "Environment variables as key-value pairs",
+        },
+        region: { type: "string", description: "Deployment region (optional)" },
       },
-      required: ['name'],
+      required: ["name"],
     },
   },
   {
-    name: 'deployment_delete',
-    description: 'Delete a deployment permanently.',
+    name: "deployment_delete",
+    description: "Delete a deployment permanently.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID to delete' },
+        deployment_id: {
+          type: "string",
+          description: "Deployment ID to delete",
+        },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_publish',
-    description: 'Publish a new version of a deployment.',
+    name: "deployment_publish",
+    description: "Publish a new version of a deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
-        source: { type: 'object', description: 'Source configuration for the new version' },
+        deployment_id: { type: "string", description: "Deployment ID" },
+        source: {
+          type: "object",
+          description: "Source configuration for the new version",
+        },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_rollback',
-    description: 'Rollback a deployment to a previous version.',
+    name: "deployment_rollback",
+    description: "Rollback a deployment to a previous version.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
-        version_id: { type: 'string', description: 'Version ID to roll back to' },
+        deployment_id: { type: "string", description: "Deployment ID" },
+        version_id: {
+          type: "string",
+          description: "Version ID to roll back to",
+        },
       },
-      required: ['deployment_id', 'version_id'],
+      required: ["deployment_id", "version_id"],
     },
   },
   {
-    name: 'deployment_env_list',
-    description: 'List environment variables for a deployment.',
+    name: "deployment_env_list",
+    description: "List environment variables for a deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
+        deployment_id: { type: "string", description: "Deployment ID" },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_env_set',
-    description: 'Set (create or update) an environment variable for a deployment.',
+    name: "deployment_env_set",
+    description:
+      "Set (create or update) an environment variable for a deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
-        key: { type: 'string', description: 'Environment variable name' },
-        value: { type: 'string', description: 'Environment variable value' },
+        deployment_id: { type: "string", description: "Deployment ID" },
+        key: { type: "string", description: "Environment variable name" },
+        value: { type: "string", description: "Environment variable value" },
       },
-      required: ['deployment_id', 'key', 'value'],
+      required: ["deployment_id", "key", "value"],
     },
   },
   {
-    name: 'deployment_logs',
-    description: 'Get logs for a deployment.',
+    name: "deployment_logs",
+    description: "Get logs for a deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
-        lines: { type: 'integer', description: 'Number of log lines to return (default: 100)', default: 100 },
-        since: { type: 'string', description: 'ISO 8601 timestamp to fetch logs from (optional)' },
+        deployment_id: { type: "string", description: "Deployment ID" },
+        lines: {
+          type: "integer",
+          description: "Number of log lines to return (default: 100)",
+          default: 100,
+        },
+        since: {
+          type: "string",
+          description: "ISO 8601 timestamp to fetch logs from (optional)",
+        },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_version_list',
-    description: 'List all versions of a deployment.',
+    name: "deployment_version_list",
+    description: "List all versions of a deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
+        deployment_id: { type: "string", description: "Deployment ID" },
       },
-      required: ['deployment_id'],
+      required: ["deployment_id"],
     },
   },
   {
-    name: 'deployment_version_promote',
-    description: 'Promote a specific version to be the active deployment.',
+    name: "deployment_version_promote",
+    description: "Promote a specific version to be the active deployment.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        deployment_id: { type: 'string', description: 'Deployment ID' },
-        version_id: { type: 'string', description: 'Version ID to promote' },
+        deployment_id: { type: "string", description: "Deployment ID" },
+        version_id: { type: "string", description: "Version ID to promote" },
       },
-      required: ['deployment_id', 'version_id'],
+      required: ["deployment_id", "version_id"],
     },
   },
   // Storage
   {
-    name: 'storage_bucket_list',
-    description: 'List all storage buckets in the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "storage_bucket_list",
+    description: "List all storage buckets in the tenant.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: 'storage_bucket_create',
-    description: 'Create a new storage bucket.',
+    name: "storage_bucket_create",
+    description: "Create a new storage bucket.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        name: { type: 'string', description: 'Bucket name' },
-        region: { type: 'string', description: 'Bucket region (optional)' },
-        public: { type: 'boolean', description: 'Whether the bucket is publicly readable (default: false)', default: false },
+        name: { type: "string", description: "Bucket name" },
+        region: { type: "string", description: "Bucket region (optional)" },
+        public: {
+          type: "boolean",
+          description:
+            "Whether the bucket is publicly readable (default: false)",
+          default: false,
+        },
       },
-      required: ['name'],
+      required: ["name"],
     },
   },
   {
-    name: 'storage_bucket_delete',
-    description: 'Delete a storage bucket.',
+    name: "storage_bucket_delete",
+    description: "Delete a storage bucket.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name to delete' },
+        bucket_id: {
+          type: "string",
+          description: "Bucket ID or name to delete",
+        },
       },
-      required: ['bucket_id'],
+      required: ["bucket_id"],
     },
   },
   {
-    name: 'storage_object_list',
-    description: 'List objects in a storage bucket, optionally filtered by prefix.',
+    name: "storage_object_list",
+    description:
+      "List objects in a storage bucket, optionally filtered by prefix.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name' },
-        prefix: { type: 'string', description: 'Key prefix to filter by (optional)' },
+        bucket_id: { type: "string", description: "Bucket ID or name" },
+        prefix: {
+          type: "string",
+          description: "Key prefix to filter by (optional)",
+        },
       },
-      required: ['bucket_id'],
+      required: ["bucket_id"],
     },
   },
   {
-    name: 'storage_object_upload',
-    description: 'Upload an object to a storage bucket.',
+    name: "storage_object_upload",
+    description: "Upload an object to a storage bucket.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name' },
-        key: { type: 'string', description: 'Object key (path within bucket)' },
-        content: { type: 'string', description: 'Object content (text or base64-encoded binary)' },
-        content_type: { type: 'string', description: 'MIME type of the object (optional)' },
+        bucket_id: { type: "string", description: "Bucket ID or name" },
+        key: { type: "string", description: "Object key (path within bucket)" },
+        content: {
+          type: "string",
+          description: "Object content (text or base64-encoded binary)",
+        },
+        content_type: {
+          type: "string",
+          description: "MIME type of the object (optional)",
+        },
       },
-      required: ['bucket_id', 'key', 'content'],
+      required: ["bucket_id", "key", "content"],
     },
   },
   {
-    name: 'storage_object_download',
-    description: 'Download an object from a storage bucket.',
+    name: "storage_object_download",
+    description: "Download an object from a storage bucket.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name' },
-        key: { type: 'string', description: 'Object key to download' },
+        bucket_id: { type: "string", description: "Bucket ID or name" },
+        key: { type: "string", description: "Object key to download" },
       },
-      required: ['bucket_id', 'key'],
+      required: ["bucket_id", "key"],
     },
   },
   {
-    name: 'storage_object_delete',
-    description: 'Delete an object from a storage bucket.',
+    name: "storage_object_delete",
+    description: "Delete an object from a storage bucket.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name' },
-        key: { type: 'string', description: 'Object key to delete' },
+        bucket_id: { type: "string", description: "Bucket ID or name" },
+        key: { type: "string", description: "Object key to delete" },
       },
-      required: ['bucket_id', 'key'],
+      required: ["bucket_id", "key"],
     },
   },
   {
-    name: 'storage_presign',
-    description: 'Get a presigned URL for temporary access to a storage object.',
+    name: "storage_presign",
+    description:
+      "Get a presigned URL for temporary access to a storage object.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        bucket_id: { type: 'string', description: 'Bucket ID or name' },
-        key: { type: 'string', description: 'Object key' },
-        expires_in: { type: 'integer', description: 'URL expiry in seconds (default: 3600)', default: 3600 },
-        method: { type: 'string', enum: ['GET', 'PUT'], description: 'HTTP method (default: GET)', default: 'GET' },
+        bucket_id: { type: "string", description: "Bucket ID or name" },
+        key: { type: "string", description: "Object key" },
+        expires_in: {
+          type: "integer",
+          description: "URL expiry in seconds (default: 3600)",
+          default: 3600,
+        },
+        method: {
+          type: "string",
+          enum: ["GET", "PUT"],
+          description: "HTTP method (default: GET)",
+          default: "GET",
+        },
       },
-      required: ['bucket_id', 'key'],
+      required: ["bucket_id", "key"],
     },
   },
   // Databases
   {
-    name: 'database_list',
-    description: 'List all managed databases in the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "database_list",
+    description: "List all managed databases in the tenant.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: 'database_create',
-    description: 'Create a new managed database.',
+    name: "database_create",
+    description: "Create a new managed database.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        name: { type: 'string', description: 'Database name' },
-        engine: { type: 'string', enum: ['postgres', 'mysql', 'redis'], description: 'Database engine' },
-        version: { type: 'string', description: 'Engine version (optional)' },
-        size: { type: 'string', description: 'Database size/tier (optional)' },
-        region: { type: 'string', description: 'Region (optional)' },
+        name: { type: "string", description: "Database name" },
+        engine: {
+          type: "string",
+          enum: ["postgres", "mysql", "redis"],
+          description: "Database engine",
+        },
+        version: { type: "string", description: "Engine version (optional)" },
+        size: { type: "string", description: "Database size/tier (optional)" },
+        region: { type: "string", description: "Region (optional)" },
       },
-      required: ['name', 'engine'],
+      required: ["name", "engine"],
     },
   },
   {
-    name: 'database_get',
-    description: 'Get details of a specific database.',
+    name: "database_get",
+    description: "Get details of a specific database.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        database_id: { type: 'string', description: 'Database ID' },
+        database_id: { type: "string", description: "Database ID" },
       },
-      required: ['database_id'],
+      required: ["database_id"],
     },
   },
   {
-    name: 'database_delete',
-    description: 'Delete a managed database permanently.',
+    name: "database_delete",
+    description: "Delete a managed database permanently.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        database_id: { type: 'string', description: 'Database ID to delete' },
+        database_id: { type: "string", description: "Database ID to delete" },
       },
-      required: ['database_id'],
+      required: ["database_id"],
     },
   },
   {
-    name: 'database_credentials',
-    description: 'Get the connection string and credentials for a database.',
+    name: "database_credentials",
+    description: "Get the connection string and credentials for a database.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        database_id: { type: 'string', description: 'Database ID' },
+        database_id: { type: "string", description: "Database ID" },
       },
-      required: ['database_id'],
+      required: ["database_id"],
     },
   },
   {
-    name: 'database_logs',
-    description: 'Get logs for a managed database.',
+    name: "database_logs",
+    description: "Get logs for a managed database.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        database_id: { type: 'string', description: 'Database ID' },
-        lines: { type: 'integer', description: 'Number of log lines to return (default: 100)', default: 100 },
-        since: { type: 'string', description: 'ISO 8601 timestamp to fetch logs from (optional)' },
+        database_id: { type: "string", description: "Database ID" },
+        lines: {
+          type: "integer",
+          description: "Number of log lines to return (default: 100)",
+          default: 100,
+        },
+        since: {
+          type: "string",
+          description: "ISO 8601 timestamp to fetch logs from (optional)",
+        },
       },
-      required: ['database_id'],
+      required: ["database_id"],
     },
   },
   // Workspaces
   {
-    name: 'workspace_list',
-    description: 'List all workspaces in the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "workspace_list",
+    description: "List all workspaces in the tenant.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: 'workspace_create',
-    description: 'Create a new workspace.',
+    name: "workspace_create",
+    description: "Create a new workspace.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        name: { type: 'string', description: 'Workspace name' },
-        description: { type: 'string', description: 'Workspace description (optional)' },
+        name: { type: "string", description: "Workspace name" },
+        description: {
+          type: "string",
+          description: "Workspace description (optional)",
+        },
       },
-      required: ['name'],
+      required: ["name"],
     },
   },
   {
-    name: 'workspace_get',
-    description: 'Get details of a specific workspace.',
+    name: "workspace_get",
+    description: "Get details of a specific workspace.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace ID' },
+        workspace_id: { type: "string", description: "Workspace ID" },
       },
-      required: ['workspace_id'],
+      required: ["workspace_id"],
     },
   },
   {
-    name: 'workspace_update',
+    name: "workspace_update",
     description: "Update a workspace's name or description.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace ID' },
-        name: { type: 'string', description: 'New workspace name (optional)' },
-        description: { type: 'string', description: 'New description (optional)' },
+        workspace_id: { type: "string", description: "Workspace ID" },
+        name: { type: "string", description: "New workspace name (optional)" },
+        description: {
+          type: "string",
+          description: "New description (optional)",
+        },
       },
-      required: ['workspace_id'],
+      required: ["workspace_id"],
     },
   },
   {
-    name: 'workspace_stats',
-    description: 'Get resource statistics for a workspace (computers, sandboxes, databases, etc.).',
+    name: "workspace_stats",
+    description:
+      "Get resource statistics for a workspace (computers, sandboxes, databases, etc.).",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace ID' },
+        workspace_id: { type: "string", description: "Workspace ID" },
       },
-      required: ['workspace_id'],
+      required: ["workspace_id"],
     },
   },
   {
-    name: 'workspace_usage',
-    description: 'Get usage data (compute hours, storage, bandwidth) for a workspace.',
+    name: "workspace_usage",
+    description:
+      "Get usage data (compute hours, storage, bandwidth) for a workspace.",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace ID' },
-        period: { type: 'string', description: "Billing period (e.g. '2026-05'). Defaults to current month." },
+        workspace_id: { type: "string", description: "Workspace ID" },
+        period: {
+          type: "string",
+          description:
+            "Billing period (e.g. '2026-05'). Defaults to current month.",
+        },
       },
-      required: ['workspace_id'],
+      required: ["workspace_id"],
     },
   },
   // Billing
   {
-    name: 'billing_usage',
-    description: 'Get current billing period usage for the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "billing_usage",
+    description: "Get current billing period usage for the tenant.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
-    name: 'billing_plan',
-    description: 'Get the current billing plan details for the tenant.',
-    inputSchema: { type: 'object', properties: {} },
+    name: "billing_plan",
+    description: "Get the current billing plan details for the tenant.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  // Tunnels / Port forwarding
+  {
+    name: "computer_expose_port",
+    description:
+      "Expose a port on the computer and return the public URL. The URL follows the pattern https://{port}-{slug}.computer.miosa.ai.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+        port: { type: "integer", description: "Port number to expose" },
+        protocol: {
+          type: "string",
+          enum: ["http", "https", "tcp"],
+          description: "Protocol (default: http)",
+        },
+      },
+      required: ["computer_id", "port"],
+    },
+  },
+  {
+    name: "computer_list_ports",
+    description: "List all currently exposed ports on the computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+      },
+      required: ["computer_id"],
+    },
+  },
+  {
+    name: "computer_preview_url",
+    description:
+      "Return the public preview URL for a given port on the computer. Format: https://{port}-{slug}.computer.miosa.ai",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+        port: { type: "integer", description: "Port number" },
+      },
+      required: ["computer_id", "port"],
+    },
+  },
+  // Network policy
+  {
+    name: "computer_network_policy_get",
+    description:
+      "Get the current network policy (firewall rules) for the computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+      },
+      required: ["computer_id"],
+    },
+  },
+  {
+    name: "computer_network_policy_set",
+    description: "Set the network policy (firewall rules) for the computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+        rules: {
+          type: "array",
+          items: { type: "object" },
+          description:
+            "List of firewall rule objects (e.g. {direction, protocol, port, action})",
+        },
+        default_effect: {
+          type: "string",
+          enum: ["allow", "deny"],
+          description: "Default action when no rule matches (default: allow)",
+        },
+      },
+      required: ["computer_id", "rules"],
+    },
+  },
+  {
+    name: "computer_network_policy_reset",
+    description:
+      "Reset the network policy for the computer to the platform default (allow all).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID." },
+      },
+      required: ["computer_id"],
+    },
+  },
+  // Webhooks
+  {
+    name: "webhook_list",
+    description: "List all webhooks registered in the tenant.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "webhook_create",
+    description: "Create a new webhook endpoint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "HTTPS URL to deliver webhook events to",
+        },
+        events: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "List of event types to subscribe to (e.g. ['computer.started', 'computer.stopped'])",
+        },
+      },
+      required: ["url", "events"],
+    },
+  },
+  {
+    name: "webhook_delete",
+    description: "Delete a webhook.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        webhook_id: { type: "string", description: "Webhook ID to delete" },
+      },
+      required: ["webhook_id"],
+    },
+  },
+  {
+    name: "webhook_test",
+    description: "Send a test event delivery to a webhook endpoint.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        webhook_id: { type: "string", description: "Webhook ID to test" },
+      },
+      required: ["webhook_id"],
+    },
+  },
+  // Functions
+  {
+    name: "function_list",
+    description: "List all serverless functions in the tenant.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "function_create",
+    description: "Create a new serverless function.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Function name" },
+        runtime: {
+          type: "string",
+          description:
+            "Runtime identifier (e.g. 'node20', 'python311', 'go122')",
+        },
+        code: {
+          type: "string",
+          description: "Inline function source code (optional)",
+        },
+      },
+      required: ["name", "runtime"],
+    },
+  },
+  {
+    name: "function_invoke",
+    description: "Invoke a serverless function and return its response.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        function_id: { type: "string", description: "Function ID to invoke" },
+        payload: {
+          type: "object",
+          description: "JSON payload to pass to the function (optional)",
+        },
+      },
+      required: ["function_id"],
+    },
+  },
+  {
+    name: "function_delete",
+    description: "Delete a serverless function permanently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        function_id: { type: "string", description: "Function ID to delete" },
+      },
+      required: ["function_id"],
+    },
+  },
+  // API Keys
+  {
+    name: "api_key_list",
+    description: "List all API keys for the tenant.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "api_key_create",
+    description: "Create a new API key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Human-readable label for the key",
+        },
+        scopes: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Permission scopes for the key (optional; defaults to full access)",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "api_key_delete",
+    description: "Revoke and delete an API key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key_id: { type: "string", description: "API key ID to delete" },
+      },
+      required: ["key_id"],
+    },
+  },
+  // Regions
+  {
+    name: "region_list",
+    description: "List available regions and their GPU availability.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "computer_list_regions",
+    description:
+      "List available compute regions with GPU availability details.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  // Computer templates
+  {
+    name: "computer_template_list",
+    description: "List computer templates available in a workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: {
+          type: "string",
+          description: "Workspace ID to list templates for",
+        },
+      },
+      required: ["workspace_id"],
+    },
+  },
+  {
+    name: "computer_template_create",
+    description: "Create a new computer template in a workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: {
+          type: "string",
+          description: "Workspace ID to create the template in",
+        },
+        name: {
+          type: "string",
+          description: "Human-readable name for the template",
+        },
+        template_type: {
+          type: "string",
+          description: "Base template type (e.g. miosa-desktop)",
+        },
+        size: {
+          type: "string",
+          enum: ["small", "medium", "large", "xl"] as const,
+          description: "VM size for the template",
+        },
+        selected_apps: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of app identifiers to pre-install",
+        },
+        settings: {
+          type: "object",
+          description: "Additional template settings (key-value pairs)",
+        },
+      },
+      required: ["workspace_id", "name"],
+    },
+  },
+  // Settings
+  {
+    name: "settings_get",
+    description: "Get all tenant-level settings.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "settings_get_branding",
+    description: "Get tenant branding settings (logo, wallpaper, colours).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "settings_update_branding",
+    description: "Update tenant branding settings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        desktop_wallpaper_url: {
+          type: "string",
+          description: "HTTPS URL for the default desktop wallpaper (optional)",
+        },
+        logo_url: {
+          type: "string",
+          description: "HTTPS URL for the tenant logo (optional)",
+        },
+      },
+    },
+  },
+  {
+    name: "settings_compute_pricing",
+    description:
+      "Get compute pricing information for available sizes and GPU types.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  // Sandbox template extensions
+  {
+    name: "sandbox_template_get",
+    description: "Get details of a specific sandbox template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        template_id: {
+          type: "string",
+          description: "Sandbox template ID or slug",
+        },
+      },
+      required: ["template_id"],
+    },
+  },
+  {
+    name: "sandbox_template_builds",
+    description: "List builds for a sandbox template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        template_id: {
+          type: "string",
+          description: "Sandbox template ID or slug",
+        },
+      },
+      required: ["template_id"],
+    },
+  },
+  // Cron jobs
+  {
+    name: "cron_list",
+    description:
+      "List all cron jobs in the tenant, optionally filtered by computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: {
+          type: "string",
+          description: "Filter cron jobs by computer ID (optional)",
+        },
+      },
+    },
+  },
+  {
+    name: "cron_create",
+    description: "Create a new cron job that runs a command on a schedule.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: {
+          type: "string",
+          description: "ID of the computer to run the cron job on",
+        },
+        schedule: {
+          type: "string",
+          description: "Cron schedule expression (e.g. '0 * * * *' for hourly)",
+        },
+        command: {
+          type: "string",
+          description: "Shell command to execute",
+        },
+        name: {
+          type: "string",
+          description: "Human-readable name for the cron job (optional)",
+        },
+      },
+      required: ["computer_id", "schedule", "command"],
+    },
+  },
+  {
+    name: "cron_get",
+    description: "Get details of a specific cron job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: { type: "string", description: "Cron job ID" },
+      },
+      required: ["cron_id"],
+    },
+  },
+  {
+    name: "cron_delete",
+    description: "Delete a cron job permanently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: { type: "string", description: "Cron job ID to delete" },
+      },
+      required: ["cron_id"],
+    },
+  },
+  {
+    name: "cron_pause",
+    description: "Pause a cron job so it stops running on schedule.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: { type: "string", description: "Cron job ID to pause" },
+      },
+      required: ["cron_id"],
+    },
+  },
+  {
+    name: "cron_resume",
+    description: "Resume a paused cron job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: { type: "string", description: "Cron job ID to resume" },
+      },
+      required: ["cron_id"],
+    },
+  },
+  {
+    name: "cron_run_now",
+    description:
+      "Trigger an immediate one-off execution of a cron job outside its schedule.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: {
+          type: "string",
+          description: "Cron job ID to run immediately",
+        },
+      },
+      required: ["cron_id"],
+    },
+  },
+  {
+    name: "cron_executions",
+    description: "List recent execution history for a cron job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cron_id: { type: "string", description: "Cron job ID" },
+      },
+      required: ["cron_id"],
+    },
+  },
+  // Volumes
+  {
+    name: "volume_list",
+    description: "List all volumes in the tenant.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "volume_create",
+    description: "Create a new persistent volume.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Human-readable name for the volume",
+        },
+        size_gb: {
+          type: "integer",
+          description: "Size of the volume in GB (optional)",
+        },
+        region: {
+          type: "string",
+          description: "Region to create the volume in (optional)",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "volume_get",
+    description: "Get details of a specific volume.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        volume_id: { type: "string", description: "Volume ID" },
+      },
+      required: ["volume_id"],
+    },
+  },
+  {
+    name: "volume_delete",
+    description: "Delete a volume permanently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        volume_id: { type: "string", description: "Volume ID to delete" },
+      },
+      required: ["volume_id"],
+    },
+  },
+  {
+    name: "volume_attach",
+    description: "Attach a volume to a computer at a given mount path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: {
+          type: "string",
+          description: "Computer ID to attach the volume to",
+        },
+        volume_id: { type: "string", description: "Volume ID to attach" },
+        mount_path: {
+          type: "string",
+          description: "Path inside the VM to mount the volume (optional)",
+        },
+      },
+      required: ["computer_id", "volume_id"],
+    },
+  },
+  {
+    name: "volume_detach",
+    description: "Detach a volume attachment from a computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        computer_id: { type: "string", description: "Computer ID" },
+        attachment_id: {
+          type: "string",
+          description: "Attachment ID to remove",
+        },
+      },
+      required: ["computer_id", "attachment_id"],
+    },
   },
 ];
-
 
 // ── Wire helpers ─────────────────────────────────────────────────────────────
 
@@ -1788,6 +2429,10 @@ async function dispatchTool(
         body["external_workspace_id"] = args["external_workspace_id"];
       if (args["external_project_id"])
         body["external_project_id"] = args["external_project_id"];
+      if (args["gpu_model"]) {
+        body["gpu_model"] = args["gpu_model"];
+        body["gpu_count"] = args["gpu_count"] ?? 1;
+      }
       const computer = await client.apiPost<Record<string, unknown>>(
         "/api/v1/computers",
         body,
@@ -3058,7 +3703,14 @@ async function dispatchTool(
       const lines = ["Deployments:"];
       for (const d of items) {
         const r = d as Record<string, unknown>;
-        lines.push("  " + r["id"] + "  " + r["name"] + "  " + (r["status"] ?? r["state"] ?? ""));
+        lines.push(
+          "  " +
+            r["id"] +
+            "  " +
+            r["name"] +
+            "  " +
+            (r["status"] ?? r["state"] ?? ""),
+        );
       }
       return ok(lines.join("\n"));
     }
@@ -3066,7 +3718,9 @@ async function dispatchTool(
     if (name === "deployment_get") {
       const did = String(args["deployment_id"] ?? "");
       if (!did) return err("deployment_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/deployments/" + encodeURIComponent(did));
+      const result = await client.apiGet<unknown>(
+        "/api/v1/deployments/" + encodeURIComponent(did),
+      );
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
@@ -3078,7 +3732,13 @@ async function dispatchTool(
       if (args["region"]) body["region"] = args["region"];
       const result = await client.apiPost<unknown>("/api/v1/deployments", body);
       const data = unwrapData(result) as Record<string, unknown>;
-      return ok("Created deployment '" + String(data["name"] ?? args["name"]) + "' (id=" + data["id"] + ")");
+      return ok(
+        "Created deployment '" +
+          String(data["name"] ?? args["name"]) +
+          "' (id=" +
+          data["id"] +
+          ")",
+      );
     }
 
     if (name === "deployment_delete") {
@@ -3093,9 +3753,18 @@ async function dispatchTool(
       if (!did) return err("deployment_id is required");
       const body: Record<string, unknown> = {};
       if (args["source"]) body["source"] = args["source"];
-      const result = await client.apiPost<unknown>("/api/v1/deployments/" + encodeURIComponent(did) + "/publish", body);
+      const result = await client.apiPost<unknown>(
+        "/api/v1/deployments/" + encodeURIComponent(did) + "/publish",
+        body,
+      );
       const data = unwrapData(result) as Record<string, unknown>;
-      return ok("Published deployment " + did + " (version id=" + (data["id"] ?? "unknown") + ")");
+      return ok(
+        "Published deployment " +
+          did +
+          " (version id=" +
+          (data["id"] ?? "unknown") +
+          ")",
+      );
     }
 
     if (name === "deployment_rollback") {
@@ -3103,19 +3772,30 @@ async function dispatchTool(
       const vid = String(args["version_id"] ?? "");
       if (!did) return err("deployment_id is required");
       if (!vid) return err("version_id is required");
-      await client.apiPost("/api/v1/deployments/" + encodeURIComponent(did) + "/rollback", { version_id: vid });
+      await client.apiPost(
+        "/api/v1/deployments/" + encodeURIComponent(did) + "/rollback",
+        { version_id: vid },
+      );
       return ok("Deployment " + did + " rolled back to version " + vid + ".");
     }
 
     if (name === "deployment_env_list") {
       const did = String(args["deployment_id"] ?? "");
       if (!did) return err("deployment_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/deployments/" + encodeURIComponent(did) + "/env");
+      const result = await client.apiGet<unknown>(
+        "/api/v1/deployments/" + encodeURIComponent(did) + "/env",
+      );
       const envVars = unwrapData(result);
-      if (!envVars || (Array.isArray(envVars) && (envVars as unknown[]).length === 0)) return ok("No environment variables set.");
+      if (
+        !envVars ||
+        (Array.isArray(envVars) && (envVars as unknown[]).length === 0)
+      )
+        return ok("No environment variables set.");
       const lines = ["Environment variables:"];
       if (typeof envVars === "object" && !Array.isArray(envVars)) {
-        for (const [k, v] of Object.entries(envVars as Record<string, unknown>)) {
+        for (const [k, v] of Object.entries(
+          envVars as Record<string, unknown>,
+        )) {
           lines.push("  " + k + "=" + String(v));
         }
       } else if (Array.isArray(envVars)) {
@@ -3129,31 +3809,55 @@ async function dispatchTool(
     if (name === "deployment_env_set") {
       const did = String(args["deployment_id"] ?? "");
       if (!did) return err("deployment_id is required");
-      await client.apiPost("/api/v1/deployments/" + encodeURIComponent(did) + "/env", { key: args["key"], value: args["value"] });
+      await client.apiPost(
+        "/api/v1/deployments/" + encodeURIComponent(did) + "/env",
+        { key: args["key"], value: args["value"] },
+      );
       return ok("Set " + String(args["key"]) + " on deployment " + did + ".");
     }
 
     if (name === "deployment_logs") {
       const did = String(args["deployment_id"] ?? "");
       if (!did) return err("deployment_id is required");
-      const params = new URLSearchParams({ lines: String(args["lines"] ?? 100) });
+      const params = new URLSearchParams({
+        lines: String(args["lines"] ?? 100),
+      });
       if (args["since"]) params.set("since", String(args["since"]));
-      const result = await client.apiGet<unknown>("/api/v1/deployments/" + encodeURIComponent(did) + "/logs?" + params.toString());
+      const result = await client.apiGet<unknown>(
+        "/api/v1/deployments/" +
+          encodeURIComponent(did) +
+          "/logs?" +
+          params.toString(),
+      );
       const logs = unwrapData(result);
-      if (Array.isArray(logs)) return ok((logs as unknown[]).length ? (logs as unknown[]).map(String).join("\n") : "No logs.");
+      if (Array.isArray(logs))
+        return ok(
+          (logs as unknown[]).length
+            ? (logs as unknown[]).map(String).join("\n")
+            : "No logs.",
+        );
       return ok(String(logs));
     }
 
     if (name === "deployment_version_list") {
       const did = String(args["deployment_id"] ?? "");
       if (!did) return err("deployment_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/deployments/" + encodeURIComponent(did) + "/versions");
+      const result = await client.apiGet<unknown>(
+        "/api/v1/deployments/" + encodeURIComponent(did) + "/versions",
+      );
       const versions = listOf(result);
       if (versions.length === 0) return ok("No versions found.");
       const lines = ["Versions:"];
       for (const v of versions) {
         const r = v as Record<string, unknown>;
-        lines.push("  " + r["id"] + "  " + (r["created_at"] ?? "") + "  " + (r["status"] ?? ""));
+        lines.push(
+          "  " +
+            r["id"] +
+            "  " +
+            (r["created_at"] ?? "") +
+            "  " +
+            (r["status"] ?? ""),
+        );
       }
       return ok(lines.join("\n"));
     }
@@ -3163,7 +3867,14 @@ async function dispatchTool(
       const vid = String(args["version_id"] ?? "");
       if (!did) return err("deployment_id is required");
       if (!vid) return err("version_id is required");
-      await client.apiPost("/api/v1/deployments/" + encodeURIComponent(did) + "/versions/" + encodeURIComponent(vid) + "/promote", {});
+      await client.apiPost(
+        "/api/v1/deployments/" +
+          encodeURIComponent(did) +
+          "/versions/" +
+          encodeURIComponent(vid) +
+          "/promote",
+        {},
+      );
       return ok("Version " + vid + " promoted on deployment " + did + ".");
     }
 
@@ -3175,7 +3886,9 @@ async function dispatchTool(
       const lines = ["Buckets:"];
       for (const b of items) {
         const r = b as Record<string, unknown>;
-        lines.push("  " + r["id"] + "  " + r["name"] + "  " + (r["region"] ?? ""));
+        lines.push(
+          "  " + r["id"] + "  " + r["name"] + "  " + (r["region"] ?? ""),
+        );
       }
       return ok(lines.join("\n"));
     }
@@ -3184,15 +3897,26 @@ async function dispatchTool(
       const body: Record<string, unknown> = { name: args["name"] };
       if (args["region"]) body["region"] = args["region"];
       if (args["public"] !== undefined) body["public"] = args["public"];
-      const result = await client.apiPost<unknown>("/api/v1/storage/buckets", body);
+      const result = await client.apiPost<unknown>(
+        "/api/v1/storage/buckets",
+        body,
+      );
       const data = unwrapData(result) as Record<string, unknown>;
-      return ok("Created bucket '" + String(data["name"] ?? args["name"]) + "' (id=" + data["id"] + ")");
+      return ok(
+        "Created bucket '" +
+          String(data["name"] ?? args["name"]) +
+          "' (id=" +
+          data["id"] +
+          ")",
+      );
     }
 
     if (name === "storage_bucket_delete") {
       const bid = String(args["bucket_id"] ?? "");
       if (!bid) return err("bucket_id is required");
-      await client.apiDelete("/api/v1/storage/buckets/" + encodeURIComponent(bid));
+      await client.apiDelete(
+        "/api/v1/storage/buckets/" + encodeURIComponent(bid),
+      );
       return ok("Bucket " + bid + " deleted.");
     }
 
@@ -3202,13 +3926,22 @@ async function dispatchTool(
       const params = new URLSearchParams();
       if (args["prefix"]) params.set("prefix", String(args["prefix"]));
       const qs = params.toString() ? "?" + params.toString() : "";
-      const result = await client.apiGet<unknown>("/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects" + qs);
+      const result = await client.apiGet<unknown>(
+        "/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects" + qs,
+      );
       const items = listOf(result);
       if (items.length === 0) return ok("No objects found.");
       const lines = ["Objects:"];
       for (const o of items) {
         const r = o as Record<string, unknown>;
-        lines.push("  " + r["key"] + "  " + (r["size"] ?? "") + "  " + (r["last_modified"] ?? ""));
+        lines.push(
+          "  " +
+            r["key"] +
+            "  " +
+            (r["size"] ?? "") +
+            "  " +
+            (r["last_modified"] ?? ""),
+        );
       }
       return ok(lines.join("\n"));
     }
@@ -3216,43 +3949,59 @@ async function dispatchTool(
     if (name === "storage_object_upload") {
       const bid = String(args["bucket_id"] ?? "");
       if (!bid) return err("bucket_id is required");
-      await client.apiPost("/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects", {
-        key: args["key"],
-        content: args["content"],
-        content_type: args["content_type"] ?? "application/octet-stream",
-      });
+      await client.apiPost(
+        "/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects",
+        {
+          key: args["key"],
+          content: args["content"],
+          content_type: args["content_type"] ?? "application/octet-stream",
+        },
+      );
       return ok("Uploaded " + String(args["key"]) + " to bucket " + bid + ".");
     }
 
     if (name === "storage_object_download") {
       const bid = String(args["bucket_id"] ?? "");
       if (!bid) return err("bucket_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects/" + encodeURIComponent(String(args["key"] ?? "")));
+      const result = await client.apiGet<unknown>(
+        "/api/v1/storage/buckets/" +
+          encodeURIComponent(bid) +
+          "/objects/" +
+          encodeURIComponent(String(args["key"] ?? "")),
+      );
       const data = unwrapData(result) as Record<string, unknown>;
       const content =
         typeof data["content"] === "string"
           ? Buffer.from(data["content"], "base64").toString("utf8")
           : typeof data["text"] === "string"
-          ? data["text"]
-          : JSON.stringify(data);
+            ? data["text"]
+            : JSON.stringify(data);
       return ok(content);
     }
 
     if (name === "storage_object_delete") {
       const bid = String(args["bucket_id"] ?? "");
       if (!bid) return err("bucket_id is required");
-      await client.apiDelete("/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/objects/" + encodeURIComponent(String(args["key"] ?? "")));
+      await client.apiDelete(
+        "/api/v1/storage/buckets/" +
+          encodeURIComponent(bid) +
+          "/objects/" +
+          encodeURIComponent(String(args["key"] ?? "")),
+      );
       return ok("Deleted " + String(args["key"]) + " from bucket " + bid + ".");
     }
 
     if (name === "storage_presign") {
       const bid = String(args["bucket_id"] ?? "");
       if (!bid) return err("bucket_id is required");
-      const result = await client.apiPost<unknown>("/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/presign", {
-        key: args["key"],
-        expires_in: args["expires_in"] ?? 3600,
-        method: args["method"] ?? "GET",
-      });
+      const result = await client.apiPost<unknown>(
+        "/api/v1/storage/buckets/" + encodeURIComponent(bid) + "/presign",
+        {
+          key: args["key"],
+          expires_in: args["expires_in"] ?? 3600,
+          method: args["method"] ?? "GET",
+        },
+      );
       const data = unwrapData(result) as Record<string, unknown>;
       return ok("Presigned URL: " + (data["url"] ?? JSON.stringify(data)));
     }
@@ -3265,25 +4014,45 @@ async function dispatchTool(
       const lines = ["Databases:"];
       for (const d of items) {
         const r = d as Record<string, unknown>;
-        lines.push("  " + r["id"] + "  " + r["name"] + "  " + (r["engine"] ?? "") + "  " + (r["status"] ?? ""));
+        lines.push(
+          "  " +
+            r["id"] +
+            "  " +
+            r["name"] +
+            "  " +
+            (r["engine"] ?? "") +
+            "  " +
+            (r["status"] ?? ""),
+        );
       }
       return ok(lines.join("\n"));
     }
 
     if (name === "database_create") {
-      const body: Record<string, unknown> = { name: args["name"], engine: args["engine"] };
+      const body: Record<string, unknown> = {
+        name: args["name"],
+        engine: args["engine"],
+      };
       for (const key of ["version", "size", "region"]) {
         if (args[key]) body[key] = args[key];
       }
       const result = await client.apiPost<unknown>("/api/v1/databases", body);
       const data = unwrapData(result) as Record<string, unknown>;
-      return ok("Created database '" + String(data["name"] ?? args["name"]) + "' (id=" + data["id"] + ")");
+      return ok(
+        "Created database '" +
+          String(data["name"] ?? args["name"]) +
+          "' (id=" +
+          data["id"] +
+          ")",
+      );
     }
 
     if (name === "database_get") {
       const dbid = String(args["database_id"] ?? "");
       if (!dbid) return err("database_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/databases/" + encodeURIComponent(dbid));
+      const result = await client.apiGet<unknown>(
+        "/api/v1/databases/" + encodeURIComponent(dbid),
+      );
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
@@ -3297,10 +4066,19 @@ async function dispatchTool(
     if (name === "database_credentials") {
       const dbid = String(args["database_id"] ?? "");
       if (!dbid) return err("database_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/databases/" + encodeURIComponent(dbid) + "/credentials");
+      const result = await client.apiGet<unknown>(
+        "/api/v1/databases/" + encodeURIComponent(dbid) + "/credentials",
+      );
       const data = unwrapData(result) as Record<string, unknown>;
       const lines = ["Database credentials:"];
-      for (const field of ["connection_string", "host", "port", "database", "username", "password"]) {
+      for (const field of [
+        "connection_string",
+        "host",
+        "port",
+        "database",
+        "username",
+        "password",
+      ]) {
         if (data[field]) lines.push("  " + field + ": " + data[field]);
       }
       return ok(lines.join("\n"));
@@ -3309,11 +4087,23 @@ async function dispatchTool(
     if (name === "database_logs") {
       const dbid = String(args["database_id"] ?? "");
       if (!dbid) return err("database_id is required");
-      const params = new URLSearchParams({ lines: String(args["lines"] ?? 100) });
+      const params = new URLSearchParams({
+        lines: String(args["lines"] ?? 100),
+      });
       if (args["since"]) params.set("since", String(args["since"]));
-      const result = await client.apiGet<unknown>("/api/v1/databases/" + encodeURIComponent(dbid) + "/logs?" + params.toString());
+      const result = await client.apiGet<unknown>(
+        "/api/v1/databases/" +
+          encodeURIComponent(dbid) +
+          "/logs?" +
+          params.toString(),
+      );
       const logs = unwrapData(result);
-      if (Array.isArray(logs)) return ok((logs as unknown[]).length ? (logs as unknown[]).map(String).join("\n") : "No logs.");
+      if (Array.isArray(logs))
+        return ok(
+          (logs as unknown[]).length
+            ? (logs as unknown[]).map(String).join("\n")
+            : "No logs.",
+        );
       return ok(String(logs));
     }
 
@@ -3335,13 +4125,21 @@ async function dispatchTool(
       if (args["description"]) body["description"] = args["description"];
       const result = await client.apiPost<unknown>("/api/v1/workspaces", body);
       const data = unwrapData(result) as Record<string, unknown>;
-      return ok("Created workspace '" + String(data["name"] ?? args["name"]) + "' (id=" + data["id"] + ")");
+      return ok(
+        "Created workspace '" +
+          String(data["name"] ?? args["name"]) +
+          "' (id=" +
+          data["id"] +
+          ")",
+      );
     }
 
     if (name === "workspace_get") {
       const wid = String(args["workspace_id"] ?? "");
       if (!wid) return err("workspace_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/workspaces/" + encodeURIComponent(wid));
+      const result = await client.apiGet<unknown>(
+        "/api/v1/workspaces/" + encodeURIComponent(wid),
+      );
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
@@ -3351,14 +4149,19 @@ async function dispatchTool(
       const body: Record<string, unknown> = {};
       if (args["name"]) body["name"] = args["name"];
       if (args["description"]) body["description"] = args["description"];
-      await client.apiPost("/api/v1/workspaces/" + encodeURIComponent(wid), body);
+      await client.apiPost(
+        "/api/v1/workspaces/" + encodeURIComponent(wid),
+        body,
+      );
       return ok("Workspace " + wid + " updated.");
     }
 
     if (name === "workspace_stats") {
       const wid = String(args["workspace_id"] ?? "");
       if (!wid) return err("workspace_id is required");
-      const result = await client.apiGet<unknown>("/api/v1/workspaces/" + encodeURIComponent(wid) + "/stats");
+      const result = await client.apiGet<unknown>(
+        "/api/v1/workspaces/" + encodeURIComponent(wid) + "/stats",
+      );
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
@@ -3368,7 +4171,9 @@ async function dispatchTool(
       const params = new URLSearchParams();
       if (args["period"]) params.set("period", String(args["period"]));
       const qs = params.toString() ? "?" + params.toString() : "";
-      const result = await client.apiGet<unknown>("/api/v1/workspaces/" + encodeURIComponent(wid) + "/usage" + qs);
+      const result = await client.apiGet<unknown>(
+        "/api/v1/workspaces/" + encodeURIComponent(wid) + "/usage" + qs,
+      );
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
@@ -3381,6 +4186,503 @@ async function dispatchTool(
     if (name === "billing_plan") {
       const result = await client.apiGet<unknown>("/api/v1/billing/plan");
       return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    // ── Tunnels / Port forwarding ─────────────────────────────────────────
+    if (name === "computer_expose_port") {
+      if (!cid) return err("computer_id is required");
+      const body: Record<string, unknown> = { port: args["port"] };
+      if (args["protocol"]) body["protocol"] = args["protocol"];
+      const result = await client.apiPost<unknown>(
+        `/api/v1/computers/${encodeURIComponent(cid)}/ports`,
+        body,
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      const url = String(data["url"] ?? data["public_url"] ?? "");
+      return ok(`Port ${args["port"]} exposed. URL: ${url}`);
+    }
+
+    if (name === "computer_list_ports") {
+      if (!cid) return err("computer_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/computers/${encodeURIComponent(cid)}/ports`,
+      );
+      const items = listOf(result);
+      if (items.length === 0) return ok("No ports currently exposed.");
+      const lines = ["Exposed ports:"];
+      for (const p of items) {
+        const r = p as Record<string, unknown>;
+        lines.push(
+          `  port=${r["port"]}  protocol=${r["protocol"] ?? "http"}  url=${r["url"] ?? r["public_url"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "computer_preview_url") {
+      if (!cid) return err("computer_id is required");
+      const port = args["port"];
+      const result = await client.apiGet<unknown>(
+        `/api/v1/computers/${encodeURIComponent(cid)}/ports/${encodeURIComponent(String(port))}/url`,
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      const url =
+        String(data["url"] ?? data["public_url"] ?? "") ||
+        `https://${port}-${cid}.computer.miosa.ai`;
+      return ok(`Preview URL: ${url}`);
+    }
+
+    // ── Network policy ────────────────────────────────────────────────────
+    if (name === "computer_network_policy_get") {
+      if (!cid) return err("computer_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/computers/${encodeURIComponent(cid)}/network-policy`,
+      );
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "computer_network_policy_set") {
+      if (!cid) return err("computer_id is required");
+      const body: Record<string, unknown> = { rules: args["rules"] };
+      if (args["default_effect"])
+        body["default_effect"] = args["default_effect"];
+      await client.apiPut(
+        `/api/v1/computers/${encodeURIComponent(cid)}/network-policy`,
+        body,
+      );
+      return ok(`Network policy updated for computer ${cid}.`);
+    }
+
+    if (name === "computer_network_policy_reset") {
+      if (!cid) return err("computer_id is required");
+      await client.apiDelete(
+        `/api/v1/computers/${encodeURIComponent(cid)}/network-policy`,
+      );
+      return ok(`Network policy reset to default for computer ${cid}.`);
+    }
+
+    // ── Webhooks ──────────────────────────────────────────────────────────
+    if (name === "webhook_list") {
+      const result = await client.apiGet<unknown>("/api/v1/webhooks");
+      const items = listOf(result);
+      if (items.length === 0) return ok("No webhooks found.");
+      const lines = ["Webhooks:"];
+      for (const w of items) {
+        const r = w as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["url"]}  events=${JSON.stringify(r["events"] ?? [])}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "webhook_create") {
+      const result = await client.apiPost<unknown>("/api/v1/webhooks", {
+        url: args["url"],
+        events: args["events"],
+      });
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(`Created webhook (id=${data["id"] ?? "?"}).`);
+    }
+
+    if (name === "webhook_delete") {
+      const whId = String(args["webhook_id"] ?? "");
+      if (!whId) return err("webhook_id is required");
+      await client.apiDelete(`/api/v1/webhooks/${encodeURIComponent(whId)}`);
+      return ok(`Webhook ${whId} deleted.`);
+    }
+
+    if (name === "webhook_test") {
+      const whId = String(args["webhook_id"] ?? "");
+      if (!whId) return err("webhook_id is required");
+      const result = await client.apiPost<unknown>(
+        `/api/v1/webhooks/${encodeURIComponent(whId)}/test`,
+        {},
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      const status = String(data["status"] ?? "delivered");
+      return ok(`Test event sent to webhook ${whId} (status=${status}).`);
+    }
+
+    // ── Functions ─────────────────────────────────────────────────────────
+    if (name === "function_list") {
+      const result = await client.apiGet<unknown>("/api/v1/functions");
+      const items = listOf(result);
+      if (items.length === 0) return ok("No functions found.");
+      const lines = ["Functions:"];
+      for (const f of items) {
+        const r = f as Record<string, unknown>;
+        lines.push(`  ${r["id"]}  ${r["name"]}  runtime=${r["runtime"] ?? ""}`);
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "function_create") {
+      const body: Record<string, unknown> = {
+        name: args["name"],
+        runtime: args["runtime"],
+      };
+      if (args["code"]) body["code"] = args["code"];
+      const result = await client.apiPost<unknown>("/api/v1/functions", body);
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `Created function '${data["name"] ?? args["name"]}' (id=${data["id"]}).`,
+      );
+    }
+
+    if (name === "function_invoke") {
+      const fnId = String(args["function_id"] ?? "");
+      if (!fnId) return err("function_id is required");
+      const body: Record<string, unknown> = {};
+      if (args["payload"] !== undefined) body["payload"] = args["payload"];
+      const result = await client.apiPost<unknown>(
+        `/api/v1/functions/${encodeURIComponent(fnId)}/invoke`,
+        body,
+      );
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "function_delete") {
+      const fnId = String(args["function_id"] ?? "");
+      if (!fnId) return err("function_id is required");
+      await client.apiDelete(`/api/v1/functions/${encodeURIComponent(fnId)}`);
+      return ok(`Function ${fnId} deleted.`);
+    }
+
+    // ── API Keys ──────────────────────────────────────────────────────────
+    if (name === "api_key_list") {
+      const result = await client.apiGet<unknown>("/api/v1/api-keys");
+      const items = listOf(result);
+      if (items.length === 0) return ok("No API keys found.");
+      const lines = ["API keys:"];
+      for (const k of items) {
+        const r = k as Record<string, unknown>;
+        const scopes = Array.isArray(r["scopes"])
+          ? (r["scopes"] as string[]).join(", ")
+          : String(r["scopes"] ?? "");
+        lines.push(`  ${r["id"]}  ${r["name"]}  scopes=[${scopes}]`);
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "api_key_create") {
+      const body: Record<string, unknown> = { name: args["name"] };
+      if (args["scopes"]) body["scopes"] = args["scopes"];
+      const result = await client.apiPost<unknown>("/api/v1/api-keys", body);
+      const data = unwrapData(result) as Record<string, unknown>;
+      const keyId = String(data["id"] ?? "?");
+      const keyValue = String(
+        data["key"] ?? data["token"] ?? data["secret"] ?? "",
+      );
+      let msg = `Created API key '${args["name"]}' (id=${keyId}).`;
+      if (keyValue) msg += `\nKey value (shown once): ${keyValue}`;
+      return ok(msg);
+    }
+
+    if (name === "api_key_delete") {
+      const keyId = String(args["key_id"] ?? "");
+      if (!keyId) return err("key_id is required");
+      await client.apiDelete(`/api/v1/api-keys/${encodeURIComponent(keyId)}`);
+      return ok(`API key ${keyId} deleted.`);
+    }
+
+    // ── Cron jobs ─────────────────────────────────────────────────────────
+    if (name === "cron_list") {
+      const params = new URLSearchParams();
+      if (args["computer_id"])
+        params.set("computer_id", String(args["computer_id"]));
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const result = await client.apiGet<unknown>(`/api/v1/cron-jobs${qs}`);
+      const items = listOf(result);
+      if (items.length === 0) return ok("No cron jobs found.");
+      const lines = ["Cron jobs:"];
+      for (const j of items) {
+        const r = j as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["name"] ?? ""}  ${r["schedule"] ?? ""}  status=${r["status"] ?? r["state"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "cron_create") {
+      const body: Record<string, unknown> = {
+        computer_id: args["computer_id"],
+        schedule: args["schedule"],
+        command: args["command"],
+      };
+      if (args["name"]) body["name"] = args["name"];
+      const result = await client.apiPost<unknown>("/api/v1/cron-jobs", body);
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `Created cron job '${data["name"] ?? args["name"] ?? ""}' (id=${data["id"]}).`,
+      );
+    }
+
+    if (name === "cron_get") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/cron-jobs/${encodeURIComponent(cronId)}`,
+      );
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "cron_delete") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      await client.apiDelete(`/api/v1/cron-jobs/${encodeURIComponent(cronId)}`);
+      return ok(`Cron job ${cronId} deleted.`);
+    }
+
+    if (name === "cron_pause") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      await client.apiPost(
+        `/api/v1/cron-jobs/${encodeURIComponent(cronId)}/pause`,
+        {},
+      );
+      return ok(`Cron job ${cronId} paused.`);
+    }
+
+    if (name === "cron_resume") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      await client.apiPost(
+        `/api/v1/cron-jobs/${encodeURIComponent(cronId)}/resume`,
+        {},
+      );
+      return ok(`Cron job ${cronId} resumed.`);
+    }
+
+    if (name === "cron_run_now") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      const result = await client.apiPost<unknown>(
+        `/api/v1/cron-jobs/${encodeURIComponent(cronId)}/run-now`,
+        {},
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      const execId = data["id"] ?? data["execution_id"];
+      return ok(
+        `Cron job ${cronId} triggered.${execId ? ` Execution id=${execId}.` : ""}`,
+      );
+    }
+
+    if (name === "cron_executions") {
+      const cronId = String(args["cron_id"] ?? "");
+      if (!cronId) return err("cron_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/cron-jobs/${encodeURIComponent(cronId)}/executions`,
+      );
+      const items = listOf(result);
+      if (items.length === 0) return ok("No executions found.");
+      const lines = ["Executions:"];
+      for (const e of items) {
+        const r = e as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["started_at"] ?? r["created_at"] ?? ""}  status=${r["status"] ?? ""}  exit_code=${r["exit_code"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    // ── Regions ────────────────────────────────────────────────────────────
+    if (name === "region_list" || name === "computer_list_regions") {
+      const result = await client.apiGet<unknown>("/api/v1/regions");
+      const regions = (() => {
+        const d = unwrapData(result);
+        if (Array.isArray(d)) return d as unknown[];
+        const r = d as Record<string, unknown>;
+        for (const key of ["regions", "data", "items"]) {
+          if (Array.isArray(r[key])) return r[key] as unknown[];
+        }
+        return Object.values(r);
+      })();
+      if (regions.length === 0) return ok("No regions found.");
+      const lines = ["Regions:"];
+      for (const region of regions) {
+        const r = region as Record<string, unknown>;
+        const gpuTypes = r["gpu_types"] ?? r["gpus"] ?? [];
+        const gpuInfo =
+          Array.isArray(gpuTypes) && gpuTypes.length > 0
+            ? `  gpus=${JSON.stringify(gpuTypes)}`
+            : "";
+        lines.push(
+          `  ${r["id"] ?? r["slug"] ?? ""}  ${r["name"] ?? ""}  status=${r["status"] ?? "available"}${gpuInfo}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    // ── Computer templates ─────────────────────────────────────────────────
+    if (name === "computer_template_list") {
+      const wid = String(args["workspace_id"] ?? "");
+      if (!wid) return err("workspace_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(wid)}/computer-templates`,
+      );
+      const items = listOf(result);
+      if (items.length === 0) return ok("No computer templates found.");
+      const lines = ["Computer templates:"];
+      for (const t of items) {
+        const r = t as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["name"]}  type=${r["template_type"] ?? ""}  size=${r["size"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "computer_template_create") {
+      const wid = String(args["workspace_id"] ?? "");
+      if (!wid) return err("workspace_id is required");
+      const body: Record<string, unknown> = { name: args["name"] };
+      if (args["template_type"]) body["template_type"] = args["template_type"];
+      if (args["size"]) body["size"] = args["size"];
+      if (args["selected_apps"]) body["selected_apps"] = args["selected_apps"];
+      if (args["settings"]) body["settings"] = args["settings"];
+      const result = await client.apiPost<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(wid)}/computer-templates`,
+        body,
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `Created computer template '${data["name"] ?? args["name"]}' (id=${data["id"]}).`,
+      );
+    }
+
+    // ── Settings ───────────────────────────────────────────────────────────
+    if (name === "settings_get") {
+      const result = await client.apiGet<unknown>("/api/v1/settings");
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "settings_get_branding") {
+      const result = await client.apiGet<unknown>("/api/v1/settings/branding");
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "settings_update_branding") {
+      const body: Record<string, unknown> = {};
+      if (args["desktop_wallpaper_url"])
+        body["desktop_wallpaper_url"] = args["desktop_wallpaper_url"];
+      if (args["logo_url"]) body["logo_url"] = args["logo_url"];
+      const result = await client.apiPut<unknown>(
+        "/api/v1/settings/branding",
+        body,
+      );
+      return ok(
+        `Branding updated: ${JSON.stringify(unwrapData(result), null, 2)}`,
+      );
+    }
+
+    if (name === "settings_compute_pricing") {
+      const result = await client.apiGet<unknown>(
+        "/api/v1/settings/compute-pricing",
+      );
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    // ── Sandbox template extensions ────────────────────────────────────────
+    if (name === "sandbox_template_get") {
+      const tid = String(args["template_id"] ?? "");
+      if (!tid) return err("template_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/sandbox-templates/${encodeURIComponent(tid)}`,
+      );
+      return ok(JSON.stringify(unwrapData(result), null, 2));
+    }
+
+    if (name === "sandbox_template_builds") {
+      const tid = String(args["template_id"] ?? "");
+      if (!tid) return err("template_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/sandbox-templates/${encodeURIComponent(tid)}/builds`,
+      );
+      const items = listOf(result);
+      if (items.length === 0) return ok("No builds found.");
+      const lines = ["Builds:"];
+      for (const b of items) {
+        const r = b as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["status"] ?? ""}  created_at=${r["created_at"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    // ── Volumes ───────────────────────────────────────────────────────────
+    if (name === "volume_list") {
+      const result = await client.apiGet<unknown>("/api/v1/volumes");
+      const items = listOf(result);
+      if (items.length === 0) return ok("No volumes found.");
+      const lines = ["Volumes:"];
+      for (const v of items) {
+        const r = v as Record<string, unknown>;
+        lines.push(
+          `  ${r["id"]}  ${r["name"]}  size_gb=${r["size_gb"] ?? ""}  region=${r["region"] ?? ""}  status=${r["status"] ?? ""}`,
+        );
+      }
+      return ok(lines.join("\n"));
+    }
+
+    if (name === "volume_create") {
+      const body: Record<string, unknown> = { name: args["name"] };
+      if (args["size_gb"] !== undefined) body["size_gb"] = args["size_gb"];
+      if (args["region"]) body["region"] = args["region"];
+      const result = await client.apiPost<unknown>("/api/v1/volumes", body);
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `Created volume '${data["name"] ?? args["name"]}' (id=${data["id"]}).`,
+      );
+    }
+
+    if (name === "volume_get") {
+      const vid = String(args["volume_id"] ?? "");
+      if (!vid) return err("volume_id is required");
+      const result = await client.apiGet<unknown>(
+        `/api/v1/volumes/${encodeURIComponent(vid)}`,
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `id=${data["id"]}  name=${JSON.stringify(data["name"])}  size_gb=${data["size_gb"] ?? ""}  region=${data["region"] ?? ""}  status=${data["status"] ?? ""}`,
+      );
+    }
+
+    if (name === "volume_delete") {
+      const vid = String(args["volume_id"] ?? "");
+      if (!vid) return err("volume_id is required");
+      await client.apiDelete(`/api/v1/volumes/${encodeURIComponent(vid)}`);
+      return ok(`Volume ${vid} deleted.`);
+    }
+
+    if (name === "volume_attach") {
+      const attachCid = String(args["computer_id"] ?? "");
+      if (!attachCid) return err("computer_id is required");
+      const attachBody: Record<string, unknown> = {
+        volume_id: args["volume_id"],
+      };
+      if (args["mount_path"]) attachBody["mount_path"] = args["mount_path"];
+      const result = await client.apiPost<unknown>(
+        `/api/v1/computers/${encodeURIComponent(attachCid)}/volumes`,
+        attachBody,
+      );
+      const data = unwrapData(result) as Record<string, unknown>;
+      return ok(
+        `Volume ${args["volume_id"]} attached to computer ${attachCid} (attachment id=${data["id"] ?? "?"}).`,
+      );
+    }
+
+    if (name === "volume_detach") {
+      const detachCid = String(args["computer_id"] ?? "");
+      if (!detachCid) return err("computer_id is required");
+      const attId = String(args["attachment_id"] ?? "");
+      if (!attId) return err("attachment_id is required");
+      await client.apiDelete(
+        `/api/v1/computers/${encodeURIComponent(detachCid)}/volumes/${encodeURIComponent(attId)}`,
+      );
+      return ok(`Attachment ${attId} removed from computer ${detachCid}.`);
     }
 
     return err(`Unknown tool: ${name}`);
@@ -3459,7 +4761,47 @@ async function runServer(): Promise<void> {
           result: {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "miosa-mcp", version: "0.1.1" },
+            serverInfo: { name: "miosa-mcp", version: "0.1.2" },
+            instructions: [
+              "MIOSA cloud infrastructure — Firecracker microVMs you control via API.",
+              "",
+              "## Concepts",
+              "- **Computer**: full Linux desktop VM (GUI, browser, apps). Use for visual tasks, browser automation, desktop control.",
+              "- **Sandbox**: headless Linux VM. Use for code execution, builds, CI, scripts. No desktop.",
+              "- **Deployment**: git-based app hosting with builds, releases, domains.",
+              "- **Storage**: S3-compatible object storage (buckets + objects).",
+              "- **Database**: managed Postgres, MySQL, or Redis.",
+              "- **Volume**: persistent block storage, attachable to computers.",
+              "",
+              "## Core workflows",
+              "",
+              "### Run code (sandbox)",
+              "create_sandbox → exec (or exec_python) → read output → destroy_sandbox",
+              "",
+              "### Desktop automation (computer)",
+              "computer_create → computer_screenshot → computer_click/type/key → computer_screenshot → repeat",
+              "",
+              "### Deploy an app",
+              "deployment_create(repo_url) → deployment_publish → custom_domain_add (optional)",
+              "",
+              "### Store files",
+              "storage_bucket_create → storage_object_upload → storage_object_presign (for public URL)",
+              "",
+              "### Provision a database",
+              'database_create(engine="postgres") → database_credentials → use connection string',
+              "",
+              "## Conventions",
+              "- IDs: pass computer_id or sandbox_id to every tool that operates on a resource.",
+              "- Sizes: xs (1cpu/2GB), small (2cpu/4GB), medium (4cpu/8GB), large (8cpu/16GB), xl (16cpu/32GB).",
+              '- Status: "running" = ready. Poll with get/list until status is "running".',
+              "- File paths inside VMs: /workspace is the default working directory. /home/user also writable.",
+              "- exec timeout: default 30s. For installs (npm/pip), set timeout_ms=120000.",
+              "- Screenshots: PNG bytes, 1024x768 default. Coordinates are absolute pixels from top-left (0,0).",
+              "",
+              "## Tool naming",
+              "{resource}_{action} — e.g. computer_create, sandbox_exec, storage_bucket_list.",
+              "Desktop tools: computer_screenshot, computer_click, computer_type, computer_key, computer_scroll.",
+            ].join("\n"),
           },
         });
         break;
@@ -3572,17 +4914,25 @@ async function runDeviceFlow(
   const flow = start.body;
 
   console.log();
-  console.log(chalk.bold("Authorize MIOSA MCP for this device"));
+  console.log(`  ${banner({ subtitle: "MCP install" })}`);
   console.log();
-  console.log(`  Open: ${chalk.cyan(flow.verification_uri_complete)}`);
-  console.log(`  Code: ${chalk.bold(flow.user_code)}`);
+  console.log(
+    kvPanel([
+      { label: "Open", value: chalk.cyan(flow.verification_uri_complete) },
+      { label: "Code", value: chalk.bold(flow.user_code) },
+    ]),
+  );
   console.log();
 
   try {
     openUrl(flow.verification_uri_complete);
-    console.log(chalk.dim("  Browser opened. Waiting for approval..."));
+    console.log(
+      `  ${icon.pending}  ${chalk.dim("Browser opened. Waiting for approval…")}`,
+    );
   } catch {
-    console.log(chalk.dim("  Could not open a browser automatically."));
+    console.log(
+      `  ${icon.warn}  ${chalk.dim("Could not open a browser automatically.")}`,
+    );
   }
 
   const deadline = Date.now() + flow.expires_in * 1000;
@@ -3719,13 +5069,9 @@ async function runInstall(opts: {
   scope: "local" | "user" | "project";
   remoteUrl: string;
 }): Promise<void> {
+  const startTime = Date.now();
   const config = loadConfig();
   const clientName = `MIOSA MCP (${opts.client === "manual" ? "manual" : opts.client})`;
-
-  console.log(
-    chalk.bold("MIOSA MCP installer"),
-    chalk.dim(`— wiring ${opts.client} → ${opts.remoteUrl}`),
-  );
 
   const apiKey = await runDeviceFlow(config.endpoint, clientName);
 
@@ -3734,27 +5080,48 @@ async function runInstall(opts: {
     if (wired.ok) {
       console.log();
       console.log(
-        chalk.green("✓"),
-        `MCP server '${MCP_SERVER_NAME}' added to Claude Code (${opts.scope} scope).`,
+        kvPanel([
+          {
+            icon: icon.ok,
+            label: "Server",
+            value: chalk.bold(MCP_SERVER_NAME),
+          },
+          {
+            icon: icon.ok,
+            label: "Client",
+            value:
+              chalk.bold("Claude Code") + chalk.dim(` · ${opts.scope} scope`),
+          },
+          {
+            icon: icon.ok,
+            label: "Endpoint",
+            value: chalk.dim(opts.remoteUrl),
+          },
+        ]),
       );
       console.log();
-      console.log(chalk.dim("Verify:"));
-      console.log(`  ${chalk.cyan("claude mcp list")}`);
-      console.log();
-      console.log(chalk.dim("Try in a fresh Claude Code session:"));
       console.log(
-        chalk.dim(
-          `  "Create a MIOSA sandbox, run \`python -c 'print(2+2)'\`, then destroy it."`,
-        ),
+        hintBlock("Next", [
+          "claude mcp list",
+          "Try in Claude Code: 'Create a MIOSA sandbox and run python -c print(2+2)'",
+        ]),
       );
+      printElapsed(formatDuration(Date.now() - startTime));
       return;
     }
     console.log();
     console.log(
-      chalk.yellow("!"),
-      `Could not auto-wire Claude Code: ${wired.reason}`,
+      errorEnvelope({
+        title: "Could not auto-wire Claude Code",
+        body: wired.reason,
+        suggest: [
+          "miosa mcp install  # try again",
+          "miosa mcp install --client manual  # get the snippet instead",
+        ],
+        withDebugHint: true,
+      }),
     );
-    console.log(chalk.yellow("  Falling back to manual snippet:"));
+    console.log();
     printManualSnippet("claude", apiKey, opts.remoteUrl);
     return;
   }
@@ -3816,7 +5183,18 @@ export function register(program: Command): void {
         await runInstall({ client, scope, remoteUrl: opts.url });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(chalk.red(`Error: ${msg}`));
+        console.log();
+        console.log(
+          errorEnvelope({
+            title: "MCP install failed",
+            body: msg,
+            suggest: [
+              "miosa mcp install  # try again",
+              "miosa login  # re-authenticate first",
+            ],
+            withDebugHint: true,
+          }),
+        );
         process.exit(3);
       }
     });
