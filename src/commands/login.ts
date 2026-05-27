@@ -206,6 +206,18 @@ export function register(program: Command): void {
       "Read API key from stdin (for piping: echo 'msk_...' | miosa login --stdin)",
     )
     .action(async (opts: { apiKey?: string; stdin?: boolean }) => {
+      // Inside a sandbox the CLI is pre-authenticated via env; block interactive login.
+      const sandboxId = process.env["MIOSA_SANDBOX_ID"];
+      if (sandboxId) {
+        console.error(
+          chalk.yellow(
+            `Already authenticated as sandbox ${sandboxId} (via env). ` +
+              "Interactive login is disabled inside a sandbox.",
+          ),
+        );
+        process.exit(1);
+      }
+
       let key: string | undefined = opts.apiKey;
 
       // --stdin: read key from pipe regardless of TTY state

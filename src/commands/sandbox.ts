@@ -1,8 +1,14 @@
 import type { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import * as http from "node:http";
+import * as https from "node:https";
+import type { Socket } from "node:net";
 import chalk from "chalk";
+import WebSocket from "ws";
 import {
   addDataOption,
   client,
@@ -28,6 +34,7 @@ import {
   printBanner,
   printElapsed,
 } from "../ui/render.js";
+import { formatBytes } from "../ui/progress.js";
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -306,6 +313,121 @@ export function register(program: Command): void {
       }),
     );
 
+  // stop — snapshot + pause (mirrors `box stop`)
+  sandbox
+    .command("stop <sandbox-id>")
+    .description("Snapshot the Sandbox and pause billing")
+    .option("--no-snapshot", "Skip the snapshot step (pause only)")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { snapshot?: boolean } & JsonOptions) =>
+      runAction(async () => {
+        if (opts.snapshot !== false) {
+          await postAndPrint(`/sandboxes/${enc(id)}/snapshots`, opts, {});
+        }
+        await postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {});
+      }),
+    );
+
+  // resume — direct shortcut (mirrors `box resume`)
+  sandbox
+    .command("resume <sandbox-id>")
+    .description("Resume a paused Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/resume`, opts, {})),
+    );
+
+  // fork — clone from snapshot in one call (mirrors `box fork`)
+  sandbox
+    .command("fork <sandbox-id>")
+    .description("Clone (fork) a Sandbox from its current state")
+    .option("--name <name>", "Optional name for the forked Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { name?: string } & JsonOptions) =>
+      runAction(async () => {
+        const body: Record<string, unknown> = {};
+        if (opts.name) body["name"] = opts.name;
+        await postAndPrint(`/sandboxes/${enc(id)}/fork`, opts, body);
+      }),
+    );
+
+  // desktop — open the Sandbox's web desktop URL (mirrors `box desktop`).
+  // Sandboxes are headless by default; only templates that expose a desktop
+  // port (e.g. `miosa-sandbox` w/ Kasm) emit a `preview_url`. We surface that.
+  sandbox
+    .command("desktop <sandbox-id>")
+    .description(
+      "Print the Sandbox's web desktop URL (when the template exposes one)",
+    )
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        if (opts.json) {
+          await getAndPrint(`/sandboxes/${enc(id)}`, opts);
+          return;
+        }
+        const sb = (await getAndPrint(`/sandboxes/${enc(id)}`, {
+          json: true,
+        })) as unknown as { preview_url?: string };
+        if (sb?.preview_url) {
+          console.log(sb.preview_url);
+        } else {
+          console.error(
+            chalk.yellow(
+              "No desktop URL on this Sandbox. Use `miosa desktop open <computer-id>` for Computers, or expose a port via `miosa sandbox` for headless previews.",
+            ),
+          );
+          process.exitCode = 1;
+        }
+      }),
+    );
+
+  // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
+  // Implemented as `exec claude/codex/claude-code <instruction>`.
+  sandbox
+    .command("prompt <sandbox-id> <instruction...>")
+    .description(
+      "Run an in-Sandbox AI agent (claude/codex) with the given instruction",
+    )
+    .option(
+      "--provider <name>",
+      "AI provider: claude (default), codex, claude-code",
+    )
+    .option("--model <name>", "Provider-specific model name")
+    .option("--cwd <path>", "Working directory inside the Sandbox")
+    .option("--timeout <sec>", "Exec timeout in seconds", parseInt)
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        words: string[],
+        opts: {
+          provider?: string;
+          model?: string;
+          cwd?: string;
+          timeout?: number;
+        } & JsonOptions,
+      ) =>
+        runAction(async () => {
+          const provider = opts.provider ?? "claude";
+          const allowedProviders = ["claude", "codex", "claude-code"];
+          if (!allowedProviders.includes(provider)) {
+            throw new Error(
+              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+            );
+          }
+          const instruction = words.join(" ");
+          const modelFlag = opts.model
+            ? ` --model ${`'${opts.model.replace(/'/g, "'\\''")}'`}`
+            : "";
+          const command = `${provider}${modelFlag} ${`'${instruction.replace(/'/g, "'\\''")}'`}`;
+          const body: Record<string, unknown> = { command };
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.timeout != null) body["timeout"] = opts.timeout;
+          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+        }),
+    );
+
   // exec — positional command arg; --data body overrides when supplied
   addDataOption(
     sandbox
@@ -548,31 +670,76 @@ export function register(program: Command): void {
       }),
     );
 
-  // ssh — open browser terminal via platform PTY endpoint
+  // ssh — WS tunnel → local listener → spawn system ssh client
   sandbox
     .command("ssh <sandbox-id>")
-    .description("Open an interactive terminal session for a Sandbox")
-    .option("--print-url", "Print the URL instead of opening a browser")
+    .description(
+      "Open an SSH session into a running Sandbox via the platform WS tunnel",
+    )
+    .option("-p, --port <n>", "Local port for the tunnel listener", parseInt)
+    .option("-l, --user <name>", "SSH user (default: root)")
+    .option(
+      "--no-spawn",
+      "Print connection info instead of spawning the ssh client",
+    )
     .option("--json", "Output as JSON")
     .action(
-      async (id: string, opts: { printUrl?: boolean; json?: boolean }) => {
-        const config = loadConfig();
-        const baseUrl = (config.endpoint || "https://api.miosa.ai").replace(
-          /\/$/,
-          "",
-        );
-        const url = `${baseUrl}/api/v1/sandboxes/${enc(id)}/terminal`;
+      async (
+        id: string,
+        opts: {
+          port?: number;
+          user?: string;
+          spawn?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          await runSandboxSsh(id, opts);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 
-        if (opts.json) {
-          console.log(JSON.stringify({ url }, null, 2));
-          return;
+  // port-forward — TCP listener → WS tunnel → sandbox port
+  sandbox
+    .command("port-forward <sandbox-id>")
+    .alias("forward")
+    .description(
+      [
+        "Forward a local TCP port to a port inside a Sandbox via the platform WS tunnel.",
+        "",
+        "Examples:",
+        "  miosa sandbox port-forward sbx_123 --remote 5173",
+        "  miosa sandbox port-forward sbx_123 --remote 5432 --local 15432",
+      ].join("\n"),
+    )
+    .requiredOption(
+      "--remote <port>",
+      "Port inside the sandbox to reach",
+      parseInt,
+    )
+    .option(
+      "--local <port>",
+      "Local port to listen on (default = remote port)",
+      parseInt,
+    )
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        opts: { remote: number; local?: number; json?: boolean },
+      ) => {
+        try {
+          await runSandboxPortForward(
+            id,
+            opts.remote,
+            opts.local ?? opts.remote,
+            !!opts.json,
+          );
+        } catch (err) {
+          handleError(err);
         }
-        if (opts.printUrl) {
-          console.log(url);
-          return;
-        }
-        openUrl(url);
-        console.log(`Opening terminal for sandbox ${id}...`);
       },
     );
 
@@ -627,6 +794,331 @@ export function register(program: Command): void {
     .action((id: string, opts: JsonOptions) =>
       runAction(() => getAndPrint(`/sandbox-templates/${enc(id)}`, opts)),
     );
+}
+
+// ── sandbox ssh implementation ─────────────────────────────────────────────
+//
+// Protocol:
+//   1. Ensure the user has an SSH keypair at ~/.ssh/miosa_sandbox_ed25519.
+//      If not, generate one and register it via POST /sandboxes/:id/ssh-keys.
+//   2. Open a local TCP server on a random (or chosen) port.
+//   3. Each accepted connection is bridged bidirectionally to the platform WS
+//      endpoint wss://<api>/api/v1/sandboxes/:id/ssh-tunnel.
+//   4. Spawn `ssh` pointing at localhost:<port> with the key and user.
+//   5. On ssh exit, close the TCP server and exit.
+
+const SANDBOX_KEY_PATH = path.join(
+  os.homedir(),
+  ".ssh",
+  "miosa_sandbox_ed25519",
+);
+
+async function ensureSandboxSshKey(
+  id: string,
+  apiKey: string,
+  endpoint: string,
+): Promise<void> {
+  if (fs.existsSync(SANDBOX_KEY_PATH)) return;
+
+  console.log(chalk.dim("Generating SSH keypair for MIOSA sandbox access..."));
+  fs.mkdirSync(path.join(os.homedir(), ".ssh"), { recursive: true });
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      "ssh-keygen",
+      [
+        "-t",
+        "ed25519",
+        "-f",
+        SANDBOX_KEY_PATH,
+        "-N",
+        "",
+        "-C",
+        "miosa-sandbox",
+      ],
+      { stdio: "pipe" },
+    );
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ssh-keygen exited with code ${code}`));
+    });
+    child.on("error", reject);
+  });
+
+  // Register the public key with the sandbox
+  const pubKey = fs.readFileSync(`${SANDBOX_KEY_PATH}.pub`, "utf8").trim();
+  const base = endpoint.replace(/\/$/, "");
+  const res = await fetch(
+    `${base}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-keys`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ public_key: pubKey }),
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to register SSH key: ${res.status} ${body}`);
+  }
+
+  console.log(chalk.green("SSH key registered."));
+}
+
+function bridgeSandboxWs(socket: Socket, wsUrl: string, apiKey: string): void {
+  let closed = false;
+
+  function cleanup(): void {
+    if (closed) return;
+    closed = true;
+    if (!socket.destroyed) socket.destroy();
+  }
+
+  const ws = new WebSocket(wsUrl, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+
+  ws.on("open", () => {
+    socket.on("data", (chunk: Buffer) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+    });
+    socket.on("close", () => {
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    });
+    socket.on("error", () => ws.close());
+  });
+
+  ws.on("message", (data: Buffer | string) => {
+    if (!socket.destroyed) {
+      socket.write(typeof data === "string" ? Buffer.from(data) : data);
+    }
+  });
+
+  ws.on("close", cleanup);
+  ws.on("error", (err) => {
+    process.stderr.write(`\r\nWS error for sandbox tunnel: ${err.message}\r\n`);
+    cleanup();
+  });
+}
+
+async function runSandboxSsh(
+  id: string,
+  opts: { port?: number; user?: string; spawn?: boolean; json?: boolean },
+): Promise<void> {
+  const config = loadConfig();
+  const apiKey = config.api_key;
+  if (!apiKey) throw new Error("Not authenticated. Run: miosa login");
+
+  const endpoint = config.endpoint ?? "https://api.miosa.ai";
+  const base = endpoint.replace(/\/$/, "");
+  const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
+  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-tunnel`;
+
+  await ensureSandboxSshKey(id, String(apiKey), endpoint);
+
+  // Pick a free local port
+  const localPort = opts.port ?? (await pickFreePort());
+  const user = opts.user ?? "root";
+
+  if (opts.json) {
+    console.log(
+      JSON.stringify({
+        sandbox_id: id,
+        local_port: localPort,
+        user,
+        ws_url: wsUrl,
+        key_path: SANDBOX_KEY_PATH,
+      }),
+    );
+    return;
+  }
+
+  const server = createServer((socket) => {
+    bridgeSandboxWs(socket, wsUrl, String(apiKey));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(localPort, "127.0.0.1", resolve);
+  });
+
+  console.log(
+    chalk.green("Tunnel ready.") +
+      chalk.dim(` 127.0.0.1:${localPort} → sandbox ${id}`),
+  );
+
+  if (opts.spawn === false) {
+    console.log(
+      chalk.dim(
+        `Connect manually: ssh -i ${SANDBOX_KEY_PATH} -p ${localPort} ${user}@127.0.0.1`,
+      ),
+    );
+    console.log(chalk.dim("Press Ctrl+C to close."));
+    await waitForSignal();
+    server.close();
+    return;
+  }
+
+  const sshArgs = [
+    "-i",
+    SANDBOX_KEY_PATH,
+    "-p",
+    String(localPort),
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
+    `${user}@127.0.0.1`,
+  ];
+
+  const sshProc = spawn("ssh", sshArgs, { stdio: "inherit" });
+
+  const exitCode = await new Promise<number>((resolve) => {
+    sshProc.on("close", (code) => resolve(code ?? 1));
+    sshProc.on("error", (err) => {
+      console.error(chalk.red(`Failed to spawn ssh: ${err.message}`));
+      resolve(1);
+    });
+  });
+
+  server.close();
+  process.exit(exitCode);
+}
+
+// ── sandbox port-forward implementation ───────────────────────────────────
+
+async function runSandboxPortForward(
+  id: string,
+  remotePort: number,
+  localPort: number,
+  json: boolean,
+): Promise<void> {
+  const config = loadConfig();
+  const apiKey = config.api_key;
+  if (!apiKey) throw new Error("Not authenticated. Run: miosa login");
+
+  const endpoint = config.endpoint ?? "https://api.miosa.ai";
+  const base = endpoint.replace(/\/$/, "");
+  const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
+  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/port-tunnel/${remotePort}`;
+
+  interface ConnStats {
+    active: number;
+    total: number;
+    bytesIn: number;
+    bytesOut: number;
+  }
+  const stats: ConnStats = { active: 0, total: 0, bytesIn: 0, bytesOut: 0 };
+
+  const server = createServer((socket) => {
+    stats.active++;
+    stats.total++;
+
+    const ws = new WebSocket(wsUrl, {
+      headers: { Authorization: `Bearer ${String(apiKey)}` },
+    });
+
+    ws.on("open", () => {
+      socket.on("data", (chunk: Buffer) => {
+        stats.bytesIn += chunk.length;
+        if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+      });
+      socket.on("close", () => ws.readyState === WebSocket.OPEN && ws.close());
+      socket.on("error", () => ws.close());
+    });
+
+    ws.on("message", (data: Buffer | string) => {
+      const buf = typeof data === "string" ? Buffer.from(data) : data;
+      stats.bytesOut += buf.length;
+      if (!socket.destroyed) socket.write(buf);
+    });
+
+    ws.on("close", () => {
+      stats.active = Math.max(0, stats.active - 1);
+      if (!socket.destroyed) socket.destroy();
+    });
+
+    ws.on("error", (err) => {
+      process.stderr.write(`\r\nWS error: ${err.message}\r\n`);
+      if (!socket.destroyed) socket.destroy();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `Port ${localPort} is already in use. Choose another with --local.`,
+          ),
+        );
+      } else {
+        reject(err);
+      }
+    });
+    server.listen(localPort, "127.0.0.1", resolve);
+  });
+
+  if (json) {
+    console.log(
+      JSON.stringify({
+        sandbox_id: id,
+        remote_port: remotePort,
+        local_port: localPort,
+      }),
+    );
+  } else {
+    console.log(
+      `${chalk.green("Forwarding")} ${chalk.cyan(`localhost:${localPort}`)} ${chalk.dim("→")} sandbox ${chalk.cyan(id)}:${chalk.bold(String(remotePort))}`,
+    );
+    console.log(chalk.dim("Press Ctrl+C to close.\n"));
+  }
+
+  const ticker = setInterval(() => {
+    if (json || stats.active === 0) return;
+    process.stderr.write(
+      chalk.dim(
+        `\r[${new Date().toLocaleTimeString()}] connections: ${stats.active}  ↑ ${formatBytes(stats.bytesIn)}  ↓ ${formatBytes(stats.bytesOut)}  `,
+      ),
+    );
+  }, 5_000);
+
+  await waitForSignal();
+  clearInterval(ticker);
+  process.stderr.write("\n");
+  server.close();
+}
+
+// ── shared helpers ─────────────────────────────────────────────────────────
+
+function pickFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      srv.close(() => {
+        if (addr && typeof addr === "object") resolve(addr.port);
+        else reject(new Error("Could not pick a free port"));
+      });
+    });
+  });
+}
+
+function waitForSignal(): Promise<void> {
+  return new Promise((resolve) => {
+    function done(): void {
+      process.off("SIGINT", done);
+      process.off("SIGTERM", done);
+      resolve();
+    }
+    process.on("SIGINT", done);
+    process.on("SIGTERM", done);
+  });
 }
 
 function openUrl(url: string): void {
