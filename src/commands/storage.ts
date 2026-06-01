@@ -349,7 +349,6 @@ export function register(program: Command): void {
 
           const objectKey = opts.key ?? basename(localPath);
           const config = loadConfig();
-          const client = new MiosaClient(config);
           const json = isJsonMode(opts);
           const spinner = json
             ? null
@@ -359,10 +358,43 @@ export function register(program: Command): void {
           const { readFile } = await import("node:fs/promises");
           const data = await readFile(localPath);
 
-          const result = await client.apiPut(
-            `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/objects/${encodeURIComponent(objectKey)}`,
-            data,
-          );
+          const { request } = await import("undici");
+          const endpoint = config.endpoint;
+          const apiKey = config.api_key ?? "";
+          const url = `${endpoint.replace(/\/$/, "")}/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/objects/${encodeURIComponent(objectKey)}`;
+
+          const res = await request(url, {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/octet-stream",
+              "Content-Length": String(data.byteLength),
+              "User-Agent": "@miosa/cli/0.1.0",
+            },
+            body: data,
+          });
+
+          if (res.statusCode >= 400) {
+            spinner?.fail("Upload failed");
+            const body = await res.body.text();
+
+            if (json) {
+              printJson({
+                ok: false,
+                error: {
+                  code: "HTTP_ERROR",
+                  message: `HTTP ${res.statusCode}: ${body}`,
+                  retryable: res.statusCode >= 500,
+                },
+              });
+            } else {
+              console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
+            }
+
+            process.exit(1);
+          }
+
+          const result = (await res.body.json()) as unknown;
           spinner?.succeed(`Uploaded → ${objectKey}`);
 
           if (json) {
