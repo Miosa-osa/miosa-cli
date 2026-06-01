@@ -526,6 +526,11 @@ export function register(program: Command): void {
       .option("--workdir <path>", "Alias for --cwd")
       .option("--env <pair>", "Environment variable KEY=VALUE. Repeatable.", collectOption, [])
       .option("--background", "Start the command in the background and return immediately")
+      .option("--detached", "Create a durable backend command and return command_id immediately")
+      .option("--user <user>", "Run command as user")
+      .option("--sudo", "Run command through sudo")
+      .option("--tty", "Request TTY metadata for command resource")
+      .option("--interactive", "Request interactive metadata for command resource")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
     .option("--json", "Output as JSON")
@@ -538,6 +543,11 @@ export function register(program: Command): void {
           workdir?: string;
           env?: string[];
           background?: boolean;
+          detached?: boolean;
+          user?: string;
+          sudo?: boolean;
+          tty?: boolean;
+          interactive?: boolean;
           timeout?: number;
         },
       ) =>
@@ -557,6 +567,23 @@ export function register(program: Command): void {
             body["dir"] = cwd;
           }
           const env = parseEnvPairs(opts.env ?? []);
+          if (opts.detached) {
+            const result = await createSandboxCommand(id, cmd, {
+              cwd,
+              env,
+              user: opts.user,
+              sudo: !!opts.sudo,
+              tty: !!opts.tty,
+              interactive: !!opts.interactive,
+              timeout: opts.timeout,
+            });
+            if (opts.json) {
+              console.log(JSON.stringify(result, null, 2));
+              return;
+            }
+            console.log(String(result["id"] ?? result["command_id"] ?? ""));
+            return;
+          }
           if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
@@ -572,6 +599,11 @@ export function register(program: Command): void {
       .option("--workdir <path>", "Alias for --cwd")
       .option("--env <pair>", "Environment variable KEY=VALUE. Repeatable.", collectOption, [])
       .option("--background", "Start the command in the background and return immediately")
+      .option("--detached", "Create a durable backend command and return command_id immediately")
+      .option("--user <user>", "Run command as user")
+      .option("--sudo", "Run command through sudo")
+      .option("--tty", "Request TTY metadata for command resource")
+      .option("--interactive", "Request interactive metadata for command resource")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
     .option("--json", "Output as JSON")
@@ -584,6 +616,11 @@ export function register(program: Command): void {
           workdir?: string;
           env?: string[];
           background?: boolean;
+          detached?: boolean;
+          user?: string;
+          sudo?: boolean;
+          tty?: boolean;
+          interactive?: boolean;
           timeout?: number;
         },
       ) =>
@@ -603,6 +640,23 @@ export function register(program: Command): void {
             body["dir"] = cwd;
           }
           const env = parseEnvPairs(opts.env ?? []);
+          if (opts.detached) {
+            const result = await createSandboxCommand(id, cmd, {
+              cwd,
+              env,
+              user: opts.user,
+              sudo: !!opts.sudo,
+              tty: !!opts.tty,
+              interactive: !!opts.interactive,
+              timeout: opts.timeout,
+            });
+            if (opts.json) {
+              console.log(JSON.stringify(result, null, 2));
+              return;
+            }
+            console.log(String(result["id"] ?? result["command_id"] ?? ""));
+            return;
+          }
           if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
@@ -771,6 +825,47 @@ export function register(program: Command): void {
           }
           console.log(result.url);
         }),
+    );
+
+  const command = sandbox
+    .command("command")
+    .description("Inspect and control detached sandbox commands");
+
+  command
+    .command("get <sandbox-id> <command-id>")
+    .option("--json", "Output as JSON")
+    .action((id: string, commandId: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(`/sandboxes/${enc(id)}/commands/${enc(commandId)}`, opts),
+      ),
+    );
+
+  command
+    .command("logs <sandbox-id> <command-id>")
+    .option("--follow", "Follow logs (currently returns tailed logs when backend SSE is unavailable)")
+    .option("--tail <n>", "Number of lines", parseInt, 200)
+    .option("--json", "Output as JSON")
+    .action(
+      (id: string, commandId: string, opts: { follow?: boolean; tail: number; json?: boolean }) =>
+        runAction(() =>
+          getAndPrint(
+            `/sandboxes/${enc(id)}/commands/${enc(commandId)}/logs?tail=${opts.tail}`,
+            opts,
+          ),
+        ),
+    );
+
+  command
+    .command("kill <sandbox-id> <command-id>")
+    .option("--json", "Output as JSON")
+    .action((id: string, commandId: string, opts: JsonOptions) =>
+      runAction(() =>
+        postAndPrint(
+          `/sandboxes/${enc(id)}/commands/${enc(commandId)}/kill`,
+          opts,
+          {},
+        ),
+      ),
     );
 
   sandbox
@@ -2000,6 +2095,39 @@ async function startSandboxService(
     port: opts.port ?? null,
     log_path: logPath,
     preview_url: previewUrl,
+  };
+}
+
+async function createSandboxCommand(
+  sandboxId: string,
+  command: string,
+  opts: {
+    cwd?: string;
+    env: Record<string, string>;
+    user?: string;
+    sudo: boolean;
+    tty: boolean;
+    interactive: boolean;
+    timeout?: number;
+  },
+): Promise<Record<string, unknown>> {
+  if (!command.trim()) throw new UserError("Command is required.");
+  const result = unwrap(
+    await client().apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/commands`), {
+      command,
+      cwd: opts.cwd,
+      env: opts.env,
+      user: opts.user,
+      sudo: opts.sudo,
+      tty: opts.tty,
+      interactive: opts.interactive,
+      timeout: opts.timeout,
+    }),
+  ) as Record<string, unknown>;
+  return {
+    ...result,
+    command_id: result["id"],
+    status: result["status"] ?? "running",
   };
 }
 

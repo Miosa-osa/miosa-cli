@@ -66,4 +66,50 @@ describe("miosa sandbox exec", () => {
 
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
+
+  it("creates a durable command for detached exec with workdir and env", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const expectedBody = JSON.stringify({
+      command: "npm run dev",
+      cwd: "/workspace",
+      env: { NODE_ENV: "development" },
+      sudo: false,
+      tty: false,
+      interactive: false,
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/commands",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "cmd_123", status: "running" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_123",
+      "--detached",
+      "--workdir",
+      "/workspace",
+      "--env",
+      "NODE_ENV=development",
+      "npm run dev",
+    ]);
+
+    expect(console.log).toHaveBeenCalledWith("cmd_123");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
 });
