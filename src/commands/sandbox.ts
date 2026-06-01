@@ -339,12 +339,12 @@ export function register(program: Command): void {
               sb["preview_url"] = preview.url;
             }
           } else if (opts.wait && id) {
-            await waitForSandboxRunning(
+            const latest = await waitForSandboxRunning(
               client(),
               id,
               Math.max(opts.timeout ?? 120, 30),
             );
-            sb["ready"] = true;
+            Object.assign(sb, latest, { ready: true });
           }
 
           if (opts.json) {
@@ -2527,14 +2527,14 @@ async function waitForSandboxRunning(
   c: ReturnType<typeof client>,
   sandboxId: string,
   timeoutSec: number,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutSec * 1000;
   while (Date.now() < deadline) {
     const sandbox = unwrap(
       await c.apiGet<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}`)),
     ) as Record<string, unknown>;
     const state = String(sandbox["state"] ?? sandbox["status"] ?? "").toLowerCase();
-    if (state === "running" || state === "active") return;
+    if (state === "running" || state === "active") return sandbox;
     if (state === "error" || state === "failed") {
       throw new UserError(`Sandbox ${sandboxId} entered ${state} state.`);
     }

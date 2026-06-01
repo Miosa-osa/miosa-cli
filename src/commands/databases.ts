@@ -18,6 +18,9 @@ interface Database {
 }
 
 interface DatabaseCredentials {
+  recommended_url?: string;
+  proxy_url?: string;
+  internal_url?: string;
   url?: string;
   uri?: string;
   database_url?: string;
@@ -78,6 +81,8 @@ function defaultEngineVersion(engine: string, version?: string): string | undefi
 
 function buildDatabaseUrl(creds: DatabaseCredentials): string | null {
   const direct =
+    creds.recommended_url ??
+    creds.proxy_url ??
     creds.url ??
     creds.database_url ??
     creds.connection_url ??

@@ -5,7 +5,7 @@ import { MiosaClient } from "../client.js";
 import { ServerError, UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { handleError } from "./util.js";
-import type { BuildId, Deployment, DeploymentBuild } from "../types.js";
+import type { BuildId, Deployment } from "../types.js";
 
 interface ApiClient {
   apiPost<T>(path: string, body?: unknown): Promise<T>;
@@ -15,17 +15,26 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function stateColor(state: DeploymentBuild["state"]): string {
+type ReleaseRow = Record<string, unknown> & { id: string; state?: string };
+
+function stateColor(state: string | undefined): string {
   switch (state) {
+    case "active":
+    case "ready":
     case "succeeded":
       return chalk.green(state);
     case "failed":
+    case "error":
       return chalk.red(state);
     case "building":
-      return chalk.yellow(state);
+    case "deploying":
     case "queued":
+      return chalk.yellow(state);
     case "cancelled":
+    case "archived":
       return chalk.dim(state);
+    default:
+      return state ? chalk.dim(state) : chalk.dim("unknown");
   }
 }
 
@@ -49,14 +58,96 @@ async function resolveApp(
 async function findRelease(
   client: MiosaClient,
   releaseId: string,
-): Promise<{ app: Deployment; release: DeploymentBuild }> {
+): Promise<{ app: Deployment; release: ReleaseRow }> {
   for (const app of await client.listDeployments()) {
-    const release = (await client.listBuilds(app.id)).find(
-      (build) => build.id === releaseId,
-    );
+    const release = (await listReleaseRows(client, app.id)).find((row) => row.id === releaseId);
     if (release) return { app, release };
   }
   throw new UserError(`Release not found: ${releaseId}`);
+}
+
+function responseRows(body: unknown, key: string): ReleaseRow[] {
+  const value = body as Record<string, unknown> | null;
+  const rows =
+    value && Array.isArray(value[key])
+      ? value[key]
+      : value && Array.isArray(value["data"])
+        ? value["data"]
+        : [];
+  return rows
+    .filter((row): row is Record<string, unknown> => !!row && typeof row === "object")
+    .filter((row): row is ReleaseRow => typeof row["id"] === "string");
+}
+
+function textField(row: ReleaseRow, key: string): string | undefined {
+  const value = row[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function renderRelease(app: Deployment, release: ReleaseRow): void {
+  console.log();
+  console.log(`  ${chalk.bold("Release")}  ${release.id}`);
+  console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
+  console.log(`  ${chalk.bold("State")}    ${stateColor(textField(release, "state"))}`);
+
+  const versionNumber = release["version_number"];
+  if (versionNumber !== undefined && versionNumber !== null) {
+    console.log(`  ${chalk.bold("Version")}  ${String(versionNumber)}`);
+  }
+
+  console.log(
+    `  ${chalk.bold("Source")}   ${
+      textField(release, "source_sandbox_id") ??
+      textField(release, "commit_sha") ??
+      chalk.dim("none")
+    }`,
+  );
+
+  const message =
+    textField(release, "commit_message") ??
+    textField(release, "kind") ??
+    textField(release, "runtime_command");
+  if (message) console.log(`  ${chalk.bold("Message")}  ${message}`);
+
+  const error = textField(release, "error_message");
+  if (error) console.log(`  ${chalk.bold("Error")}    ${chalk.red(error)}`);
+
+  console.log(`  ${chalk.bold("Created")}  ${textField(release, "created_at") ?? chalk.dim("unknown")}`);
+  console.log();
+}
+
+async function listReleaseRows(
+  client: MiosaClient,
+  appId: Deployment["id"],
+): Promise<ReleaseRow[]> {
+  const versionBody = await client.apiGet<unknown>(
+    `/api/v1/deployments/${encodeURIComponent(appId)}/versions`,
+  );
+  const versions = responseRows(versionBody, "versions");
+  if (versions.length > 0) return versions;
+
+  const builds = await client.listBuilds(appId);
+  return builds as unknown as ReleaseRow[];
+}
+
+async function getReleaseRow(
+  client: MiosaClient,
+  appId: Deployment["id"],
+  releaseId: string,
+): Promise<ReleaseRow> {
+  try {
+    const body = await client.apiGet<unknown>(
+      `/api/v1/deployments/${encodeURIComponent(appId)}/versions/${encodeURIComponent(releaseId)}`,
+    );
+    const data = (body as Record<string, unknown> | null)?.["data"];
+    if (data && typeof data === "object" && typeof (data as Record<string, unknown>)["id"] === "string") {
+      return data as ReleaseRow;
+    }
+  } catch {
+    // Fall back to legacy deployment builds for older deployments.
+  }
+
+  return client.getBuild(appId, releaseId as BuildId) as unknown as ReleaseRow;
 }
 
 export function register(program: Command): void {
@@ -79,7 +170,7 @@ export function register(program: Command): void {
 
         const client = new MiosaClient(loadConfig());
         const app = await resolveApp(client, appArg);
-        const rows = await client.listBuilds(app.id);
+        const rows = await listReleaseRows(client, app.id);
 
         if (opts.json) {
           console.log(JSON.stringify(rows, null, 2));
@@ -95,16 +186,27 @@ export function register(program: Command): void {
           { header: "ID", key: (row) => shortId(row.id), width: 10 },
           { header: "STATE", key: (row) => stateColor(row.state), width: 12 },
           {
-            header: "COMMIT",
-            key: (row) => row.commit_sha?.slice(0, 8) ?? chalk.dim("none"),
+            header: "SOURCE",
+            key: (row) =>
+              textField(row, "source_sandbox_id")?.slice(0, 8) ??
+              textField(row, "commit_sha")?.slice(0, 8) ??
+              chalk.dim("none"),
             width: 10,
           },
           {
             header: "MESSAGE",
-            key: (row) => row.commit_message ?? chalk.dim("none"),
+            key: (row) =>
+              textField(row, "commit_message") ??
+              textField(row, "kind") ??
+              textField(row, "runtime_command") ??
+              chalk.dim("none"),
             width: 32,
           },
-          { header: "CREATED", key: "created_at", width: 24 },
+          {
+            header: "CREATED",
+            key: (row) => textField(row, "created_at") ?? chalk.dim("unknown"),
+            width: 24,
+          },
         ]);
       } catch (err) {
         handleError(err);
@@ -121,11 +223,11 @@ export function register(program: Command): void {
         try {
           const client = new MiosaClient(loadConfig());
           let app: Deployment;
-          let release: DeploymentBuild;
+          let release: ReleaseRow;
 
           if (opts.app) {
             app = await resolveApp(client, opts.app);
-            release = await client.getBuild(app.id, releaseId as BuildId);
+            release = await getReleaseRow(client, app.id, releaseId);
           } else {
             ({ app, release } = await findRelease(client, releaseId));
           }
@@ -135,27 +237,7 @@ export function register(program: Command): void {
             return;
           }
 
-          console.log();
-          console.log(`  ${chalk.bold("Release")}  ${release.id}`);
-          console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
-          console.log(
-            `  ${chalk.bold("State")}    ${stateColor(release.state)}`,
-          );
-          console.log(
-            `  ${chalk.bold("Commit")}   ${release.commit_sha ?? chalk.dim("none")}`,
-          );
-          if (release.commit_message) {
-            console.log(
-              `  ${chalk.bold("Message")}  ${release.commit_message}`,
-            );
-          }
-          if (release.error_message) {
-            console.log(
-              `  ${chalk.bold("Error")}    ${chalk.red(release.error_message)}`,
-            );
-          }
-          console.log(`  ${chalk.bold("Created")}  ${release.created_at}`);
-          console.log();
+          renderRelease(app, release);
         } catch (err) {
           handleError(err);
         }
@@ -177,34 +259,14 @@ export function register(program: Command): void {
         try {
           const client = new MiosaClient(loadConfig());
           const app = await resolveApp(client, deploymentId);
-          const release = await client.getBuild(app.id, releaseId as BuildId);
+          const release = await getReleaseRow(client, app.id, releaseId);
 
           if (opts.json) {
             console.log(JSON.stringify(release, null, 2));
             return;
           }
 
-          console.log();
-          console.log(`  ${chalk.bold("Release")}  ${release.id}`);
-          console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
-          console.log(
-            `  ${chalk.bold("State")}    ${stateColor(release.state)}`,
-          );
-          console.log(
-            `  ${chalk.bold("Commit")}   ${release.commit_sha ?? chalk.dim("none")}`,
-          );
-          if (release.commit_message) {
-            console.log(
-              `  ${chalk.bold("Message")}  ${release.commit_message}`,
-            );
-          }
-          if (release.error_message) {
-            console.log(
-              `  ${chalk.bold("Error")}    ${chalk.red(release.error_message)}`,
-            );
-          }
-          console.log(`  ${chalk.bold("Created")}  ${release.created_at}`);
-          console.log();
+          renderRelease(app, release);
         } catch (err) {
           handleError(err);
         }
