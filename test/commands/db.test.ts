@@ -441,3 +441,90 @@ describe("miosa db connect credential shapes", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 });
+
+describe("miosa db attach", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("attaches DATABASE_URL to a deployment app env", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const appId = "dep-0000-0000-0000-000000000001";
+    const databaseUrl = "postgresql://admin:secret@proxy.miosa.ai:15432/mydb";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/credentials`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            recommended_url: databaseUrl,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/deployments/${appId}/env`,
+        method: "POST",
+        body: JSON.stringify({ env: { DATABASE_URL: databaseUrl } }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: [{ name: "DATABASE_URL", preview: "pos...ydb" }],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "attach",
+      DB_ID,
+      "--app",
+      appId,
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      database_id: DB_ID,
+      app_id: appId,
+      env: "DATABASE_URL",
+      attached: true,
+    });
+  });
+
+  it("requires exactly one attach target", async () => {
+    const errored: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errored.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "db", "attach", DB_ID]);
+
+    expect(errored.join(" ")).toContain("Choose where to attach");
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});

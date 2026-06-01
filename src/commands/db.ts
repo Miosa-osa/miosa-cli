@@ -331,17 +331,37 @@ Examples:
   // ── db attach ─────────────────────────────────────────────────────────────
 
   db.command("attach <id>")
-    .description("Attach database credentials to a sandbox by writing DATABASE_URL to /workspace/.env")
-    .requiredOption("--sandbox <sandbox-id>", "Sandbox ID")
+    .description("Attach database credentials to a sandbox or deployment app")
+    .option("--sandbox <sandbox-id>", "Sandbox ID")
+    .option("--app <deployment-id>", "Deployment app ID")
     .option("--env <name>", "Environment variable name", "DATABASE_URL")
     .option("--path <path>", "Env file path inside the sandbox", "/workspace/.env")
     .option("--json", "Output raw JSON")
     .action(
       async (
         id: string,
-        opts: { sandbox: string; env: string; path: string; json?: boolean },
+        opts: {
+          sandbox?: string;
+          app?: string;
+          env: string;
+          path: string;
+          json?: boolean;
+        },
       ) => {
         try {
+          if (!opts.sandbox && !opts.app) {
+            throw new UserError(
+              "Choose where to attach the database.",
+              "Use --sandbox <sandbox-id> or --app <deployment-id>.",
+            );
+          }
+          if (opts.sandbox && opts.app) {
+            throw new UserError(
+              "Choose only one attach target.",
+              "Use either --sandbox or --app, not both.",
+            );
+          }
+
           const config = loadConfig();
           const client = new MiosaClient(config);
           const creds = unwrapCredentials(
@@ -357,6 +377,40 @@ Examples:
             );
           }
 
+          if (opts.app) {
+            const result = await client.apiPost(
+              `/api/v1/deployments/${encodeURIComponent(opts.app)}/env`,
+              { env: { [opts.env]: url } },
+            );
+
+            if (opts.json) {
+              console.log(
+                JSON.stringify(
+                  {
+                    database_id: id,
+                    app_id: opts.app,
+                    env: opts.env,
+                    attached: true,
+                    result,
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
+
+            console.log(
+              chalk.green(`Attached ${opts.env} to app ${opts.app}`),
+            );
+            return;
+          }
+
+          const sandbox = opts.sandbox;
+          if (!sandbox) {
+            throw new UserError("Sandbox ID is required.");
+          }
+
           const command = [
             `mkdir -p ${shellQuote(posixDirname(opts.path))}`,
             `touch ${shellQuote(opts.path)}`,
@@ -366,7 +420,7 @@ Examples:
           ].join(" && ");
 
           const result = await client.apiPost(
-            `/api/v1/sandboxes/${encodeURIComponent(opts.sandbox)}/exec`,
+            `/api/v1/sandboxes/${encodeURIComponent(sandbox)}/exec`,
             {
               command,
               cwd: "/",
@@ -380,7 +434,7 @@ Examples:
               JSON.stringify(
                 {
                   database_id: id,
-                  sandbox_id: opts.sandbox,
+                  sandbox_id: sandbox,
                   env: opts.env,
                   path: opts.path,
                   attached: true,
@@ -395,7 +449,7 @@ Examples:
 
           console.log(
             chalk.green(
-              `Attached ${opts.env} to sandbox ${opts.sandbox} at ${opts.path}`,
+              `Attached ${opts.env} to sandbox ${sandbox} at ${opts.path}`,
             ),
           );
         } catch (err) {
