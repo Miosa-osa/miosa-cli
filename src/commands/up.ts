@@ -50,6 +50,18 @@ interface UpOptions {
   image: string;
 }
 
+function deploymentUrl(
+  deployment: Pick<Deployment, "slug" | "public_url" | "auto_subdomain">,
+  tenantSlug?: string | null,
+): string | null {
+  if (deployment.public_url) return deployment.public_url;
+  if (deployment.auto_subdomain) return deployment.auto_subdomain;
+  if (tenantSlug && deployment.slug) {
+    return `https://${deployment.slug}.${tenantSlug}.miosa.app`;
+  }
+  return null;
+}
+
 // ── .miosa.json helpers ───────────────────────────────────────────────────────
 
 const PROJECT_CONFIG_FILES = [".miosa.json", "miosa.json"] as const;
@@ -242,7 +254,7 @@ async function runRedeploy(
     try {
       const dep = await client.getDeployment(projectCfg.deploymentId);
       const tenant = await client.getTenant();
-      const url = `https://${dep.slug}.${tenant.slug}.miosa.app`;
+      const url = deploymentUrl(dep, tenant.slug);
 
       if (opts.json) {
         console.log(
@@ -251,7 +263,7 @@ async function runRedeploy(
       } else {
         console.log(chalk.green("  Deployed"));
         console.log();
-        console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url)}`);
+        console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
         console.log();
       }
     } catch {
@@ -481,7 +493,7 @@ async function runFirstDeploy(
     try {
       const dep = await client.getDeployment(projectCfg.deploymentId);
       const tenant = await client.getTenant();
-      const url = `https://${dep.slug}.${tenant.slug}.miosa.app`;
+      const url = deploymentUrl(dep, tenant.slug);
 
       if (opts.json) {
         console.log(
@@ -490,7 +502,7 @@ async function runFirstDeploy(
       } else {
         console.log(chalk.green("  Deployed"));
         console.log();
-        console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url)}`);
+        console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
         console.log();
         console.log(chalk.dim("  Next steps:"));
         console.log(

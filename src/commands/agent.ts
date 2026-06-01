@@ -21,7 +21,7 @@ import { loadConfig } from "../config.js";
 import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 
 // ---------------------------------------------------------------------------
 // Domain types — match backend CUA session shape
@@ -62,6 +62,10 @@ interface ComputerListItem {
 }
 
 type JsonOptions = { json?: boolean };
+type AgentStartOptions = JsonOptions & {
+  model?: string;
+  maxTurns?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -202,6 +206,78 @@ function formatEventTimestamp(
   return chalk.dim(absTime);
 }
 
+async function startAgentSession(
+  computerNameOrId: string,
+  goal: string,
+  opts: AgentStartOptions,
+): Promise<void> {
+  const config = loadConfig();
+  const c = new MiosaClient(config);
+
+  const spinner = isJsonMode(opts) ? null : spin(`Resolving computer ${computerNameOrId}...`);
+  const computer = await resolveComputer(c, computerNameOrId);
+  spinner?.succeed(`Starting agent on ${computer.name}`);
+
+  const body: Record<string, unknown> = { goal };
+  if (opts.model) body["model_id"] = opts.model;
+  if (opts.maxTurns != null) body["max_turns"] = parseInt(opts.maxTurns, 10);
+
+  const payload = await c.apiPost<unknown>(
+    apiV1(`/computers/${enc(computer.id)}/cua/sessions`),
+    body,
+  );
+
+  const session = dataOf<AgentSession>(payload);
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`Agent session started: ${session.id}`));
+  console.log(
+    chalk.dim(
+      `Watch: miosa agent get ${session.id} --computer ${computer.name}`,
+    ),
+  );
+  console.log(
+    chalk.dim(
+      `Resume: miosa agent resume ${session.id} --computer ${computer.name}`,
+    ),
+  );
+}
+
+async function resumeAgentSession(
+  computerNameOrId: string,
+  sessionId: string,
+  instruction: string | undefined,
+  opts: JsonOptions,
+): Promise<void> {
+  const config = loadConfig();
+  const c = new MiosaClient(config);
+  const computer = await resolveComputer(c, computerNameOrId);
+
+  const payload = await c.apiPost<unknown>(
+    apiV1(`/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/resume`),
+    {},
+  );
+
+  if (instruction) {
+    await c.apiPost<unknown>(
+      apiV1(`/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/task`),
+      { instruction },
+    );
+  }
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`Session ${sessionId} resumed.`));
+  if (instruction) console.log(chalk.dim(`Task submitted to ${sessionId}.`));
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand builders
 // ---------------------------------------------------------------------------
@@ -224,36 +300,7 @@ function buildStart(agent: Command): void {
         json?: boolean;
       }) => {
         try {
-          const config = loadConfig();
-          const c = new MiosaClient(config);
-
-          const spinner = spin(`Resolving computer ${opts.computer}…`);
-          const computer = await resolveComputer(c, opts.computer);
-          spinner.succeed(`Starting agent on ${computer.name}`);
-
-          const body: Record<string, unknown> = { goal: opts.goal };
-          if (opts.model) body["model_id"] = opts.model;
-          if (opts.maxTurns != null)
-            body["max_turns"] = parseInt(opts.maxTurns, 10);
-
-          const payload = await c.apiPost<unknown>(
-            apiV1(`/computers/${enc(computer.id)}/cua/sessions`),
-            body,
-          );
-
-          const session = dataOf<AgentSession>(payload);
-
-          if (opts.json) {
-            console.log(JSON.stringify(session, null, 2));
-            return;
-          }
-
-          console.log(chalk.green(`Agent session started: ${session.id}`));
-          console.log(
-            chalk.dim(
-              `Watch: miosa agent get ${session.id} --computer ${computer.name}`,
-            ),
-          );
+          await startAgentSession(opts.computer, opts.goal, opts);
         } catch (err) {
           handleError(err);
         }
@@ -314,7 +361,7 @@ function buildLs(agent: Command): void {
           spinner.stop();
         }
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(sessions, null, 2));
           return;
         }
@@ -378,7 +425,7 @@ function buildGet(agent: Command): void {
           );
           const session = dataOf<AgentSession>(payload);
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(session, null, 2));
             return;
           }
@@ -450,7 +497,7 @@ function buildTask(agent: Command): void {
             { instruction },
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(payload, null, 2));
             return;
           }
@@ -484,7 +531,7 @@ function buildPause(agent: Command): void {
             {},
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(payload, null, 2));
             return;
           }
@@ -518,7 +565,7 @@ function buildResume(agent: Command): void {
             {},
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(payload, null, 2));
             return;
           }
@@ -551,7 +598,7 @@ function buildStop(agent: Command): void {
             ),
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(payload ?? { stopped: true }, null, 2));
             return;
           }
@@ -591,7 +638,7 @@ function buildHistory(agent: Command): void {
 
           const events = listOf<AgentSessionEvent>(payload, ["events"]);
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(events, null, 2));
             return;
           }
@@ -631,6 +678,44 @@ export function register(program: Command): void {
     .command("agent")
     .description(
       "Manage AI agent (CUA) sessions on Computers — start, monitor, and control agent runs",
+    )
+    .argument("[computer]", "Computer name or ID")
+    .argument("[instruction...]", "Goal/instruction for the agent")
+    .option("--model <model-id>", "Model ID override")
+    .option("--max-turns <n>", "Maximum agent turns")
+    .option("--resume <session-id>", "Resume a paused session, optionally with a new instruction")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        computer: string | undefined,
+        instruction: string[],
+        opts: AgentStartOptions & { resume?: string },
+        command: Command,
+      ) => {
+        try {
+          if (!computer) {
+            command.help();
+            return;
+          }
+
+          const goal = instruction.join(" ").trim();
+          if (opts.resume) {
+            await resumeAgentSession(computer, opts.resume, goal || undefined, opts);
+            return;
+          }
+
+          if (!goal) {
+            throw new UserError(
+              "No agent instruction provided.",
+              'Use `miosa agent <computer> "run the tests"` or `miosa agent start --computer <computer> --goal "..."`.',
+            );
+          }
+
+          await startAgentSession(computer, goal, opts);
+        } catch (err) {
+          handleError(err);
+        }
+      },
     );
 
   buildStart(agent);

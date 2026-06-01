@@ -220,6 +220,8 @@ export interface Deployment {
   state: DeploymentState;
   auto_deploy: boolean;
   custom_domain_id: string | null;
+  public_url?: string | null;
+  auto_subdomain?: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
