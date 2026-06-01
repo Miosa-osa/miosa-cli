@@ -190,6 +190,110 @@ describe("miosa db connect --print-url", () => {
   });
 });
 
+// ── db logs ───────────────────────────────────────────────────────────────────
+
+describe("miosa db logs", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetches recent database logs without requiring SSE", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/logs?lines=50`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          logs: [
+            {
+              t: "2026-06-01T08:00:00Z",
+              stream: "stdout",
+              line: "database system is ready",
+            },
+          ],
+          database_id: DB_ID,
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "logs",
+      DB_ID,
+      "--lines",
+      "50",
+    ]);
+
+    expect(logged.join("\n")).toContain("database system is ready");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("outputs structured JSON for database logs", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/logs?lines=100`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            logs: [{ line: "checkpoint complete" }],
+            database_id: DB_ID,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "logs",
+      DB_ID,
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      database_id: string;
+      logs: Array<{ line: string }>;
+    };
+
+    expect(parsed.database_id).toBe(DB_ID);
+    expect(parsed.logs[0]?.line).toBe("checkpoint complete");
+  });
+});
+
 // ── db backup ─────────────────────────────────────────────────────────────────
 
 describe("miosa db backup", () => {

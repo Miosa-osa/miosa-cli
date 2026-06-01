@@ -60,6 +60,13 @@ interface RestoreRecord {
   started_at?: string | null;
 }
 
+interface LogEntry {
+  t?: string | null;
+  stream?: string;
+  line?: string;
+  message?: string;
+}
+
 function unwrapCredentials(raw: unknown): DatabaseCredentials {
   if (raw && typeof raw === "object") {
     const r = raw as Record<string, unknown>;
@@ -184,6 +191,30 @@ function unwrapRestore(raw: unknown): RestoreRecord {
   return { id: "", database_id: "", backup_id: "" };
 }
 
+function unwrapLogs(raw: unknown): { database_id?: string; logs: LogEntry[] } {
+  const root =
+    raw && typeof raw === "object" && "data" in raw
+      ? (raw as Record<string, unknown>)["data"]
+      : raw;
+
+  if (root && typeof root === "object") {
+    const r = root as Record<string, unknown>;
+    const logs = Array.isArray(r["logs"]) ? (r["logs"] as LogEntry[]) : [];
+    return {
+      database_id: typeof r["database_id"] === "string" ? r["database_id"] : undefined,
+      logs,
+    };
+  }
+
+  return { logs: [] };
+}
+
+function formatLogEntry(entry: LogEntry): string {
+  const message = entry.line ?? entry.message ?? "";
+  if (entry.t) return `${entry.t} ${message}`;
+  return message;
+}
+
 export function register(program: Command): void {
   const db = program
     .command("db")
@@ -197,6 +228,7 @@ Examples:
   miosa db create postgres --name clinic-db --wait
   miosa db connect <id>                 Open psql with fetched DATABASE_URL
   miosa db connect <id> --print-url     Print the connection URL without opening psql
+  miosa db logs <id>                    Show recent database logs
   miosa db attach <id> --sandbox <sid>  Write DATABASE_URL into /workspace/.env
   miosa db backup <id>                  Trigger an on-demand backup
   miosa db restore <id> --backup <bid>  Restore from a specific backup
@@ -327,6 +359,42 @@ Examples:
         }
       },
     );
+
+  // ── db logs ────────────────────────────────────────────────────────────────
+
+  db.command("logs <id>")
+    .description("Show recent managed database logs")
+    .option("--lines <n>", "Number of lines to fetch", parseIntegerOption, 100)
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { lines: number; json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const lines = Math.max(1, Math.min(opts.lines, 500));
+
+        const result = unwrapLogs(
+          await client.apiGet(
+            `/api/v1/databases/${encodeURIComponent(id)}/logs?lines=${lines}`,
+          ),
+        );
+
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (result.logs.length === 0) {
+          console.log(chalk.dim("No database logs."));
+          return;
+        }
+
+        for (const entry of result.logs) {
+          console.log(formatLogEntry(entry));
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
 
   // ── db attach ─────────────────────────────────────────────────────────────
 
