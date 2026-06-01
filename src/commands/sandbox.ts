@@ -951,20 +951,19 @@ export function register(program: Command): void {
 
   service
     .command("restart <sandbox-id> <name>")
-    .requiredOption("--cmd <command>", "Command to start")
+    .option("--cmd <command>", "Ignored when backend service metadata already exists")
     .option("--cwd <path>", "Working directory inside the sandbox", "/workspace")
     .option("--port <port>", "Port served by this service", parseInt)
     .option("--json", "Output as JSON")
     .action(
       (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
         runAction(async () => {
-          await execSandbox(
-            client(),
-            id,
-            `if [ -f ${shellQuote(servicePidPath(name))} ]; then kill $(cat ${shellQuote(servicePidPath(name))}) >/dev/null 2>&1 || true; fi`,
-            "/",
-          );
-          const result = await startSandboxService(id, name, opts);
+          const result = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/services/${enc(name)}/restart`),
+              {},
+            ),
+          ) as Record<string, unknown>;
           if (opts.json) {
             console.log(JSON.stringify(result, null, 2));
             return;
@@ -979,15 +978,14 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, name: string, opts: JsonOptions) =>
       runAction(async () => {
-        const result = await execSandbox(
-          client(),
-          id,
-          `if [ -f ${shellQuote(servicePidPath(name))} ] && kill -0 $(cat ${shellQuote(servicePidPath(name))}) >/dev/null 2>&1; then echo running; else echo stopped; fi`,
-          "/",
-        );
-        const status = String(result["stdout"] ?? "").trim() || "unknown";
+        const result = unwrap(
+          await client().apiGet<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/services/${enc(name)}`),
+          ),
+        ) as Record<string, unknown>;
+        const status = String(result["status"] ?? "unknown");
         if (opts.json) {
-          console.log(JSON.stringify({ sandbox_id: id, name, status }, null, 2));
+          console.log(JSON.stringify(result, null, 2));
           return;
         }
         console.log(status === "running" ? chalk.green(status) : chalk.yellow(status));
@@ -1000,17 +998,19 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, name: string, opts: { lines: number; json?: boolean }) =>
       runAction(async () => {
-        const result = await execSandbox(
-          client(),
-          id,
-          `tail -n ${Number(opts.lines) || 100} ${shellQuote(serviceLogPath(name))}`,
-          "/",
-        );
+        const result = unwrap(
+          await client().apiGet<unknown>(
+            apiPath(
+              `/sandboxes/${enc(id)}/services/${enc(name)}/logs?tail=${Number(opts.lines) || 100}`,
+            ),
+          ),
+        ) as Record<string, unknown>;
         if (opts.json) {
-          console.log(JSON.stringify({ sandbox_id: id, name, logs: String(result["stdout"] ?? "") }, null, 2));
+          console.log(JSON.stringify(result, null, 2));
           return;
         }
-        process.stdout.write(String(result["stdout"] ?? ""));
+        const lines = Array.isArray(result["lines"]) ? result["lines"] : [];
+        process.stdout.write(lines.join("\n") + (lines.length > 0 ? "\n" : ""));
       }),
     );
 
@@ -2066,17 +2066,14 @@ async function startSandboxService(
   opts: { cmd: string; cwd: string; port?: number },
 ): Promise<Record<string, unknown>> {
   validateServiceName(name);
-  const c = client();
-  const logPath = serviceLogPath(name);
-  const pidPath = servicePidPath(name);
-  const command = [
-    "mkdir -p /tmp/miosa-services",
-    `if [ -f ${shellQuote(pidPath)} ]; then kill $(cat ${shellQuote(pidPath)}) >/dev/null 2>&1 || true; fi`,
-    `nohup sh -lc ${shellQuote(opts.cmd)} > ${shellQuote(logPath)} 2>&1 & echo $! > ${shellQuote(pidPath)}`,
-    `cat ${shellQuote(pidPath)}`,
-  ].join(" && ");
-  const exec = await execSandbox(c, sandboxId, command, opts.cwd, 15);
-  const pid = String(exec["stdout"] ?? "").trim().split(/\s+/).pop() ?? "";
+  const result = unwrap(
+    await client().apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/services`), {
+      name,
+      command: opts.cmd,
+      cwd: opts.cwd,
+    }),
+  ) as Record<string, unknown>;
+
   let previewUrl: string | null = null;
   if (opts.port != null) {
     const preview = await previewSandbox(sandboxId, opts.port, {
@@ -2087,13 +2084,8 @@ async function startSandboxService(
     previewUrl = preview.url;
   }
   return {
-    sandbox_id: sandboxId,
-    name,
-    pid,
-    cwd: opts.cwd,
-    command: opts.cmd,
+    ...result,
     port: opts.port ?? null,
-    log_path: logPath,
     preview_url: previewUrl,
   };
 }
