@@ -69,6 +69,33 @@ function fmtState(db: Database): string {
   return state;
 }
 
+function databaseConnectRetryable(state: string): boolean {
+  return ["creating", "provisioning", "starting", "restarting"].includes(state);
+}
+
+function databaseConnectError(database: Database): {
+  ok: false;
+  error: {
+    code: string;
+    message: string;
+    retryable: boolean;
+    state: string;
+    resource_id: string;
+  };
+} {
+  const state = database.state ?? "unknown";
+  return {
+    ok: false,
+    error: {
+      code: "DATABASE_NOT_RUNNING",
+      message: `Database ${database.id} is ${state}; connection credentials are only available once it is running.`,
+      retryable: databaseConnectRetryable(state),
+      state,
+      resource_id: database.id,
+    },
+  };
+}
+
 function normalizeEngine(engine: string): string {
   const normalized = engine.trim().toLowerCase();
   return normalized === "postgres" ? "postgresql" : normalized;
@@ -264,7 +291,25 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = isJsonMode(opts) ? null : spin("Fetching credentials...");
+        const spinner =
+          isJsonMode(opts) || opts.printUrl ? null : spin("Fetching credentials...");
+        const database = unwrapDatabase(
+          await client.apiGet(`/api/v1/databases/${encodeURIComponent(id)}`),
+        );
+
+        if (database.state !== "running" && database.state !== "available") {
+          spinner?.stop();
+          const error = databaseConnectError(database);
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(error, null, 2));
+          } else {
+            console.error(chalk.red(error.error.message));
+          }
+
+          process.exit(1);
+        }
+
         const creds = unwrapCredentials(
           await client.apiGet(
             `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
