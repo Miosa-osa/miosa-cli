@@ -1684,34 +1684,36 @@ async function ensureSandboxSshKey(
   apiKey: string,
   endpoint: string,
 ): Promise<void> {
-  if (fs.existsSync(SANDBOX_KEY_PATH)) return;
+  if (!fs.existsSync(SANDBOX_KEY_PATH)) {
+    console.log(chalk.dim("Generating SSH keypair for MIOSA sandbox access..."));
+    fs.mkdirSync(path.join(os.homedir(), ".ssh"), { recursive: true });
 
-  console.log(chalk.dim("Generating SSH keypair for MIOSA sandbox access..."));
-  fs.mkdirSync(path.join(os.homedir(), ".ssh"), { recursive: true });
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      "ssh-keygen",
-      [
-        "-t",
-        "ed25519",
-        "-f",
-        SANDBOX_KEY_PATH,
-        "-N",
-        "",
-        "-C",
-        "miosa-sandbox",
-      ],
-      { stdio: "pipe" },
-    );
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ssh-keygen exited with code ${code}`));
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        "ssh-keygen",
+        [
+          "-t",
+          "ed25519",
+          "-f",
+          SANDBOX_KEY_PATH,
+          "-N",
+          "",
+          "-C",
+          "miosa-sandbox",
+        ],
+        { stdio: "pipe" },
+      );
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`ssh-keygen exited with code ${code}`));
+      });
+      child.on("error", reject);
     });
-    child.on("error", reject);
-  });
+  }
 
-  // Register the public key with the sandbox
+  // Register the public key with every target sandbox. The local key can
+  // already exist from a previous sandbox, but a fresh sandbox still needs it
+  // installed in authorized_keys before SSH auth can succeed.
   const pubKey = fs.readFileSync(`${SANDBOX_KEY_PATH}.pub`, "utf8").trim();
   const base = endpoint.replace(/\/$/, "");
   const res = await fetch(
