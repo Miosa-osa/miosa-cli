@@ -348,7 +348,11 @@ export function register(program: Command): void {
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
           if (opts.snapshot) body["snapshot_id"] = opts.snapshot;
-          if (opts.workspace) body["workspace_id"] = opts.workspace;
+          const workspace =
+            opts.workspace ??
+            (program.opts() as { workspace?: string }).workspace ??
+            process.env["MIOSA_WORKSPACE"];
+          if (workspace) body["workspace_id"] = workspace;
           const networkPolicy = buildNetworkPolicy(opts);
           if (networkPolicy) {
             body["metadata"] = {
