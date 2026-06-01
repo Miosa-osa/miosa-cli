@@ -116,7 +116,7 @@ describe("miosa db connect --print-url", () => {
       "--print-url",
     ]);
 
-    expect(logged.join("\n")).toContain("postgres://");
+    expect(logged.join("\n")).toContain("postgresql://");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
@@ -389,5 +389,55 @@ describe("miosa db restore", () => {
 
     expect(errored.join(" ")).toMatch(/not found/i);
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("miosa db connect credential shapes", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("should print database_url when the API does not return url", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/credentials`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            database_url: "postgresql://admin:secret@db.miosa.ai:5432/mydb",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "connect",
+      DB_ID,
+      "--print-url",
+    ]);
+
+    expect(logged.join("\n")).toContain("postgresql://admin");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 });

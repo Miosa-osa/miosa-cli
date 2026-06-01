@@ -2,13 +2,14 @@ import type { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { Socket } from "node:net";
 import chalk from "chalk";
 import WebSocket from "ws";
+import { detectFramework } from "../framework-detector.js";
 import {
   addDataOption,
   client,
@@ -35,6 +36,7 @@ import {
   printElapsed,
 } from "../ui/render.js";
 import { formatBytes } from "../ui/progress.js";
+import { UserError } from "../errors.js";
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -132,11 +134,21 @@ export function register(program: Command): void {
   sandbox
     .command("show <sandbox-id>")
     .description("Show a Sandbox by ID")
+    .option("--port <port>", "Include live preview readiness for this port", parseInt)
+    .option("--probe-path <path>", "HTTP path to probe when --port is set", "/")
     .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
+    .action((id: string, opts: JsonOptions & { port?: number; probePath: string }) =>
       runAction(async () => {
         if (opts.json) {
-          await getAndPrint(`/sandboxes/${enc(id)}`, opts);
+          const data =
+            opts.port != null
+              ? await showSandboxWithPreview(id, opts.port, opts.probePath)
+              : unwrap(
+                  await client().apiGet<unknown>(
+                    apiPath(`/sandboxes/${enc(id)}`),
+                  ),
+                );
+          console.log(JSON.stringify(data, null, 2));
           return;
         }
 
@@ -194,6 +206,7 @@ export function register(program: Command): void {
         console.log(
           hintBlock("Try", [
             `miosa sandbox exec ${str(sb["id"])} --command ...`,
+            `miosa sandbox preview ${str(sb["id"])} --port 5173 --wait`,
             `miosa sandbox destroy ${str(sb["id"])}`,
           ]),
         );
@@ -224,6 +237,9 @@ export function register(program: Command): void {
       .option("--memory <mb>", "Memory in MB", parseInt)
       .option("--disk <mb>", "Disk size in MB", parseInt)
       .option("--timeout <sec>", "Idle timeout in seconds", parseInt)
+      .option("--publish-port <port>", "Expose this port after create", parseInt)
+      .option("--wait", "Wait for sandbox running and published port readiness")
+      .option("--probe-path <path>", "HTTP path to probe when --publish-port is set", "/")
       .option("--always-on", "Disable auto-destroy on idle"),
   )
     .option("--json", "Output as JSON")
@@ -236,6 +252,9 @@ export function register(program: Command): void {
           memory?: number;
           disk?: number;
           timeout?: number;
+          publishPort?: number;
+          wait?: boolean;
+          probePath?: string;
           alwaysOn?: boolean;
         },
       ) =>
@@ -263,15 +282,47 @@ export function register(program: Command): void {
           if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
           if (opts.alwaysOn) body["always_on"] = true;
 
-          if (opts.json) {
-            await postAndPrint("/sandboxes", opts, body);
-            return;
-          }
-
           const raw = unwrap(
             await client().apiPost<unknown>(apiPath("/sandboxes"), body),
           );
-          renderCreateSuccess(raw, Date.now() - t0);
+          const sb = (raw ?? {}) as Record<string, unknown>;
+          const id = String(sb["id"] ?? "");
+
+          if (opts.publishPort != null && id) {
+            if (opts.wait) {
+              const preview = await waitSandboxReady(
+                id,
+                opts.publishPort,
+                opts.probePath ?? "/",
+                Math.max(opts.timeout ?? 120, 30),
+              );
+              sb["preview"] = preview;
+              sb["preview_url"] = preview.url;
+              sb["ready"] = preview.ready;
+            } else {
+              const preview = await previewSandbox(id, opts.publishPort, {
+                wait: false,
+                timeout: 1,
+                probePath: opts.probePath ?? "/",
+              });
+              sb["preview"] = preview;
+              sb["preview_url"] = preview.url;
+            }
+          } else if (opts.wait && id) {
+            await waitForSandboxRunning(
+              client(),
+              id,
+              Math.max(opts.timeout ?? 120, 30),
+            );
+            sb["ready"] = true;
+          }
+
+          if (opts.json) {
+            console.log(JSON.stringify(sb, null, 2));
+            return;
+          }
+
+          renderCreateSuccess(sb, Date.now() - t0);
         }),
     );
 
@@ -420,9 +471,15 @@ export function register(program: Command): void {
           const modelFlag = opts.model
             ? ` --model ${`'${opts.model.replace(/'/g, "'\\''")}'`}`
             : "";
-          const command = `${provider}${modelFlag} ${`'${instruction.replace(/'/g, "'\\''")}'`}`;
+          const command = commandInCwd(
+            `${provider}${modelFlag} ${shellQuote(instruction)}`,
+            opts.cwd,
+          );
           const body: Record<string, unknown> = { command };
-          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.cwd) {
+            body["cwd"] = opts.cwd;
+            body["dir"] = opts.cwd;
+          }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
         }),
@@ -436,6 +493,7 @@ export function register(program: Command): void {
         "Run a command inside a Sandbox (positional args joined as shell command)",
       )
       .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--background", "Start the command in the background and return immediately")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
     .option("--json", "Output as JSON")
@@ -443,7 +501,7 @@ export function register(program: Command): void {
       (
         id: string,
         words: string[],
-        opts: DataOptions & { cwd?: string; timeout?: number },
+        opts: DataOptions & { cwd?: string; background?: boolean; timeout?: number },
       ) =>
         runAction(async () => {
           if (opts.data) {
@@ -451,8 +509,14 @@ export function register(program: Command): void {
             return;
           }
           const cmd = words.join(" ");
-          const body: Record<string, unknown> = cmd ? { command: cmd } : {};
-          if (opts.cwd) body["cwd"] = opts.cwd;
+          const effectiveCommand = opts.background ? backgroundCommand(cmd) : cmd;
+          const body: Record<string, unknown> = cmd
+            ? { command: commandInCwd(effectiveCommand, opts.cwd) }
+            : {};
+          if (opts.cwd) {
+            body["cwd"] = opts.cwd;
+            body["dir"] = opts.cwd;
+          }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
         }),
@@ -464,6 +528,7 @@ export function register(program: Command): void {
       .command("run <sandbox-id> [command...]")
       .description("Run a command inside a Sandbox (alias for exec)")
       .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--background", "Start the command in the background and return immediately")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
     .option("--json", "Output as JSON")
@@ -471,7 +536,7 @@ export function register(program: Command): void {
       (
         id: string,
         words: string[],
-        opts: DataOptions & { cwd?: string; timeout?: number },
+        opts: DataOptions & { cwd?: string; background?: boolean; timeout?: number },
       ) =>
         runAction(async () => {
           if (opts.data) {
@@ -479,10 +544,259 @@ export function register(program: Command): void {
             return;
           }
           const cmd = words.join(" ");
-          const body: Record<string, unknown> = cmd ? { command: cmd } : {};
-          if (opts.cwd) body["cwd"] = opts.cwd;
+          const effectiveCommand = opts.background ? backgroundCommand(cmd) : cmd;
+          const body: Record<string, unknown> = cmd
+            ? { command: commandInCwd(effectiveCommand, opts.cwd) }
+            : {};
+          if (opts.cwd) {
+            body["cwd"] = opts.cwd;
+            body["dir"] = opts.cwd;
+          }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+        }),
+    );
+
+  sandbox
+    .command("deploy [local-dir]")
+    .description(
+      "Upload an app directory, start it in a sandbox, expose a preview URL, and wait for readiness",
+    )
+    .option("--sandbox <id>", "Existing sandbox ID. Creates one when omitted")
+    .option("--template <template>", "Template for new sandbox", "miosa-sandbox")
+    .option("--name <name>", "Name for a new sandbox")
+    .option("--port <port>", "Preview port", parseInt)
+    .option("--start <command>", "Start command to run inside /workspace")
+    .option("--install-command <command>", "Install command to run before start")
+    .option("--no-install", "Skip automatic dependency install")
+    .option("--wait", "Wait until the public preview returns a good HTTP status")
+    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 180)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        localDir = ".",
+        opts: {
+          sandbox?: string;
+          template?: string;
+          name?: string;
+          port?: number;
+          start?: string;
+          installCommand?: string;
+          install?: boolean;
+          wait?: boolean;
+          timeout: number;
+          probePath: string;
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const result = await deploySandbox(localDir, opts);
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(`  ${chalk.bold("Sandbox")}  ${result.sandbox_id}`);
+          console.log(`  ${chalk.bold("Port")}     ${result.port}`);
+          console.log(`  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`);
+          console.log(
+            `  ${chalk.bold("Ready")}    ${
+              result.preview_ready ? chalk.green("yes") : chalk.yellow("not verified")
+            }`,
+          );
+          console.log();
+        }),
+    );
+
+  sandbox
+    .command("preview <sandbox-id>")
+    .description("Expose a sandbox port and optionally wait for the public preview to answer")
+    .requiredOption("--port <port>", "Port inside the sandbox to expose", parseInt)
+    .option("--wait", "Wait until the public URL returns a good HTTP status")
+    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 120)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: {
+          port: number;
+          wait?: boolean;
+          timeout: number;
+          probePath: string;
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const result = await previewSandbox(id, opts.port, {
+            wait: !!opts.wait,
+            timeout: opts.timeout,
+            probePath: opts.probePath,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(result.url);
+          if (!result.ready) {
+            console.error(
+              chalk.yellow(
+                `Preview route created but not verified yet (${result.error ?? result.status ?? "pending"}).`,
+              ),
+            );
+          }
+        }),
+    );
+
+  sandbox
+    .command("wait <sandbox-id>")
+    .description("Wait for sandbox VM, internal app port, edge route, TLS, and public preview readiness")
+    .requiredOption("--port <port>", "Port inside the sandbox to check", parseInt)
+    .option("--url", "Print only the ready public preview URL")
+    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 120)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: {
+          port: number;
+          url?: boolean;
+          timeout: number;
+          probePath: string;
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const result = await waitSandboxReady(
+            id,
+            opts.port,
+            opts.probePath,
+            opts.timeout,
+          );
+          if (opts.url && result.url) {
+            console.log(result.url);
+            return;
+          }
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green("Ready"));
+          console.log(chalk.cyan(result.url));
+        }),
+    );
+
+  const service = sandbox
+    .command("service")
+    .description("Manage named long-running processes inside a sandbox");
+
+  service
+    .command("start <sandbox-id> <name>")
+    .requiredOption("--cmd <command>", "Command to start")
+    .option("--cwd <path>", "Working directory inside the sandbox", "/workspace")
+    .option("--port <port>", "Port served by this service", parseInt)
+    .option("--json", "Output as JSON")
+    .action(
+      (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
+        runAction(async () => {
+          const result = await startSandboxService(id, name, opts);
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Started ${name}`));
+          if (result.preview_url) console.log(chalk.cyan(String(result.preview_url)));
+        }),
+    );
+
+  service
+    .command("restart <sandbox-id> <name>")
+    .requiredOption("--cmd <command>", "Command to start")
+    .option("--cwd <path>", "Working directory inside the sandbox", "/workspace")
+    .option("--port <port>", "Port served by this service", parseInt)
+    .option("--json", "Output as JSON")
+    .action(
+      (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
+        runAction(async () => {
+          await execSandbox(
+            client(),
+            id,
+            `if [ -f ${shellQuote(servicePidPath(name))} ]; then kill $(cat ${shellQuote(servicePidPath(name))}) >/dev/null 2>&1 || true; fi`,
+            "/",
+          );
+          const result = await startSandboxService(id, name, opts);
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Restarted ${name}`));
+          if (result.preview_url) console.log(chalk.cyan(String(result.preview_url)));
+        }),
+    );
+
+  service
+    .command("status <sandbox-id> <name>")
+    .option("--json", "Output as JSON")
+    .action((id: string, name: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const result = await execSandbox(
+          client(),
+          id,
+          `if [ -f ${shellQuote(servicePidPath(name))} ] && kill -0 $(cat ${shellQuote(servicePidPath(name))}) >/dev/null 2>&1; then echo running; else echo stopped; fi`,
+          "/",
+        );
+        const status = String(result["stdout"] ?? "").trim() || "unknown";
+        if (opts.json) {
+          console.log(JSON.stringify({ sandbox_id: id, name, status }, null, 2));
+          return;
+        }
+        console.log(status === "running" ? chalk.green(status) : chalk.yellow(status));
+      }),
+    );
+
+  service
+    .command("logs <sandbox-id> <name>")
+    .option("--lines <n>", "Number of log lines", parseInt, 100)
+    .option("--json", "Output as JSON")
+    .action((id: string, name: string, opts: { lines: number; json?: boolean }) =>
+      runAction(async () => {
+        const result = await execSandbox(
+          client(),
+          id,
+          `tail -n ${Number(opts.lines) || 100} ${shellQuote(serviceLogPath(name))}`,
+          "/",
+        );
+        if (opts.json) {
+          console.log(JSON.stringify({ sandbox_id: id, name, logs: String(result["stdout"] ?? "") }, null, 2));
+          return;
+        }
+        process.stdout.write(String(result["stdout"] ?? ""));
+      }),
+    );
+
+  sandbox
+    .command("doctor <sandbox-id>")
+    .description(
+      "Diagnose sandbox app readiness across sandbox state, internal HTTP, public route, and TLS/edge reachability",
+    )
+    .requiredOption("--port <port>", "Port inside the sandbox to check", parseInt)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: { port: number; probePath: string; json?: boolean },
+      ) =>
+        runAction(async () => {
+          const report = await doctorSandbox(id, opts.port, opts.probePath);
+          if (opts.json) {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          renderDoctorReport(report);
         }),
     );
 
@@ -593,6 +907,116 @@ export function register(program: Command): void {
             const filename = path.basename(localPath);
             console.log(chalk.green(`Uploaded ${filename} → ${remotePath}`));
           }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  sandbox
+    .command("upload-dir <sandbox-id> <local-dir> <remote-dir>")
+    .description("Upload a local directory into a Sandbox")
+    .option("--delete", "Delete the remote directory contents before extracting")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        localDir: string,
+        remoteDir: string,
+        opts: { delete?: boolean; json?: boolean },
+      ) => {
+        try {
+          const result = await uploadDirToSandbox(id, localDir, remoteDir, {
+            delete: !!opts.delete,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(
+            chalk.green(`Uploaded ${result.files_label} → ${remoteDir}`),
+          );
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  sandbox
+    .command("sync <local-dir> <remote-dir>")
+    .description("Sync a local directory into a sandbox")
+    .requiredOption("--sandbox <id>", "Sandbox ID")
+    .option("--delete", "Delete the remote directory contents before extracting")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        localDir: string,
+        remoteDir: string,
+        opts: { sandbox: string; delete?: boolean; json?: boolean },
+      ) => {
+        try {
+          const result = await uploadDirToSandbox(opts.sandbox, localDir, remoteDir, {
+            delete: !!opts.delete,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Synced ${result.files_label} → ${remoteDir}`));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  sandbox
+    .command("cp <source> <target>")
+    .description("Copy a local file or directory into a sandbox, e.g. ./app/. sbx_123:/workspace")
+    .option("--delete", "Delete the remote directory contents before extracting directories")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        source: string,
+        target: string,
+        opts: { delete?: boolean; json?: boolean },
+      ) => {
+        try {
+          const parsed = parseSandboxTarget(target);
+          const local = source.endsWith("/.") ? source.slice(0, -2) : source;
+          const stat = fs.statSync(local);
+          if (stat.isDirectory()) {
+            const result = await uploadDirToSandbox(
+              parsed.sandboxId,
+              local,
+              parsed.remotePath,
+              { delete: !!opts.delete },
+            );
+            if (opts.json) {
+              console.log(JSON.stringify(result, null, 2));
+              return;
+            }
+            console.log(
+              chalk.green(`Copied ${result.files_label} → ${target}`),
+            );
+            return;
+          }
+          const c = client();
+          await uploadFileToSandbox(c, parsed.sandboxId, local, parsed.remotePath);
+          if (opts.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  sandbox_id: parsed.sandboxId,
+                  local_path: path.resolve(local),
+                  remote_path: parsed.remotePath,
+                },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          console.log(chalk.green(`Copied ${path.basename(local)} → ${target}`));
         } catch (err) {
           handleError(err);
         }
@@ -724,19 +1148,31 @@ export function register(program: Command): void {
       "Local port to listen on (default = remote port)",
       parseInt,
     )
+    .option("--wait", "Probe the local forwarded URL before returning readiness")
+    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 30)
+    .option("--probe-path <path>", "HTTP path to probe when --wait is set", "/")
     .option("--json", "Output as JSON")
     .action(
       async (
         id: string,
-        opts: { remote: number; local?: number; json?: boolean },
+        opts: {
+          remote: number;
+          local?: number;
+          wait?: boolean;
+          timeout: number;
+          probePath: string;
+          json?: boolean;
+        },
       ) => {
         try {
-          await runSandboxPortForward(
-            id,
-            opts.remote,
-            opts.local ?? opts.remote,
-            !!opts.json,
-          );
+          await runSandboxPortForward(id, {
+            remotePort: opts.remote,
+            localPort: opts.local ?? opts.remote,
+            wait: !!opts.wait,
+            timeoutSec: opts.timeout,
+            probePath: opts.probePath,
+            json: !!opts.json,
+          });
         } catch (err) {
           handleError(err);
         }
@@ -992,11 +1428,18 @@ async function runSandboxSsh(
 
 // ── sandbox port-forward implementation ───────────────────────────────────
 
+interface PortForwardOptions {
+  remotePort: number;
+  localPort: number;
+  wait: boolean;
+  timeoutSec: number;
+  probePath: string;
+  json: boolean;
+}
+
 async function runSandboxPortForward(
   id: string,
-  remotePort: number,
-  localPort: number,
-  json: boolean,
+  opts: PortForwardOptions,
 ): Promise<void> {
   const config = loadConfig();
   const apiKey = config.api_key;
@@ -1005,7 +1448,7 @@ async function runSandboxPortForward(
   const endpoint = config.endpoint ?? "https://api.miosa.ai";
   const base = endpoint.replace(/\/$/, "");
   const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/port-tunnel/${remotePort}`;
+  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/port-tunnel/${opts.remotePort}`;
 
   interface ConnStats {
     active: number;
@@ -1054,33 +1497,45 @@ async function runSandboxPortForward(
       if (err.code === "EADDRINUSE") {
         reject(
           new Error(
-            `Port ${localPort} is already in use. Choose another with --local.`,
+            `Port ${opts.localPort} is already in use. Choose another with --local.`,
           ),
         );
       } else {
         reject(err);
       }
     });
-    server.listen(localPort, "127.0.0.1", resolve);
+    server.listen(opts.localPort, "127.0.0.1", resolve);
   });
 
-  if (json) {
+  let localProbe: ProbeResult | null = null;
+  if (opts.wait) {
+    localProbe = await waitForLocalHttp(
+      opts.localPort,
+      opts.probePath,
+      opts.timeoutSec,
+    );
+  }
+
+  if (opts.json) {
     console.log(
       JSON.stringify({
         sandbox_id: id,
-        remote_port: remotePort,
-        local_port: localPort,
+        remote_port: opts.remotePort,
+        local_port: opts.localPort,
+        ready: localProbe?.ok ?? !opts.wait,
+        status: localProbe?.status ?? null,
+        latency_ms: localProbe?.latency_ms ?? null,
       }),
     );
   } else {
     console.log(
-      `${chalk.green("Forwarding")} ${chalk.cyan(`localhost:${localPort}`)} ${chalk.dim("→")} sandbox ${chalk.cyan(id)}:${chalk.bold(String(remotePort))}`,
+      `${chalk.green(opts.wait ? "Forwarding ready" : "Forwarding")} ${chalk.cyan(`localhost:${opts.localPort}`)} ${chalk.dim("→")} sandbox ${chalk.cyan(id)}:${chalk.bold(String(opts.remotePort))}`,
     );
     console.log(chalk.dim("Press Ctrl+C to close.\n"));
   }
 
   const ticker = setInterval(() => {
-    if (json || stats.active === 0) return;
+    if (opts.json || stats.active === 0) return;
     process.stderr.write(
       chalk.dim(
         `\r[${new Date().toLocaleTimeString()}] connections: ${stats.active}  ↑ ${formatBytes(stats.bytesIn)}  ↓ ${formatBytes(stats.bytesOut)}  `,
@@ -1092,6 +1547,630 @@ async function runSandboxPortForward(
   clearInterval(ticker);
   process.stderr.write("\n");
   server.close();
+}
+
+// ── sandbox deploy / doctor implementation ─────────────────────────────────
+
+interface SandboxDeployOptions {
+  sandbox?: string;
+  template?: string;
+  name?: string;
+  port?: number;
+  start?: string;
+  installCommand?: string;
+  install?: boolean;
+  wait?: boolean;
+  timeout: number;
+  probePath: string;
+}
+
+interface SandboxDeployResult {
+  sandbox_id: string;
+  port: number;
+  preview_url: string;
+  preview_ready: boolean;
+  internal_status?: number | null;
+  edge_status?: number | null;
+  latency_ms?: number | null;
+  process_pid?: string | null;
+}
+
+interface ProbeResult {
+  ok: boolean;
+  status: number | null;
+  latency_ms?: number | null;
+  error?: string;
+}
+
+interface PreviewResult {
+  url: string;
+  ready: boolean;
+  status: number | null;
+  latency_ms: number | null;
+  error?: string;
+}
+
+async function showSandboxWithPreview(
+  sandboxId: string,
+  port: number,
+  probePath: string,
+): Promise<Record<string, unknown>> {
+  const c = client();
+  const sandbox = unwrap(
+    await c.apiGet<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}`)),
+  ) as Record<string, unknown>;
+  let preview: PreviewResult | null = null;
+  try {
+    preview = await previewSandbox(sandboxId, port, {
+      wait: false,
+      timeout: 1,
+      probePath,
+    });
+  } catch (err) {
+    preview = {
+      url: "",
+      ready: false,
+      status: null,
+      latency_ms: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  return {
+    ...sandbox,
+    ready: preview?.ready ?? false,
+    preview: {
+      url: preview?.url || null,
+      port,
+      route_ready: Boolean(preview?.url),
+      tls_ready: preview?.ready ?? false,
+      last_status: preview?.status ?? null,
+      latency_ms: preview?.latency_ms ?? null,
+      error: preview?.error,
+    },
+  };
+}
+
+async function previewSandbox(
+  sandboxId: string,
+  port: number,
+  opts: { wait: boolean; timeout: number; probePath: string },
+): Promise<PreviewResult> {
+  const c = client();
+  const exposed = unwrap(
+    await c.apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/expose`), {
+      port,
+      title: "app preview",
+    }),
+  );
+  const url = extractUrl(exposed);
+  if (!url) throw new UserError("Sandbox expose did not return a preview URL.");
+
+  const edge = opts.wait
+    ? await waitForPublicPreview(url, opts.probePath, opts.timeout)
+    : await probePublicPreview(url, opts.probePath);
+
+  return {
+    url,
+    ready: edge.ok,
+    status: edge.status,
+    latency_ms: edge.latency_ms ?? null,
+    error: edge.error,
+  };
+}
+
+async function waitSandboxReady(
+  sandboxId: string,
+  port: number,
+  probePath: string,
+  timeoutSec: number,
+): Promise<PreviewResult & { sandbox_id: string; port: number; internal_status: number | null }> {
+  const c = client();
+  await waitForSandboxRunning(c, sandboxId, Math.min(timeoutSec, 120));
+  const internal = await waitForInternalHttp(
+    c,
+    sandboxId,
+    port,
+    probePath,
+    Math.min(timeoutSec, 60),
+  );
+  const preview = await previewSandbox(sandboxId, port, {
+    wait: true,
+    timeout: timeoutSec,
+    probePath,
+  });
+  return {
+    sandbox_id: sandboxId,
+    port,
+    internal_status: internal.status,
+    ...preview,
+  };
+}
+
+async function startSandboxService(
+  sandboxId: string,
+  name: string,
+  opts: { cmd: string; cwd: string; port?: number },
+): Promise<Record<string, unknown>> {
+  validateServiceName(name);
+  const c = client();
+  const logPath = serviceLogPath(name);
+  const pidPath = servicePidPath(name);
+  const command = [
+    "mkdir -p /tmp/miosa-services",
+    `if [ -f ${shellQuote(pidPath)} ]; then kill $(cat ${shellQuote(pidPath)}) >/dev/null 2>&1 || true; fi`,
+    `nohup sh -lc ${shellQuote(opts.cmd)} > ${shellQuote(logPath)} 2>&1 & echo $! > ${shellQuote(pidPath)}`,
+    `cat ${shellQuote(pidPath)}`,
+  ].join(" && ");
+  const exec = await execSandbox(c, sandboxId, command, opts.cwd, 15);
+  const pid = String(exec["stdout"] ?? "").trim().split(/\s+/).pop() ?? "";
+  let previewUrl: string | null = null;
+  if (opts.port != null) {
+    const preview = await previewSandbox(sandboxId, opts.port, {
+      wait: false,
+      timeout: 1,
+      probePath: "/",
+    });
+    previewUrl = preview.url;
+  }
+  return {
+    sandbox_id: sandboxId,
+    name,
+    pid,
+    cwd: opts.cwd,
+    command: opts.cmd,
+    port: opts.port ?? null,
+    log_path: logPath,
+    preview_url: previewUrl,
+  };
+}
+
+function serviceLogPath(name: string): string {
+  return `/tmp/miosa-services/${name}.log`;
+}
+
+function servicePidPath(name: string): string {
+  return `/tmp/miosa-services/${name}.pid`;
+}
+
+function validateServiceName(name: string): void {
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+    throw new UserError(
+      `Invalid service name: ${name}`,
+      "Use only letters, numbers, dot, dash, and underscore.",
+    );
+  }
+}
+
+async function deploySandbox(
+  localDir: string,
+  opts: SandboxDeployOptions,
+): Promise<SandboxDeployResult> {
+  const sourceDir = path.resolve(localDir);
+  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+    throw new UserError(`Local directory not found: ${sourceDir}`);
+  }
+
+  const c = client();
+  const detection = detectFramework(sourceDir);
+  const port = opts.port ?? detection?.port ?? 5173;
+  const start = opts.start ?? defaultStartCommand(detection?.framework, port);
+  const installCommand =
+    opts.install === false
+      ? null
+      : opts.installCommand ?? defaultInstallCommand(sourceDir);
+
+  const sandboxId =
+    opts.sandbox ??
+    (await createSandboxForDeploy(c, opts.template ?? "miosa-sandbox", opts.name));
+
+  await waitForSandboxRunning(c, sandboxId, Math.min(opts.timeout, 120));
+
+  const archivePath = createDeployArchive(sourceDir);
+  const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
+  try {
+    await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
+  } finally {
+    fs.rmSync(archivePath, { force: true });
+  }
+
+  await execSandbox(c, sandboxId, `mkdir -p /workspace && tar -xzf ${shellQuote(remoteArchive)} -C /workspace`, "/");
+
+  if (installCommand) {
+    await execSandbox(c, sandboxId, installCommand, "/workspace", opts.timeout);
+  }
+
+  await execSandbox(
+    c,
+    sandboxId,
+    `fuser -k ${port}/tcp >/dev/null 2>&1 || true; nohup sh -lc ${shellQuote(start)} > ${shellQuote(`/tmp/miosa-app-${port}.log`)} 2>&1 & echo $!`,
+    "/workspace",
+  );
+
+  const internal = await waitForInternalHttp(c, sandboxId, port, opts.probePath, Math.min(opts.timeout, 60));
+  const exposed = await c.apiPost<unknown>(
+    apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
+    { port, title: "app preview" },
+  );
+  const previewUrl = extractUrl(unwrap(exposed));
+  if (!previewUrl) {
+    throw new UserError("Sandbox expose did not return a preview URL.");
+  }
+
+  const edge = opts.wait
+    ? await waitForPublicPreview(previewUrl, opts.probePath, opts.timeout)
+    : { ok: false, status: null };
+
+  return {
+    sandbox_id: sandboxId,
+    port,
+    preview_url: previewUrl,
+    preview_ready: edge.ok,
+    internal_status: internal.status,
+    edge_status: edge.status,
+    latency_ms: edge.latency_ms ?? null,
+  };
+}
+
+async function doctorSandbox(
+  sandboxId: string,
+  port: number,
+  probePath: string,
+): Promise<Record<string, unknown>> {
+  const c = client();
+  const sandbox = unwrap(
+    await c.apiGet<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}`)),
+  ) as Record<string, unknown>;
+  const internal = await probeInternalHttp(c, sandboxId, port, probePath);
+  let exposeData: Record<string, unknown> = {};
+  try {
+    exposeData = unwrap(
+      await c.apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/expose`), {
+        port,
+        title: "doctor probe",
+      }),
+    ) as Record<string, unknown>;
+  } catch (err) {
+    exposeData = { error: err instanceof Error ? err.message : String(err) };
+  }
+  const previewUrl = extractUrl(exposeData);
+  const edge = previewUrl
+    ? await probePublicPreview(previewUrl, probePath)
+    : { ok: false, status: null, error: "No preview URL returned" };
+
+  return {
+    sandbox_id: sandboxId,
+    sandbox_state: sandbox["state"] ?? sandbox["status"] ?? "unknown",
+    process: internal.ok ? "listening" : "not_ready",
+    route: previewUrl ? "created" : "missing",
+    tls: edge.error && /tls|certificate|ssl/i.test(edge.error) ? "not_ready" : previewUrl ? "checked" : "unknown",
+    internal_probe: internal,
+    edge_probe: edge,
+    preview_ready: edge.ok,
+    preview_url: previewUrl,
+    expose: exposeData,
+  };
+}
+
+function renderDoctorReport(report: Record<string, unknown>): void {
+  console.log();
+  console.log(chalk.bold("Sandbox Doctor"));
+  console.log();
+  console.log(`  ${chalk.bold("Sandbox")}       ${report["sandbox_id"]}`);
+  console.log(`  ${chalk.bold("State")}         ${report["sandbox_state"]}`);
+  console.log(`  ${chalk.bold("Process")}       ${report["process"]}`);
+  console.log(`  ${chalk.bold("Route")}         ${report["route"]}`);
+  console.log(`  ${chalk.bold("TLS/edge")}      ${report["tls"]}`);
+  console.log(`  ${chalk.bold("Preview ready")} ${report["preview_ready"] ? chalk.green("yes") : chalk.red("no")}`);
+  if (report["preview_url"]) {
+    console.log(`  ${chalk.bold("Preview URL")}   ${chalk.cyan(String(report["preview_url"]))}`);
+  }
+  console.log();
+  if (!report["preview_ready"]) {
+    console.log(
+      chalk.yellow(
+        "  Preview is not externally ready yet. Internal app health and edge probe details are in --json output.",
+      ),
+    );
+    console.log();
+  }
+}
+
+async function createSandboxForDeploy(
+  c: ReturnType<typeof client>,
+  template: string,
+  name?: string,
+): Promise<string> {
+  const body: Record<string, unknown> = { template_id: template };
+  if (name) body["name"] = name;
+  const created = unwrap(await c.apiPost<unknown>(apiPath("/sandboxes"), body)) as Record<string, unknown>;
+  const sandboxId = typeof created["id"] === "string" ? created["id"] : "";
+  if (!sandboxId) throw new UserError("Sandbox create did not return an id.");
+  return sandboxId;
+}
+
+async function waitForSandboxRunning(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  timeoutSec: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    const sandbox = unwrap(
+      await c.apiGet<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}`)),
+    ) as Record<string, unknown>;
+    const state = String(sandbox["state"] ?? sandbox["status"] ?? "").toLowerCase();
+    if (state === "running" || state === "active") return;
+    if (state === "error" || state === "failed") {
+      throw new UserError(`Sandbox ${sandboxId} entered ${state} state.`);
+    }
+    await sleep(1500);
+  }
+  throw new UserError(`Sandbox ${sandboxId} did not become running within ${timeoutSec}s.`);
+}
+
+function createDeployArchive(sourceDir: string): string {
+  const archivePath = path.join(os.tmpdir(), `miosa-deploy-${process.pid}-${Date.now()}.tgz`);
+  const result = spawnSync(
+    "tar",
+    [
+      "--exclude",
+      ".git",
+      "--exclude",
+      "node_modules",
+      "--exclude",
+      ".next",
+      "--exclude",
+      "dist",
+      "-czf",
+      archivePath,
+      "-C",
+      sourceDir,
+      ".",
+    ],
+    { stdio: "pipe" },
+  );
+  if (result.status !== 0) {
+    throw new UserError(
+      `Could not archive ${sourceDir}: ${result.stderr.toString().trim() || "tar failed"}`,
+    );
+  }
+  return archivePath;
+}
+
+async function uploadFileToSandbox(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  localPath: string,
+  remotePath: string,
+): Promise<void> {
+  await c.apiPost(apiPath(`/sandboxes/${enc(sandboxId)}/files`), {
+    path: remotePath,
+    content: fs.readFileSync(localPath).toString("base64"),
+  });
+}
+
+async function uploadDirToSandbox(
+  sandboxId: string,
+  localDir: string,
+  remoteDir: string,
+  opts: { delete: boolean },
+): Promise<{ sandbox_id: string; local_dir: string; remote_dir: string; files_label: string }> {
+  const sourceDir = path.resolve(localDir);
+  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+    throw new UserError(`Local directory not found: ${sourceDir}`);
+  }
+  const c = client();
+  const archivePath = createDeployArchive(sourceDir);
+  const remoteArchive = `/tmp/miosa-upload-${Date.now()}.tgz`;
+  try {
+    await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
+    const clean = opts.delete
+      ? `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`
+      : `mkdir -p ${shellQuote(remoteDir)}`;
+    await execSandbox(
+      c,
+      sandboxId,
+      `${clean} && tar -xzf ${shellQuote(remoteArchive)} -C ${shellQuote(remoteDir)} && rm -f ${shellQuote(remoteArchive)}`,
+      "/",
+    );
+  } finally {
+    fs.rmSync(archivePath, { force: true });
+  }
+  return {
+    sandbox_id: sandboxId,
+    local_dir: sourceDir,
+    remote_dir: remoteDir,
+    files_label: path.basename(sourceDir) || sourceDir,
+  };
+}
+
+async function execSandbox(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  command: string,
+  cwd?: string,
+  timeout?: number,
+): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = { command: commandInCwd(command, cwd) };
+  if (cwd) {
+    body["cwd"] = cwd;
+    body["dir"] = cwd;
+  }
+  if (timeout != null) body["timeout"] = timeout;
+  const result = unwrap(
+    await c.apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/exec`), body),
+  ) as Record<string, unknown>;
+  const exitCode = Number(result["exit_code"] ?? 0);
+  if (exitCode !== 0) {
+    throw new UserError(
+      `Sandbox command failed with exit code ${exitCode}: ${command}`,
+      String(result["stderr"] ?? result["stdout"] ?? ""),
+    );
+  }
+  return result;
+}
+
+async function waitForInternalHttp(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  port: number,
+  probePath: string,
+  timeoutSec: number,
+): Promise<ProbeResult> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: ProbeResult = { ok: false, status: null };
+  while (Date.now() < deadline) {
+    last = await probeInternalHttp(c, sandboxId, port, probePath);
+    if (last.ok) return last;
+    await sleep(1500);
+  }
+  throw new UserError(
+    `App did not answer inside the sandbox on port ${port} within ${timeoutSec}s.`,
+    last.error,
+  );
+}
+
+async function probeInternalHttp(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  port: number,
+  probePath: string,
+): Promise<ProbeResult> {
+  try {
+    const result = await execSandbox(
+      c,
+      sandboxId,
+      `python3 - <<'PY'\nimport urllib.request, sys\nurl = 'http://127.0.0.1:${port}${probePath.startsWith("/") ? probePath : `/${probePath}`}'\ntry:\n    r = urllib.request.urlopen(url, timeout=3)\n    print(r.status)\n    sys.exit(0 if 200 <= r.status < 400 else 1)\nexcept Exception as e:\n    print(e)\n    sys.exit(1)\nPY`,
+      "/",
+      10,
+    );
+    const status = Number(String(result["stdout"] ?? "").trim().split(/\s+/)[0]);
+    return { ok: Number.isFinite(status) && status >= 200 && status < 400, status };
+  } catch (err) {
+    return { ok: false, status: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function waitForPublicPreview(
+  previewUrl: string,
+  probePath: string,
+  timeoutSec: number,
+): Promise<ProbeResult> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: ProbeResult = { ok: false, status: null };
+  while (Date.now() < deadline) {
+    last = await probePublicPreview(previewUrl, probePath);
+    if (last.ok) return last;
+    await sleep(2000);
+  }
+  throw new UserError(
+    `Preview URL was created but did not become publicly ready within ${timeoutSec}s.`,
+    last.error ?? (last.status ? `Last HTTP status: ${last.status}` : undefined),
+  );
+}
+
+async function probePublicPreview(
+  previewUrl: string,
+  probePath: string,
+): Promise<ProbeResult> {
+  try {
+    const url = new URL(previewUrl);
+    url.pathname = joinUrlPath(url.pathname, probePath);
+    const t0 = Date.now();
+    const res = await fetch(url, { method: "GET", redirect: "manual" });
+    return {
+      ok: (res.status >= 200 && res.status < 400) || res.status === 401 || res.status === 403,
+      status: res.status,
+      latency_ms: Date.now() - t0,
+    };
+  } catch (err) {
+    return { ok: false, status: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function waitForLocalHttp(
+  localPort: number,
+  probePath: string,
+  timeoutSec: number,
+): Promise<ProbeResult> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: ProbeResult = { ok: false, status: null };
+  const url = `http://127.0.0.1:${localPort}${probePath.startsWith("/") ? probePath : `/${probePath}`}`;
+  while (Date.now() < deadline) {
+    last = await probePublicPreview(url, "/");
+    if (last.ok) return last;
+    await sleep(1000);
+  }
+  throw new UserError(
+    `Local forwarded URL did not answer within ${timeoutSec}s.`,
+    last.error ?? (last.status ? `Last HTTP status: ${last.status}` : undefined),
+  );
+}
+
+function defaultInstallCommand(sourceDir: string): string | null {
+  if (fs.existsSync(path.join(sourceDir, "package.json"))) return "npm install";
+  if (fs.existsSync(path.join(sourceDir, "requirements.txt"))) return "pip install -r requirements.txt";
+  return null;
+}
+
+function defaultStartCommand(framework: string | undefined, port: number): string {
+  if (framework === "nextjs") return `npm run dev -- -H 0.0.0.0 -p ${port}`;
+  if (framework === "vite-react") return `npm run dev -- --host 0.0.0.0 --port ${port}`;
+  if (framework === "static") return `python3 -m http.server ${port} --bind 0.0.0.0`;
+  return `npm run dev -- --host 0.0.0.0 --port ${port}`;
+}
+
+function extractUrl(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  for (const key of ["url", "preview_url", "public_url"]) {
+    if (typeof row[key] === "string" && row[key]) return row[key];
+  }
+  return null;
+}
+
+function parseSandboxTarget(target: string): { sandboxId: string; remotePath: string } {
+  const idx = target.indexOf(":");
+  if (idx <= 0 || idx === target.length - 1) {
+    throw new UserError(
+      `Invalid sandbox target: ${target}`,
+      "Use the form <sandbox-id>:/absolute/path",
+    );
+  }
+  const sandboxId = target.slice(0, idx);
+  const remotePath = target.slice(idx + 1);
+  if (!remotePath.startsWith("/")) {
+    throw new UserError(
+      `Invalid remote path: ${remotePath}`,
+      "Sandbox copy targets must use an absolute path, e.g. sbx_123:/workspace",
+    );
+  }
+  return { sandboxId, remotePath };
+}
+
+function commandInCwd(command: string, cwd?: string): string {
+  if (!cwd) return command;
+  return `cd ${shellQuote(cwd)} && ${command}`;
+}
+
+function backgroundCommand(command: string): string {
+  if (!command.trim()) return command;
+  const logPath = `/tmp/miosa-bg-${Date.now()}.log`;
+  return `nohup sh -lc ${shellQuote(command)} > ${shellQuote(logPath)} 2>&1 & echo $!`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function joinUrlPath(basePath: string, probePath: string): string {
+  const probe = probePath.startsWith("/") ? probePath : `/${probePath}`;
+  if (!basePath || basePath === "/") return probe;
+  return `${basePath.replace(/\/$/, "")}${probe}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────────

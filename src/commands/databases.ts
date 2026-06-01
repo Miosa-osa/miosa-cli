@@ -19,10 +19,18 @@ interface Database {
 
 interface DatabaseCredentials {
   url?: string;
+  uri?: string;
+  database_url?: string;
+  connection_url?: string;
+  connection_string?: string;
+  connectionString?: string;
   host?: string;
   port?: number;
   database?: string;
+  dbname?: string;
+  name?: string;
   username?: string;
+  user?: string;
   password?: string;
 }
 
@@ -58,6 +66,41 @@ function fmtState(db: Database): string {
   return state;
 }
 
+function normalizeEngine(engine: string): string {
+  const normalized = engine.trim().toLowerCase();
+  return normalized === "postgres" ? "postgresql" : normalized;
+}
+
+function defaultEngineVersion(engine: string, version?: string): string | undefined {
+  if (version) return version;
+  return normalizeEngine(engine) === "postgresql" ? "16" : undefined;
+}
+
+function buildDatabaseUrl(creds: DatabaseCredentials): string | null {
+  const direct =
+    creds.url ??
+    creds.database_url ??
+    creds.connection_url ??
+    creds.connection_string ??
+    creds.connectionString ??
+    creds.uri;
+  if (direct) return normalizePostgresUrl(direct);
+
+  const host = creds.host;
+  const database = creds.database ?? creds.dbname ?? creds.name;
+  const username = creds.username ?? creds.user;
+  if (!host || !database || !username) return null;
+  const port = creds.port ?? 5432;
+  const password = creds.password ? `:${encodeURIComponent(creds.password)}` : "";
+  return `postgresql://${encodeURIComponent(username)}${password}@${host}:${port}/${database}`;
+}
+
+function normalizePostgresUrl(url: string): string {
+  return url.startsWith("postgres://")
+    ? `postgresql://${url.slice("postgres://".length)}`
+    : url;
+}
+
 export function register(program: Command): void {
   const databases = program
     .command("databases")
@@ -72,9 +115,9 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching databases...");
+        const spinner = opts.json ? null : spin("Fetching databases...");
         const rows = unwrapDatabases(await client.apiGet("/api/v1/databases"));
-        spinner.stop();
+        spinner?.stop();
 
         if (opts.json) {
           console.log(JSON.stringify(rows, null, 2));
@@ -110,35 +153,42 @@ export function register(program: Command): void {
     .requiredOption("--name <name>", "Database name")
     .option(
       "--engine <engine>",
-      "Database engine (postgres, mysql, redis)",
-      "postgres",
+      "Database engine (postgres/postgresql, mysql, redis)",
+      "postgresql",
     )
-    .option("--version <version>", "Engine version")
+    .option("--engine-version <version>", "Engine version")
+    .option("--db-version <version>", "Alias for --engine-version")
     .option("--region <region>", "Region ID")
     .option("--json", "Output raw JSON")
     .action(
       async (opts: {
         name: string;
         engine: string;
-        version?: string;
+        engineVersion?: string;
+        dbVersion?: string;
         region?: string;
         json?: boolean;
       }) => {
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin(`Creating database ${opts.name}...`);
+          const spinner = opts.json ? null : spin(`Creating database ${opts.name}...`);
+          const engine = normalizeEngine(opts.engine);
+          const engineVersion = defaultEngineVersion(
+            engine,
+            opts.engineVersion ?? opts.dbVersion,
+          );
           const body: Record<string, unknown> = {
             name: opts.name,
-            engine: opts.engine,
+            engine,
           };
-          if (opts.version) body["engine_version"] = opts.version;
+          if (engineVersion) body["engine_version"] = engineVersion;
           if (opts.region) body["region"] = opts.region;
 
           const db = unwrapDatabase(
             await client.apiPost("/api/v1/databases", body),
           );
-          spinner.succeed(`Created database ${db.name}`);
+          spinner?.succeed(`Created database ${db.name}`);
 
           if (opts.json) {
             console.log(JSON.stringify(db, null, 2));
@@ -148,7 +198,7 @@ export function register(program: Command): void {
           console.log();
           console.log(`  ${chalk.bold("ID")}      ${db.id}`);
           console.log(`  ${chalk.bold("Name")}    ${db.name}`);
-          console.log(`  ${chalk.bold("Engine")}  ${db.engine ?? opts.engine}`);
+          console.log(`  ${chalk.bold("Engine")}  ${db.engine ?? engine}`);
           console.log(`  ${chalk.bold("State")}   ${db.state ?? "creating"}`);
           console.log();
         } catch (err) {
@@ -203,27 +253,40 @@ export function register(program: Command): void {
   databases
     .command("connect <id>")
     .description("Show connection string for a database")
+    .option("--print-url", "Print only the connection URL")
     .option("--json", "Output raw JSON")
-    .action(async (id: string, opts: { json?: boolean }) => {
+    .action(async (id: string, opts: { printUrl?: boolean; json?: boolean }) => {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching credentials...");
+        const spinner = opts.json ? null : spin("Fetching credentials...");
         const creds = unwrapCredentials(
           await client.apiGet(
             `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
           ),
         );
-        spinner.stop();
+        spinner?.stop();
 
         if (opts.json) {
           console.log(JSON.stringify(creds, null, 2));
           return;
         }
 
-        if (creds.url) {
+        const url = buildDatabaseUrl(creds);
+
+        if (opts.printUrl) {
+          if (!url) {
+            throw new Error(
+              "Could not construct a connection URL from the credentials returned by the API. Use --json to inspect raw credentials.",
+            );
+          }
+          console.log(url);
+          return;
+        }
+
+        if (url) {
           console.log();
-          console.log(`  ${chalk.bold("URL")}       ${creds.url}`);
+          console.log(`  ${chalk.bold("URL")}       ${url}`);
           console.log();
         } else {
           console.log();
@@ -231,10 +294,12 @@ export function register(program: Command): void {
             console.log(`  ${chalk.bold("Host")}      ${creds.host}`);
           if (creds.port !== undefined)
             console.log(`  ${chalk.bold("Port")}      ${creds.port}`);
-          if (creds.database)
-            console.log(`  ${chalk.bold("Database")} ${creds.database}`);
-          if (creds.username)
-            console.log(`  ${chalk.bold("User")}      ${creds.username}`);
+          const database = creds.database ?? creds.dbname ?? creds.name;
+          const username = creds.username ?? creds.user;
+          if (database)
+            console.log(`  ${chalk.bold("Database")} ${database}`);
+          if (username)
+            console.log(`  ${chalk.bold("User")}      ${username}`);
           if (creds.password)
             console.log(`  ${chalk.bold("Password")} ${creds.password}`);
           console.log();
@@ -415,13 +480,13 @@ export function register(program: Command): void {
         const { request } = await import("undici");
         const endpoint = config.endpoint;
         const apiKey = config.api_key ?? "";
-        const url = `${endpoint.replace(/\/$/, "")}/api/v1/databases/${encodeURIComponent(id)}/logs`;
+        const url = `${endpoint.replace(/\/$/, "")}/api/v1/databases/${encodeURIComponent(id)}/logs/stream`;
 
         const res = await request(url, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${apiKey}`,
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
             "User-Agent": "@miosa/cli/0.1.0",
           },
         });
@@ -429,6 +494,13 @@ export function register(program: Command): void {
         if (res.statusCode >= 400) {
           const body = await res.body.text();
           console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
+          if (res.statusCode === 406) {
+            console.error(
+              chalk.yellow(
+                "Database logs endpoint rejected the requested response format. The CLI now accepts SSE, JSON, or text; if this persists, the API route is returning a format negotiation error.",
+              ),
+            );
+          }
           process.exit(1);
         }
 
