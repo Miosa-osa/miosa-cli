@@ -186,6 +186,190 @@ export class MiosaClient {
     return this.delete<T>(path);
   }
 
+  // --- ClinicIQ / workspace admin SDK helpers ---
+
+  async listWorkspaces(): Promise<unknown[]> {
+    return unwrapData<unknown[]>(
+      await this.get<unknown>("/api/v1/workspaces"),
+      [],
+    );
+  }
+
+  async createWorkspace(attrs: Record<string, unknown>): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.post<unknown>("/api/v1/workspaces", attrs),
+    );
+  }
+
+  async getWorkspaceInventory(workspaceId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.get<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/inventory`,
+      ),
+    );
+  }
+
+  async cleanupWorkspaceResources(
+    workspaceId: string,
+    opts: Record<string, unknown>,
+  ): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.post<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/cleanup`,
+        opts,
+      ),
+    );
+  }
+
+  async deleteWorkspace(
+    workspaceId: string,
+    opts?: { force?: boolean; dryRun?: boolean },
+  ): Promise<unknown> {
+    const qs = queryString({
+      force: opts?.force,
+      dry_run: opts?.dryRun,
+    });
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/workspaces/${encodeURIComponent(workspaceId)}${qs}`,
+      ),
+    );
+  }
+
+  async listComputers(params?: {
+    workspace?: string;
+    workspace_id?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/computers${queryString(paramsToApi(params))}`,
+      ),
+      ["computers", "data"],
+    );
+  }
+
+  async deleteComputer(computerId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/computers/${encodeURIComponent(computerId)}`,
+      ),
+    );
+  }
+
+  async listSandboxes(params?: {
+    workspace?: string;
+    workspace_id?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/sandboxes${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
+  async deleteSandbox(sandboxId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}`,
+      ),
+    );
+  }
+
+  async listDomains(params?: {
+    workspace?: string;
+    workspace_id?: string;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/custom-domains${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
+  async deleteDomain(hostnameOrId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/domains/${encodeURIComponent(hostnameOrId)}`,
+      ),
+    );
+  }
+
+  async listDatabases(params?: {
+    workspace?: string;
+    workspace_id?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/databases${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
+  async deleteDatabase(databaseId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/databases/${encodeURIComponent(databaseId)}`,
+      ),
+    );
+  }
+
+  async listSecretsMetadata(params?: {
+    workspace?: string;
+    workspace_id?: string;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/egress/secrets${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
+  async unsetSecret(secretId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/egress/secrets/${encodeURIComponent(secretId)}`,
+      ),
+    );
+  }
+
+  async listStorageBuckets(params?: {
+    workspace?: string;
+    workspace_id?: string;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/storage/buckets${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
+  async deleteStorageBucket(bucketId: string): Promise<unknown> {
+    return unwrapData<unknown>(
+      await this.delete<unknown>(
+        `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}`,
+      ),
+    );
+  }
+
+  async getAuditEvents(params?: {
+    workspace?: string;
+    workspace_id?: string;
+    limit?: number;
+    before?: string;
+  }): Promise<unknown[]> {
+    return unwrapList(
+      await this.get<unknown>(
+        `/api/v1/audit-log${queryString(paramsToApi(params))}`,
+      ),
+    );
+  }
+
   // --- Tenant ---
 
   async getTenant(): Promise<Tenant> {
@@ -813,6 +997,55 @@ function responseHeader(
   const value = headers?.[name] ?? headers?.[name.toLowerCase()];
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function unwrapData<T>(payload: unknown, fallback?: T): T {
+  if (isRecord(payload) && "data" in payload) return payload["data"] as T;
+  if (payload === undefined && fallback !== undefined) return fallback;
+  return payload as T;
+}
+
+function unwrapList(payload: unknown, keys: string[] = ["data"]): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  if (isRecord(payload)) {
+    for (const key of keys) {
+      const value = payload[key];
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return [];
+}
+
+function queryString(values?: Record<string, unknown>): string {
+  if (!values) return "";
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (
+      value === undefined ||
+      value === null ||
+      value === false ||
+      value === ""
+    )
+      continue;
+    params.set(key, String(value));
+  }
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+function paramsToApi<
+  T extends { workspace?: string; workspace_id?: string } | undefined,
+>(params: T): Record<string, unknown> | undefined {
+  if (!params) return undefined;
+  const result: Record<string, unknown> = { ...params };
+  if (params.workspace && !params.workspace_id)
+    result["workspace_id"] = params.workspace;
+  delete result["workspace"];
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function debugHttpError(

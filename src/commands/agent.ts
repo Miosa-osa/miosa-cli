@@ -54,6 +54,11 @@ interface AgentSessionEvent {
   inserted_at?: string | null;
 }
 
+interface SseTicketResponse {
+  ticket?: string;
+  expires_in?: number;
+}
+
 interface ComputerListItem {
   id: string;
   name: string;
@@ -214,7 +219,9 @@ async function startAgentSession(
   const config = loadConfig();
   const c = new MiosaClient(config);
 
-  const spinner = isJsonMode(opts) ? null : spin(`Resolving computer ${computerNameOrId}...`);
+  const spinner = isJsonMode(opts)
+    ? null
+    : spin(`Resolving computer ${computerNameOrId}...`);
   const computer = await resolveComputer(c, computerNameOrId);
   spinner?.succeed(`Starting agent on ${computer.name}`);
 
@@ -258,13 +265,17 @@ async function resumeAgentSession(
   const computer = await resolveComputer(c, computerNameOrId);
 
   const payload = await c.apiPost<unknown>(
-    apiV1(`/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/resume`),
+    apiV1(
+      `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/resume`,
+    ),
     {},
   );
 
   if (instruction) {
     await c.apiPost<unknown>(
-      apiV1(`/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/task`),
+      apiV1(
+        `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/task`,
+      ),
       { instruction },
     );
   }
@@ -629,10 +640,23 @@ function buildHistory(agent: Command): void {
 
           const computer = await resolveComputer(c, opts.computer);
 
-          const qs = opts.limit ? `?limit=${enc(opts.limit)}` : "";
+          const ticketPayload = await c.apiPost<unknown>(
+            apiV1(
+              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/sse-ticket`,
+            ),
+            {},
+          );
+          const ticket = dataOf<SseTicketResponse>(ticketPayload).ticket;
+          if (!ticket) {
+            throw new UserError("Could not create an agent history ticket.");
+          }
+
+          const search = new URLSearchParams({ ticket });
+          if (opts.limit) search.set("limit", opts.limit);
+
           const payload = await c.apiGet<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/events${qs}`,
+              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/events?${search.toString()}`,
             ),
           );
 
@@ -683,7 +707,10 @@ export function register(program: Command): void {
     .argument("[instruction...]", "Goal/instruction for the agent")
     .option("--model <model-id>", "Model ID override")
     .option("--max-turns <n>", "Maximum agent turns")
-    .option("--resume <session-id>", "Resume a paused session, optionally with a new instruction")
+    .option(
+      "--resume <session-id>",
+      "Resume a paused session, optionally with a new instruction",
+    )
     .option("--json", "Output as JSON")
     .action(
       async (
@@ -700,7 +727,12 @@ export function register(program: Command): void {
 
           const goal = instruction.join(" ").trim();
           if (opts.resume) {
-            await resumeAgentSession(computer, opts.resume, goal || undefined, opts);
+            await resumeAgentSession(
+              computer,
+              opts.resume,
+              goal || undefined,
+              opts,
+            );
             return;
           }
 
