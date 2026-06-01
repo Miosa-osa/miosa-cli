@@ -5,7 +5,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -504,11 +504,12 @@ Examples:
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = opts.json ? null : spin("Fetching deployments...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching deployments...");
         const deployments = await client.listDeployments();
         spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(deployments, null, 2));
           return;
         }
@@ -576,11 +577,12 @@ Examples:
         const client = new MiosaClient(config);
         const deploymentId = toDeploymentId(id);
 
-        const spinner = opts.json ? null : spin("Fetching deployment...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching deployment...");
         const dep = await client.getDeployment(deploymentId);
         spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(dep, null, 2));
           return;
         }
