@@ -103,8 +103,16 @@ function getGitInfo(dir: string): GitInfo {
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
-function deploymentUrl(slug: string, tenantSlug: string): string {
-  return `https://${slug}.${tenantSlug}.miosa.app`;
+function deploymentUrl(
+  deployment: Pick<Deployment, "slug" | "public_url" | "auto_subdomain">,
+  tenantSlug?: string | null,
+): string | null {
+  if (deployment.public_url) return deployment.public_url;
+  if (deployment.auto_subdomain) return deployment.auto_subdomain;
+  if (tenantSlug && deployment.slug) {
+    return `https://${deployment.slug}.${tenantSlug}.miosa.app`;
+  }
+  return null;
 }
 
 // ── Deployment ID resolution ──────────────────────────────────────────────────
@@ -447,10 +455,10 @@ Examples:
             const tenant = await client.getTenant();
             spinner.stop();
 
-            const url = deploymentUrl(dep.slug, tenant.slug);
+            const url = deploymentUrl(dep, tenant.slug);
             console.log(chalk.green("  Deployed"));
             console.log();
-            console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url)}`);
+            console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
             console.log();
             console.log(chalk.dim("  Next steps:"));
             console.log(
@@ -496,9 +504,9 @@ Examples:
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching deployments...");
+        const spinner = opts.json ? null : spin("Fetching deployments...");
         const deployments = await client.listDeployments();
-        spinner.stop();
+        spinner?.stop();
 
         if (opts.json) {
           console.log(JSON.stringify(deployments, null, 2));
@@ -568,9 +576,9 @@ Examples:
         const client = new MiosaClient(config);
         const deploymentId = toDeploymentId(id);
 
-        const spinner = spin("Fetching deployment...");
+        const spinner = opts.json ? null : spin("Fetching deployment...");
         const dep = await client.getDeployment(deploymentId);
-        spinner.stop();
+        spinner?.stop();
 
         if (opts.json) {
           console.log(JSON.stringify(dep, null, 2));
@@ -595,12 +603,8 @@ Examples:
           }
         };
 
-        const tenantSlug = config.endpoint
-          .replace(/^https?:\/\//, "")
-          .split(".")[0];
-        const publicUrl = dep.slug
-          ? `https://${dep.slug}.${tenantSlug}.miosa.app`
-          : chalk.dim("—");
+        const tenant = await client.getTenant().catch(() => null);
+        const publicUrl = deploymentUrl(dep, tenant?.slug) ?? chalk.dim("—");
 
         printBanner({ subtitle: "Deployment" });
         console.log(
