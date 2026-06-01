@@ -278,9 +278,10 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const t0 = Date.now();
+          const json = !!opts.json || process.env["MIOSA_JSON"] === "1";
 
           if (opts.data) {
-            if (opts.json) {
+            if (json) {
               await postAndPrint("/sandboxes", opts, {});
               return;
             }
@@ -347,7 +348,7 @@ export function register(program: Command): void {
             Object.assign(sb, latest, { ready: true });
           }
 
-          if (opts.json) {
+          if (json) {
             console.log(JSON.stringify(sb, null, 2));
             return;
           }
