@@ -30,7 +30,7 @@ export function handleError(err: unknown): never {
             };
 
     console.log(JSON.stringify({ ok: false, error }, null, 2));
-    process.exit(err instanceof MiosaError ? err.exitCode : 1);
+    return process.exit(err instanceof MiosaError ? err.exitCode : 1);
   }
 
   if (err instanceof MiosaError) {
@@ -44,17 +44,17 @@ export function handleError(err: unknown): never {
     if (isDebugMode() && err.details) {
       console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
     }
-    process.exit(err.exitCode);
+    return process.exit(err.exitCode);
   }
   if (err instanceof Error) {
     console.error(chalk.red(`Unexpected error: ${err.message}`));
     if (isDebugMode()) {
       console.error(err.stack);
     }
-    process.exit(1);
+    return process.exit(1);
   }
   console.error(chalk.red(`Unknown error: ${String(err)}`));
-  process.exit(1);
+  return process.exit(1);
 }
 
 function errorCodeFor(err: MiosaError): string {
@@ -66,7 +66,8 @@ function errorCodeFor(err: MiosaError): string {
 }
 
 function retryableFor(err: MiosaError): boolean {
-  if ("retryable" in err && typeof err.retryable === "boolean") return err.retryable;
+  if ("retryable" in err && typeof err.retryable === "boolean")
+    return err.retryable;
   return err.exitCode >= 70;
 }
 

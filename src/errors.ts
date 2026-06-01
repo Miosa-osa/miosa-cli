@@ -23,8 +23,10 @@ export class AuthError extends MiosaError {
   constructor(
     message = "Authentication failed. Run: miosa auth login",
     hint = "If this terminal was revoked, run `miosa auth login` again to create a new token.",
+    details?: unknown,
+    requestId?: string | null,
   ) {
-    super(message, EXIT_AUTH_ERROR, hint);
+    super(message, EXIT_AUTH_ERROR, hint, details, requestId);
   }
 }
 
@@ -75,7 +77,7 @@ export function mapHttpError(
   const apiCode = body.error?.code;
   const apiDetails = body.error?.details;
 
-  if (apiCode) {
+  if (apiCode && status !== 401 && status !== 403) {
     return new ApiResponseError(
       apiCode,
       msg,
@@ -90,15 +92,21 @@ export function mapHttpError(
   switch (status) {
     case 401:
     case 403:
-      if (/revoked|expired|invalid|not found|unauthorized|forbidden/i.test(msg)) {
+      if (
+        /revoked|expired|invalid|not found|unauthorized|forbidden/i.test(msg)
+      ) {
         return new AuthError(
           `This terminal connection is no longer authorized (${status}): ${msg}`,
           "Run `miosa auth login` to reconnect this terminal, or manage tokens at https://miosa.ai/account.",
+          apiDetails ?? rawBody,
+          requestId,
         );
       }
       return new AuthError(
         `Access denied (${status}): ${msg}`,
         "Run `miosa auth login` to connect this terminal.",
+        apiDetails ?? rawBody,
+        requestId,
       );
     case 402:
       return new UserError(
@@ -115,7 +123,12 @@ export function mapHttpError(
     case 429:
       return new UserError("Rate limited. Wait a moment and retry.");
     case 501:
-      return new ServerError(`Feature not available: ${msg}`, status, rawBody, requestId);
+      return new ServerError(
+        `Feature not available: ${msg}`,
+        status,
+        rawBody,
+        requestId,
+      );
     default:
       if (status >= 500) {
         return new ServerError(

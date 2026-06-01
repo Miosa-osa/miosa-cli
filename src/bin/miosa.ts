@@ -57,7 +57,10 @@ program
     "MIOSA CLI — application module infrastructure for the Optimal System. Manage Computers, Sandboxes, and OpenComputers hosts from your shell.",
   )
   .version(pkg.version, "-v, --version", "Print version number and exit")
-  .option("--json", "Prefer JSON output for commands that support structured output")
+  .option(
+    "--json",
+    "Prefer JSON output for commands that support structured output",
+  )
   .option("--debug", "Show request IDs and backend error details")
   .option("--quiet", "Suppress non-essential human-readable output")
   .option("--no-color", "Disable ANSI color output")
@@ -70,8 +73,8 @@ Examples:
   miosa login                                   Authenticate (opens browser)
   miosa login --api-key msk_u_...               Authenticate with an API key
   miosa login --stdin                           Pipe an API key: echo 'msk_...' | miosa login --stdin
-  miosa whoami                                  Show current auth state (instant, cached)
-  miosa whoami --refresh                        Force live refresh of identity
+  miosa whoami                                  Verify and show current auth state
+  miosa whoami --cached                         Show stale local identity without an API call
   miosa config ls                               List all config keys
   miosa config set region us-nyc                Set a config value
   miosa doctor                                  Diagnose CLI, auth, and toolchain
