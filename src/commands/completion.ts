@@ -10,6 +10,7 @@ const COMMANDS = [
   "backups",
   "billing",
   "builds",
+  "capabilities",
   "checkpoints",
   "cleanup",
   "completion",
@@ -78,9 +79,27 @@ const SUBCOMMANDS: Record<string, string[]> = {
     "snapshots",
     "checkpoints",
   ],
-  sandbox: ["list", "ls", "show", "create", "exec", "ssh", "shell", "publish", "deploy"],
+  sandbox: [
+    "list",
+    "ls",
+    "show",
+    "create",
+    "exec",
+    "ssh",
+    "shell",
+    "publish",
+    "deploy",
+  ],
   releases: ["list", "show", "get", "promote", "rollback"],
-  workspaces: ["list", "create", "show", "update", "delete", "inventory", "cleanup"],
+  workspaces: [
+    "list",
+    "create",
+    "show",
+    "update",
+    "delete",
+    "inventory",
+    "cleanup",
+  ],
 };
 
 function words(values: string[]): string {
@@ -102,7 +121,10 @@ _miosa_completion() {
 
   case "$prev" in
 ${Object.entries(SUBCOMMANDS)
-  .map(([cmd, subs]) => `    ${cmd}) COMPREPLY=( $(compgen -W "${words(subs)}" -- "$cur") ) ;;`)
+  .map(
+    ([cmd, subs]) =>
+      `    ${cmd}) COMPREPLY=( $(compgen -W "${words(subs)}" -- "$cur") ) ;;`,
+  )
   .join("\n")}
   esac
 }
@@ -124,7 +146,10 @@ fi
 
 case $words[2] in
 ${Object.entries(SUBCOMMANDS)
-  .map(([cmd, subs]) => `  ${cmd}) _values '${cmd} command' ${subs.map((sub) => `${sub}:'${sub}'`).join(" ")} ;;`)
+  .map(
+    ([cmd, subs]) =>
+      `  ${cmd}) _values '${cmd} command' ${subs.map((sub) => `${sub}:'${sub}'`).join(" ")} ;;`,
+  )
   .join("\n")}
 esac
 `;
@@ -133,12 +158,16 @@ esac
 function fishCompletion(): string {
   const lines = [
     "# miosa fish completion",
-    ...COMMANDS.map((cmd) => `complete -c miosa -f -n "__fish_use_subcommand" -a "${cmd}"`),
+    ...COMMANDS.map(
+      (cmd) => `complete -c miosa -f -n "__fish_use_subcommand" -a "${cmd}"`,
+    ),
   ];
 
   for (const [cmd, subs] of Object.entries(SUBCOMMANDS)) {
     for (const sub of subs) {
-      lines.push(`complete -c miosa -f -n "__fish_seen_subcommand_from ${cmd}" -a "${sub}"`);
+      lines.push(
+        `complete -c miosa -f -n "__fish_seen_subcommand_from ${cmd}" -a "${sub}"`,
+      );
     }
   }
 

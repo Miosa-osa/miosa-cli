@@ -78,6 +78,7 @@ Examples:
   miosa config ls                               List all config keys
   miosa config set region us-nyc                Set a config value
   miosa doctor                                  Diagnose CLI, auth, and toolchain
+  miosa capabilities --json                    Print agent-readable workflows and command recipes
   miosa computers list                          List all Computers
   miosa computers vnc <id>                      Open a Computer's VNC viewer
   miosa sandbox list                            List all Sandboxes
@@ -149,6 +150,7 @@ const commandModules = [
   "../commands/whoami.js",
   "../commands/config.js",
   "../commands/doctor.js",
+  "../commands/capabilities.js",
   "../commands/hosts.js",
   "../commands/host.js",
   "../commands/computers.js",
