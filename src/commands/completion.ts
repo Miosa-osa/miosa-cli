@@ -11,6 +11,7 @@ const COMMANDS = [
   "billing",
   "builds",
   "checkpoints",
+  "cleanup",
   "completion",
   "computers",
   "config",
@@ -66,8 +67,20 @@ const SUBCOMMANDS: Record<string, string[]> = {
   agent: ["start", "ls", "get", "task", "pause", "resume", "stop", "history"],
   apps: ["list", "ls", "create", "show", "open", "destroy", "delete"],
   domains: ["status", "list", "add", "verify", "assign", "delete"],
+  cleanup: [
+    "sandboxes",
+    "deployments",
+    "apps",
+    "domains",
+    "databases",
+    "storage",
+    "secrets",
+    "snapshots",
+    "checkpoints",
+  ],
   sandbox: ["list", "ls", "show", "create", "exec", "ssh", "shell", "publish", "deploy"],
   releases: ["list", "show", "get", "promote", "rollback"],
+  workspaces: ["list", "create", "show", "update", "delete", "inventory", "cleanup"],
 };
 
 function words(values: string[]): string {

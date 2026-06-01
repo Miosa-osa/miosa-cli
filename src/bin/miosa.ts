@@ -179,6 +179,7 @@ const commandModules = [
   "../commands/gha-runners.js",
   "../commands/backups.js",
   "../commands/checkpoints.js",
+  "../commands/cleanup.js",
   "../commands/workspaces.js",
   "../commands/services.js",
   "../commands/containers.js",
