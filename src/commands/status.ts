@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, redactKey, getConfigPath } from "../config.js";
+import { clearAuthCache, loadConfig, redactKey, getConfigPath } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
 import { spin } from "../ui/spinner.js";
@@ -343,6 +343,7 @@ export function register(program: Command): void {
       const config = loadConfig();
 
       if (!config.api_key) {
+        clearAuthCache();
         if (json) {
           printJson({ authenticated: false, config: getConfigPath() });
           return;

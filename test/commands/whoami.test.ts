@@ -3,6 +3,7 @@ import { MockAgent, setGlobalDispatcher } from "undici";
 import { Command } from "commander";
 
 const configState = vi.hoisted(() => ({
+  apiKey: "msk_u_test" as string | null,
   cache: {
     email: null,
     name: "Cached Tenant",
@@ -19,7 +20,7 @@ const configState = vi.hoisted(() => ({
 vi.mock("../../src/config.js", () => ({
   loadConfig: () => ({
     endpoint: "https://api.miosa.ai",
-    api_key: "msk_u_test",
+    api_key: configState.apiKey,
     default_host: null,
     region: "us-mia",
     output: "text",
@@ -56,6 +57,7 @@ describe("miosa whoami", () => {
       region: "us-east",
       cached_at: "2026-01-01T00:00:00.000Z",
     };
+    configState.apiKey = "msk_u_test";
     configState.saveAuthCache.mockClear();
     configState.clearAuthCache.mockClear();
     configState.clearAuthCache.mockImplementation(() => {
@@ -171,5 +173,21 @@ describe("miosa whoami", () => {
     expect(parsed.error.request_id).toBe("req_revoked");
     expect(configState.clearAuthCache).toHaveBeenCalledTimes(1);
     expect(process.exit).toHaveBeenCalledWith(3);
+  });
+
+  it("clears stale identity cache when no API key is configured", async () => {
+    configState.apiKey = null;
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "whoami", "--json"]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["authenticated"]).toBe(false);
+    expect(configState.clearAuthCache).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,7 +7,7 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 
 interface Bucket {
   id: string;
@@ -88,14 +88,15 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching buckets...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching buckets...");
         const rows = unwrapBuckets(
           await client.apiGet("/api/v1/storage/buckets"),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+        if (json) {
+          printJson(rows);
           return;
         }
 
@@ -148,7 +149,8 @@ export function register(program: Command): void {
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin(`Creating bucket ${opts.name}...`);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin(`Creating bucket ${opts.name}...`);
           const body: Record<string, unknown> = {
             name: opts.name,
             visibility: opts.public ? "public" : "private",
@@ -158,10 +160,10 @@ export function register(program: Command): void {
           const bucket = unwrapBucket(
             await client.apiPost("/api/v1/storage/buckets", body),
           );
-          spinner.succeed(`Created bucket ${bucket.name}`);
+          spinner?.succeed(`Created bucket ${bucket.name}`);
 
-          if (opts.json) {
-            console.log(JSON.stringify(bucket, null, 2));
+          if (json) {
+            printJson(bucket);
             return;
           }
 
@@ -193,8 +195,8 @@ export function register(program: Command): void {
           ),
         );
 
-        if (opts.json) {
-          console.log(JSON.stringify(bucket, null, 2));
+        if (isJsonMode(opts)) {
+          printJson(bucket);
           return;
         }
 
@@ -249,13 +251,13 @@ export function register(program: Command): void {
 
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Deleting bucket...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Deleting bucket...");
         const result = await client.apiDelete(
           `/api/v1/storage/buckets/${encodeURIComponent(id)}`,
         );
-        spinner.succeed("Bucket deleted");
-        if (opts.json)
-          console.log(JSON.stringify(result ?? { ok: true }, null, 2));
+        spinner?.succeed("Bucket deleted");
+        if (json) printJson(result ?? { ok: true });
       } catch (err) {
         handleError(err);
       }
@@ -270,16 +272,17 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching objects...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching objects...");
         const rows = unwrapObjects(
           await client.apiGet(
             `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/objects`,
           ),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+        if (json) {
+          printJson(rows);
           return;
         }
 
@@ -329,16 +332,28 @@ export function register(program: Command): void {
             const info = await stat(localPath);
             fileSize = info.size;
           } catch {
+          if (isJsonMode(opts)) {
+            printJson({
+              ok: false,
+              error: {
+                code: "FILE_NOT_FOUND",
+                message: `File not found: ${localPath}`,
+                retryable: false,
+              },
+            });
+          } else {
             console.error(chalk.red(`File not found: ${localPath}`));
-            process.exit(1);
+          }
+          process.exit(1);
           }
 
           const objectKey = opts.key ?? basename(localPath);
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin(
-            `Uploading ${basename(localPath)} (${fmtSize(fileSize)})...`,
-          );
+          const json = isJsonMode(opts);
+          const spinner = json
+            ? null
+            : spin(`Uploading ${basename(localPath)} (${fmtSize(fileSize)})...`);
 
           // Read the file and upload via PUT
           const { readFile } = await import("node:fs/promises");
@@ -348,10 +363,10 @@ export function register(program: Command): void {
             `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/objects/${encodeURIComponent(objectKey)}`,
             data,
           );
-          spinner.succeed(`Uploaded → ${objectKey}`);
+          spinner?.succeed(`Uploaded → ${objectKey}`);
 
-          if (opts.json) {
-            console.log(JSON.stringify(result ?? { key: objectKey }, null, 2));
+          if (json) {
+            printJson(result ?? { key: objectKey });
             return;
           }
 
@@ -382,7 +397,8 @@ export function register(program: Command): void {
           const config = loadConfig();
           const client = new MiosaClient(config);
           const outputPath = opts.output ?? basename(key);
-          const spinner = spin(`Downloading ${key}...`);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin(`Downloading ${key}...`);
 
           // Use undici request directly for streaming the binary response
           const { request } = await import("undici");
@@ -401,24 +417,29 @@ export function register(program: Command): void {
           });
 
           if (res.statusCode >= 400) {
-            spinner.fail("Download failed");
+            spinner?.fail("Download failed");
             const body = await res.body.text();
-            console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
+            if (json) {
+              printJson({
+                ok: false,
+                error: {
+                  code: "HTTP_ERROR",
+                  message: `HTTP ${res.statusCode}: ${body}`,
+                  retryable: res.statusCode >= 500,
+                },
+              });
+            } else {
+              console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
+            }
             process.exit(1);
           }
 
           const outStream = createWriteStream(outputPath);
           await pipeline(res.body, outStream);
-          spinner.succeed(`Downloaded → ${outputPath}`);
+          spinner?.succeed(`Downloaded → ${outputPath}`);
 
-          if (opts.json) {
-            console.log(
-              JSON.stringify(
-                { key, output: outputPath, bucket: bucketId },
-                null,
-                2,
-              ),
-            );
+          if (json) {
+            printJson({ key, output: outputPath, bucket: bucketId });
             return;
           }
 
@@ -441,13 +462,13 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin(`Deleting ${key}...`);
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin(`Deleting ${key}...`);
         const result = await client.apiDelete(
           `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/objects/${encodeURIComponent(key)}`,
         );
-        spinner.succeed(`Deleted ${key}`);
-        if (opts.json)
-          console.log(JSON.stringify(result ?? { ok: true }, null, 2));
+        spinner?.succeed(`Deleted ${key}`);
+        if (json) printJson(result ?? { ok: true });
       } catch (err) {
         handleError(err);
       }
@@ -468,27 +489,39 @@ export function register(program: Command): void {
         try {
           const expiresIn = parseInt(opts.expires, 10);
           if (isNaN(expiresIn) || expiresIn <= 0) {
-            console.error(
-              chalk.red("--expires must be a positive integer (seconds)"),
-            );
+            if (isJsonMode(opts)) {
+              printJson({
+                ok: false,
+                error: {
+                  code: "INVALID_ARGUMENT",
+                  message: "--expires must be a positive integer (seconds)",
+                  retryable: false,
+                },
+              });
+            } else {
+              console.error(
+                chalk.red("--expires must be a positive integer (seconds)"),
+              );
+            }
             process.exit(1);
           }
 
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin("Generating presigned URL...");
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Generating presigned URL...");
           const presign = unwrapPresign(
             await client.apiPost(
               `/api/v1/storage/buckets/${encodeURIComponent(bucketId)}/presign`,
               { key, expires_in: expiresIn },
             ),
           );
-          spinner.stop();
+          spinner?.stop();
 
           const url = presign.url ?? presign.presigned_url;
 
-          if (opts.json) {
-            console.log(JSON.stringify(presign, null, 2));
+          if (json) {
+            printJson(presign);
             return;
           }
 

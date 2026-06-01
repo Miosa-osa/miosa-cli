@@ -5,7 +5,7 @@ import { MiosaClient } from "../client.js";
 import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError, parseEnvPairs } from "./util.js";
+import { handleError, isJsonMode, parseEnvPairs, printJson } from "./util.js";
 
 interface Secret {
   id: string;
@@ -94,12 +94,13 @@ export function register(program: Command): void {
         assertSingleTarget(opts);
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching secrets...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching secrets...");
         const rows = await listSecrets(client, opts);
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+        if (json) {
+          printJson(rows);
           return;
         }
 
@@ -142,7 +143,8 @@ export function register(program: Command): void {
         const client = new MiosaClient(config);
         const values = parseEnvPairs(pairs);
         const basePath = await secretBasePath(client, opts);
-        const spinner = spin("Setting secrets...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Setting secrets...");
         const results: unknown[] = [];
 
         if (opts.app) {
@@ -159,9 +161,9 @@ export function register(program: Command): void {
           }
         }
 
-        spinner.succeed(`Set ${Object.keys(values).length} secret(s)`);
-        if (opts.json) {
-          console.log(JSON.stringify(results, null, 2));
+        spinner?.succeed(`Set ${Object.keys(values).length} secret(s)`);
+        if (json) {
+          printJson(results);
           return;
         }
         for (const name of Object.keys(values)) {
@@ -183,11 +185,15 @@ export function register(program: Command): void {
         assertSingleTarget(opts);
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Deleting secrets...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Deleting secrets...");
         for (const key of keys) {
           await deleteSecretByName(client, key, opts);
         }
-        spinner.succeed(`Deleted ${keys.length} secret(s)`);
+        spinner?.succeed(`Deleted ${keys.length} secret(s)`);
+        if (json) {
+          printJson({ ok: true, deleted: keys.length });
+        }
       } catch (err) {
         handleError(err);
       }
@@ -216,8 +222,8 @@ export function register(program: Command): void {
         const result = await client.apiPost(
           `${basePath}/${encodeURIComponent(secret.id)}/reveal`,
         );
-        if (opts.json) {
-          console.log(JSON.stringify(result, null, 2));
+        if (isJsonMode(opts)) {
+          printJson(result);
           return;
         }
         if (

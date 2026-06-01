@@ -35,6 +35,7 @@ export function register(program: Command): void {
 
         // ── Not signed in ────────────────────────────────────────────────
         if (!config.api_key) {
+          clearAuthCache();
           if (json) {
             printJson({ authenticated: false });
             return;
