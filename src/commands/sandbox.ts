@@ -493,6 +493,8 @@ export function register(program: Command): void {
         "Run a command inside a Sandbox (positional args joined as shell command)",
       )
       .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--workdir <path>", "Alias for --cwd")
+      .option("--env <pair>", "Environment variable KEY=VALUE. Repeatable.", collectOption, [])
       .option("--background", "Start the command in the background and return immediately")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
@@ -501,7 +503,13 @@ export function register(program: Command): void {
       (
         id: string,
         words: string[],
-        opts: DataOptions & { cwd?: string; background?: boolean; timeout?: number },
+        opts: DataOptions & {
+          cwd?: string;
+          workdir?: string;
+          env?: string[];
+          background?: boolean;
+          timeout?: number;
+        },
       ) =>
         runAction(async () => {
           if (opts.data) {
@@ -510,13 +518,16 @@ export function register(program: Command): void {
           }
           const cmd = words.join(" ");
           const effectiveCommand = opts.background ? backgroundCommand(cmd) : cmd;
+          const cwd = opts.cwd ?? opts.workdir;
           const body: Record<string, unknown> = cmd
-            ? { command: commandInCwd(effectiveCommand, opts.cwd) }
+            ? { command: commandInCwd(effectiveCommand, cwd) }
             : {};
-          if (opts.cwd) {
-            body["cwd"] = opts.cwd;
-            body["dir"] = opts.cwd;
+          if (cwd) {
+            body["cwd"] = cwd;
+            body["dir"] = cwd;
           }
+          const env = parseEnvPairs(opts.env ?? []);
+          if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
         }),
@@ -528,6 +539,8 @@ export function register(program: Command): void {
       .command("run <sandbox-id> [command...]")
       .description("Run a command inside a Sandbox (alias for exec)")
       .option("--cwd <path>", "Working directory inside the Sandbox")
+      .option("--workdir <path>", "Alias for --cwd")
+      .option("--env <pair>", "Environment variable KEY=VALUE. Repeatable.", collectOption, [])
       .option("--background", "Start the command in the background and return immediately")
       .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
   )
@@ -536,7 +549,13 @@ export function register(program: Command): void {
       (
         id: string,
         words: string[],
-        opts: DataOptions & { cwd?: string; background?: boolean; timeout?: number },
+        opts: DataOptions & {
+          cwd?: string;
+          workdir?: string;
+          env?: string[];
+          background?: boolean;
+          timeout?: number;
+        },
       ) =>
         runAction(async () => {
           if (opts.data) {
@@ -545,13 +564,16 @@ export function register(program: Command): void {
           }
           const cmd = words.join(" ");
           const effectiveCommand = opts.background ? backgroundCommand(cmd) : cmd;
+          const cwd = opts.cwd ?? opts.workdir;
           const body: Record<string, unknown> = cmd
-            ? { command: commandInCwd(effectiveCommand, opts.cwd) }
+            ? { command: commandInCwd(effectiveCommand, cwd) }
             : {};
-          if (opts.cwd) {
-            body["cwd"] = opts.cwd;
-            body["dir"] = opts.cwd;
+          if (cwd) {
+            body["cwd"] = cwd;
+            body["dir"] = cwd;
           }
+          const env = parseEnvPairs(opts.env ?? []);
+          if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
         }),
@@ -566,6 +588,7 @@ export function register(program: Command): void {
     .option("--template <template>", "Template for new sandbox", "miosa-sandbox")
     .option("--name <name>", "Name for a new sandbox")
     .option("--port <port>", "Preview port", parseInt)
+    .option("--publish-port <port>", "Alias for --port", parseInt)
     .option("--start <command>", "Start command to run inside /workspace")
     .option("--install-command <command>", "Install command to run before start")
     .option("--no-install", "Skip automatic dependency install")
@@ -581,6 +604,7 @@ export function register(program: Command): void {
           template?: string;
           name?: string;
           port?: number;
+          publishPort?: number;
           start?: string;
           installCommand?: string;
           install?: boolean;
@@ -971,6 +995,7 @@ export function register(program: Command): void {
 
   sandbox
     .command("cp <source> <target>")
+    .alias("copy")
     .description("Copy a local file or directory into a sandbox, e.g. ./app/. sbx_123:/workspace")
     .option("--delete", "Delete the remote directory contents before extracting directories")
     .option("--json", "Output as JSON")
@@ -981,6 +1006,28 @@ export function register(program: Command): void {
         opts: { delete?: boolean; json?: boolean },
       ) => {
         try {
+          if (isSandboxTarget(source) && !isSandboxTarget(target)) {
+            const parsedSource = parseSandboxTarget(source);
+            const result = await downloadSandboxPath(
+              parsedSource.sandboxId,
+              parsedSource.remotePath,
+              target,
+            );
+            if (opts.json) {
+              console.log(JSON.stringify(result, null, 2));
+              return;
+            }
+            console.log(chalk.green(`Copied ${source} → ${target}`));
+            return;
+          }
+
+          if (isSandboxTarget(source) || !isSandboxTarget(target)) {
+            throw new UserError(
+              "Invalid copy direction.",
+              "Use local → sandbox (`./app/. sbx_123:/workspace`) or sandbox → local (`sbx_123:/workspace/dist ./dist`).",
+            );
+          }
+
           const parsed = parseSandboxTarget(target);
           const local = source.endsWith("/.") ? source.slice(0, -2) : source;
           const stat = fs.statSync(local);
@@ -1125,6 +1172,25 @@ export function register(program: Command): void {
       },
     );
 
+  sandbox
+    .command("shell <sandbox-id>")
+    .description("Open an interactive shell into a running Sandbox")
+    .option("-p, --port <n>", "Local port for the tunnel listener", parseInt)
+    .option("-l, --user <name>", "SSH user (default: root)")
+    .option("--json", "Output connection info as JSON")
+    .action(
+      async (
+        id: string,
+        opts: { port?: number; user?: string; json?: boolean },
+      ) => {
+        try {
+          await runSandboxSsh(id, { ...opts, spawn: !opts.json });
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
   // port-forward — TCP listener → WS tunnel → sandbox port
   sandbox
     .command("port-forward <sandbox-id>")
@@ -1189,6 +1255,100 @@ export function register(program: Command): void {
     .action((id: string, opts: DataOptions) =>
       runAction(() =>
         postAndPrint(`/sandboxes/${enc(id)}/snapshots`, opts, {}),
+      ),
+    );
+
+  sandbox
+    .command("snapshot <sandbox-id>")
+    .description("Create a Sandbox snapshot")
+    .option("--name <name>", "Human-readable snapshot name/comment")
+    .option("--comment <comment>", "Snapshot comment")
+    .option("--stop", "Pause the sandbox after snapshot creation")
+    .option("--expiration <duration>", "Requested retention duration, e.g. 14d")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: {
+          name?: string;
+          comment?: string;
+          stop?: boolean;
+          expiration?: string;
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const body: Record<string, unknown> = {};
+          const comment = opts.comment ?? opts.name;
+          if (comment) body["comment"] = comment;
+          if (opts.expiration) body["expiration"] = opts.expiration;
+          const snapshot = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/snapshots`),
+              body,
+            ),
+          );
+          if (opts.stop) {
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/pause`),
+              {},
+            );
+          }
+          if (opts.json) {
+            console.log(
+              JSON.stringify(
+                { snapshot, stopped: !!opts.stop },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          const snap = (snapshot ?? {}) as Record<string, unknown>;
+          console.log(chalk.green("Snapshot requested"));
+          if (snap["id"]) console.log(String(snap["id"]));
+          if (opts.stop) console.log(chalk.dim("Sandbox pause requested."));
+        }),
+    );
+
+  const snapshots = sandbox
+    .command("snapshots")
+    .description("List, inspect, and delete Sandbox snapshots");
+
+  snapshots
+    .command("list <sandbox-id>")
+    .description("List snapshots for a sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(`/sandboxes/${enc(id)}/snapshots`, opts),
+      ),
+    );
+
+  snapshots
+    .command("get <sandbox-id> <snapshot-id>")
+    .description("Get a sandbox snapshot")
+    .option("--json", "Output as JSON")
+    .action((id: string, snapshotId: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(
+          `/sandboxes/${enc(id)}/snapshots/${enc(snapshotId)}`,
+          opts,
+        ),
+      ),
+    );
+
+  snapshots
+    .command("delete <sandbox-id> <snapshot-id>")
+    .alias("rm")
+    .description("Delete a sandbox snapshot")
+    .option("--json", "Output as JSON")
+    .action((id: string, snapshotId: string, opts: JsonOptions) =>
+      runAction(() =>
+        deleteAndPrint(
+          `/sandboxes/${enc(id)}/snapshots/${enc(snapshotId)}`,
+          opts,
+        ),
       ),
     );
 
@@ -1556,6 +1716,7 @@ interface SandboxDeployOptions {
   template?: string;
   name?: string;
   port?: number;
+  publishPort?: number;
   start?: string;
   installCommand?: string;
   install?: boolean;
@@ -1752,7 +1913,7 @@ async function deploySandbox(
 
   const c = client();
   const detection = detectFramework(sourceDir);
-  const port = opts.port ?? detection?.port ?? 5173;
+  const port = opts.port ?? opts.publishPort ?? detection?.port ?? 5173;
   const start = opts.start ?? defaultStartCommand(detection?.framework, port);
   const installCommand =
     opts.install === false
@@ -2129,6 +2290,12 @@ function extractUrl(value: unknown): string | null {
   return null;
 }
 
+function isSandboxTarget(value: string): boolean {
+  const idx = value.indexOf(":");
+  if (idx <= 0) return false;
+  return value.slice(idx + 1).startsWith("/");
+}
+
 function parseSandboxTarget(target: string): { sandboxId: string; remotePath: string } {
   const idx = target.indexOf(":");
   if (idx <= 0 || idx === target.length - 1) {
@@ -2148,6 +2315,102 @@ function parseSandboxTarget(target: string): { sandboxId: string; remotePath: st
   return { sandboxId, remotePath };
 }
 
+async function downloadSandboxPath(
+  sandboxId: string,
+  remotePath: string,
+  localTarget: string,
+): Promise<Record<string, unknown>> {
+  const c = client();
+  const kind = await remotePathKind(c, sandboxId, remotePath);
+  if (kind === "directory") {
+    const remoteArchive = `/tmp/miosa-copy-${Date.now()}.tgz`;
+    await execSandbox(
+      c,
+      sandboxId,
+      `tar -czf ${shellQuote(remoteArchive)} -C ${shellQuote(remotePath)} .`,
+      "/",
+    );
+    const archiveBytes = await readSandboxFile(c, sandboxId, remoteArchive);
+    const localDir = path.resolve(localTarget);
+    fs.mkdirSync(localDir, { recursive: true });
+    const localArchive = path.join(os.tmpdir(), `miosa-copy-${process.pid}-${Date.now()}.tgz`);
+    fs.writeFileSync(localArchive, archiveBytes);
+    try {
+      const result = spawnSync("tar", ["-xzf", localArchive, "-C", localDir], {
+        stdio: "pipe",
+      });
+      if (result.status !== 0) {
+        throw new UserError(
+          `Could not extract ${remotePath}: ${result.stderr.toString().trim() || "tar failed"}`,
+        );
+      }
+    } finally {
+      fs.rmSync(localArchive, { force: true });
+      await execSandbox(c, sandboxId, `rm -f ${shellQuote(remoteArchive)}`, "/").catch(() => ({}));
+    }
+    return {
+      sandbox_id: sandboxId,
+      remote_path: remotePath,
+      local_path: localDir,
+      type: "directory",
+    };
+  }
+
+  const bytes = await readSandboxFile(c, sandboxId, remotePath);
+  const localPath =
+    fs.existsSync(localTarget) && fs.statSync(localTarget).isDirectory()
+      ? path.join(localTarget, path.basename(remotePath))
+      : localTarget;
+  fs.mkdirSync(path.dirname(path.resolve(localPath)), { recursive: true });
+  fs.writeFileSync(localPath, bytes);
+  return {
+    sandbox_id: sandboxId,
+    remote_path: remotePath,
+    local_path: path.resolve(localPath),
+    type: "file",
+  };
+}
+
+async function remotePathKind(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  remotePath: string,
+): Promise<"file" | "directory"> {
+  const result = await execSandbox(
+    c,
+    sandboxId,
+    `if [ -d ${shellQuote(remotePath)} ]; then echo directory; elif [ -f ${shellQuote(remotePath)} ]; then echo file; else exit 2; fi`,
+    "/",
+  );
+  const kind = String(result["stdout"] ?? "").trim();
+  if (kind === "directory") return "directory";
+  return "file";
+}
+
+async function readSandboxFile(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  remotePath: string,
+): Promise<Buffer> {
+  const encoded = enc(remotePath.replace(/^\//, ""));
+  const result = await c.apiGet<unknown>(
+    apiPath(`/sandboxes/${enc(sandboxId)}/files/${encoded}`),
+  );
+  const data =
+    result !== null && typeof result === "object" && !Array.isArray(result)
+      ? ((result as Record<string, unknown>)["data"] ?? result)
+      : result;
+  if (
+    data !== null &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    typeof (data as Record<string, unknown>)["content"] === "string"
+  ) {
+    return Buffer.from((data as Record<string, unknown>)["content"] as string, "base64");
+  }
+  throw new UserError(`Could not read sandbox file: ${remotePath}`);
+}
+
 function commandInCwd(command: string, cwd?: string): string {
   if (!cwd) return command;
   return `cd ${shellQuote(cwd)} && ${command}`;
@@ -2157,6 +2420,25 @@ function backgroundCommand(command: string): string {
   if (!command.trim()) return command;
   const logPath = `/tmp/miosa-bg-${Date.now()}.log`;
   return `nohup sh -lc ${shellQuote(command)} > ${shellQuote(logPath)} 2>&1 & echo $!`;
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseEnvPairs(pairs: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const pair of pairs) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) {
+      throw new UserError(
+        `Invalid --env value: ${pair}`,
+        "Use KEY=VALUE, for example --env DATABASE_URL=postgresql://...",
+      );
+    }
+    env[pair.slice(0, idx)] = pair.slice(idx + 1);
+  }
+  return env;
 }
 
 function shellQuote(value: string): string {
