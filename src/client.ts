@@ -594,10 +594,22 @@ export class MiosaClient {
 
   // --- Deployments ---
 
-  async listDeployments(): Promise<Deployment[]> {
-    return this.get<{ data: Deployment[] }>("/api/v1/deployments").then(
-      (r) => r.data,
-    );
+  async listDeployments(params?: {
+    state?: string;
+    workspace?: string;
+    workspace_id?: string;
+    limit?: number;
+  }): Promise<Deployment[]> {
+    const qs = new URLSearchParams();
+    if (params?.state) qs.set("state", params.state);
+    const workspaceId = params?.workspace_id ?? params?.workspace;
+    if (workspaceId) qs.set("workspace_id", workspaceId);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+
+    return this.get<{ data: Deployment[] }>(
+      `/api/v1/deployments${suffix}`,
+    ).then((r) => r.data);
   }
 
   async getDeployment(id: DeploymentId): Promise<Deployment> {

@@ -50,6 +50,7 @@ describe("miosa domains app surface", () => {
   });
 
   afterEach(() => {
+    delete process.env["MIOSA_JSON"];
     vi.restoreAllMocks();
   });
 
@@ -103,6 +104,45 @@ describe("miosa domains app surface", () => {
       domain: "app.cliniciq.com",
       deployment_id: deployment.id,
     });
+    expect(logged.join("\n")).not.toMatch(/MIOSA|Domain status|────/);
+  });
+
+  it("shows domain status as JSON when global JSON mode is set", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/domains/app.cliniciq.com",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: domain }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "domains",
+      "status",
+      "app.cliniciq.com",
+    ]);
+
+    const raw = logged.join("\n");
+    expect(JSON.parse(raw)).toMatchObject({
+      domain: "app.cliniciq.com",
+      deployment_id: deployment.id,
+    });
+    expect(raw).not.toMatch(/MIOSA|Domain status|────/);
   });
 
   it("shows custom domain status by hostname", async () => {

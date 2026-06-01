@@ -108,6 +108,11 @@ describe("miosa deploy list", () => {
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
   });
 
+  afterEach(() => {
+    delete process.env["MIOSA_JSON"];
+    vi.restoreAllMocks();
+  });
+
   it("should list deployments in table format", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -157,6 +162,68 @@ describe("miosa deploy list", () => {
     const parsed = JSON.parse(raw) as unknown[];
     expect(Array.isArray(parsed)).toBe(true);
     expect((parsed[0] as Deployment).slug).toBe("my-project-x7k2");
+    expect(raw).not.toMatch(/deployment\\(s\\)|MIOSA|────/);
+  });
+
+  it("should output raw JSON when global JSON mode is set", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/deployments", method: "GET" })
+      .reply(200, JSON.stringify({ data: [mockDeployment] }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "deploy", "list"]);
+
+    const raw = logged.join("");
+    const parsed = JSON.parse(raw) as unknown[];
+    expect((parsed[0] as Deployment).slug).toBe(mockDeployment.slug);
+    expect(raw).not.toMatch(/deployment\\(s\\)|MIOSA|────/);
+  });
+
+  it("passes state, workspace, and limit filters to the API", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments?state=running&workspace_id=ws_123&limit=20",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: [mockDeployment] }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "list",
+      "--state",
+      "running",
+      "--workspace",
+      "ws_123",
+      "--limit",
+      "20",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
   it("should error on auth failure (401)", async () => {

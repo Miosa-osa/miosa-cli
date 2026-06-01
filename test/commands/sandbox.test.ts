@@ -48,9 +48,13 @@ describe("miosa sandbox exec", () => {
         method: "POST",
         body: expectedBody,
       })
-      .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "/workspace\n" } }), {
-        headers: { "content-type": "application/json" },
-      });
+      .reply(
+        200,
+        JSON.stringify({ data: { exit_code: 0, stdout: "/workspace\n" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
 
     const program = buildProgram();
     await program.parseAsync([
@@ -111,5 +115,86 @@ describe("miosa sandbox exec", () => {
 
     expect(console.log).toHaveBeenCalledWith("cmd_123");
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("updates nested deployment state after publish --wait", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const initial = {
+      deployment_id: "dep_123",
+      version_id: "ver_123",
+      release_id: "rel_123",
+      url: "https://clinic-app.cliniciq.com",
+      state: "building",
+      data: {
+        deployment: {
+          id: "dep_123",
+          state: "building",
+          active_version_id: null,
+          public_url: "https://clinic-app.cliniciq.com",
+        },
+        version: { id: "ver_123" },
+        release: { id: "rel_123" },
+      },
+    };
+
+    const readyDeployment = {
+      id: "dep_123",
+      state: "running",
+      active_version_id: "ver_123",
+      public_url: "https://clinic-app.cliniciq.com",
+    };
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/publish",
+        method: "POST",
+      })
+      .reply(201, JSON.stringify(initial), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: readyDeployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://clinic-app.cliniciq.com")
+      .intercept({ path: "/", method: "GET" })
+      .reply(200, "ok");
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "publish",
+      "sbx_123",
+      "--run-command",
+      "npm start",
+      "--wait",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.state).toBe("running");
+    expect(parsed.ready).toBe(true);
+    expect(parsed.data.deployment.state).toBe("running");
+    expect(parsed.data.deployment.active_version_id).toBe("ver_123");
+    expect(parsed.data.app_consistency_pending).toBe(false);
   });
 });
