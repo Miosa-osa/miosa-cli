@@ -134,7 +134,7 @@ export function register(program: Command): void {
   sandbox
     .command("show <sandbox-id>")
     .description("Show a Sandbox by ID")
-    .option("--port <port>", "Include live preview readiness for this port", parseInt)
+    .option("--port <port>", "Include live preview readiness for this port", parseIntegerOption)
     .option("--probe-path <path>", "HTTP path to probe when --port is set", "/")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions & { port?: number; probePath: string }) =>
@@ -233,16 +233,16 @@ export function register(program: Command): void {
         "Template / image ID (default: miosa-sandbox)",
       )
       .option("--name <name>", "Human-readable name for the Sandbox")
-      .option("--cpu <n>", "vCPU count", parseInt)
+      .option("--cpu <n>", "vCPU count", parseIntegerOption)
       .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
       .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
       .option("--timeout <duration>", "Wall-clock timeout, e.g. 300s, 1h", parseDurationSec)
-      .option("--publish-port <port>", "Expose this port after create", parseInt)
+      .option("--publish-port <port>", "Expose this port after create", parseIntegerOption)
       .option("--wait", "Wait for sandbox running and published port readiness")
       .option("--probe-path <path>", "HTTP path to probe when --publish-port is set", "/")
       .option("--source <source>", "Source: git:https://..., tarball:https://..., or snapshot:<id>")
       .option("--revision <revision>", "Git revision/branch when --source git: is used")
-      .option("--depth <n>", "Git clone depth when --source git: is used", parseInt)
+      .option("--depth <n>", "Git clone depth when --source git: is used", parseIntegerOption)
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
       .option("--network-policy <policy>", "Network policy: allow-all or deny-all")
@@ -476,7 +476,7 @@ export function register(program: Command): void {
     )
     .option("--model <name>", "Provider-specific model name")
     .option("--cwd <path>", "Working directory inside the Sandbox")
-    .option("--timeout <sec>", "Exec timeout in seconds", parseInt)
+    .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
       (
@@ -531,7 +531,7 @@ export function register(program: Command): void {
       .option("--sudo", "Run command through sudo")
       .option("--tty", "Request TTY metadata for command resource")
       .option("--interactive", "Request interactive metadata for command resource")
-      .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
+      .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption),
   )
     .option("--json", "Output as JSON")
     .action(
@@ -604,7 +604,7 @@ export function register(program: Command): void {
       .option("--sudo", "Run command through sudo")
       .option("--tty", "Request TTY metadata for command resource")
       .option("--interactive", "Request interactive metadata for command resource")
-      .option("--timeout <sec>", "Exec timeout in seconds", parseInt),
+      .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption),
   )
     .option("--json", "Output as JSON")
     .action(
@@ -671,8 +671,8 @@ export function register(program: Command): void {
     .option("--sandbox <id>", "Existing sandbox ID. Creates one when omitted")
     .option("--template <template>", "Template for new sandbox", "miosa-sandbox")
     .option("--name <name>", "Name for a new sandbox")
-    .option("--port <port>", "Preview port", parseInt)
-    .option("--publish-port <port>", "Alias for --port", parseInt)
+    .option("--port <port>", "Preview port", parseIntegerOption)
+    .option("--publish-port <port>", "Alias for --port", parseIntegerOption)
     .option("--start <command>", "Start command to run inside /workspace")
     .option("--install-command <command>", "Install command to run before start")
     .option("--no-install", "Skip automatic dependency install")
@@ -721,9 +721,9 @@ export function register(program: Command): void {
   sandbox
     .command("preview <sandbox-id>")
     .description("Expose a sandbox port and optionally wait for the public preview to answer")
-    .requiredOption("--port <port>", "Port inside the sandbox to expose", parseInt)
+    .requiredOption("--port <port>", "Port inside the sandbox to expose", parseIntegerOption)
     .option("--wait", "Wait until the public URL returns a good HTTP status")
-    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 120)
+    .option("--timeout <sec>", "Wait timeout in seconds", parseDurationSec, 120)
     .option("--probe-path <path>", "HTTP path to probe", "/")
     .option("--json", "Output as JSON")
     .action(
@@ -761,9 +761,9 @@ export function register(program: Command): void {
   sandbox
     .command("wait <sandbox-id>")
     .description("Wait for sandbox VM, internal app port, edge route, TLS, and public preview readiness")
-    .requiredOption("--port <port>", "Port inside the sandbox to check", parseInt)
+    .requiredOption("--port <port>", "Port inside the sandbox to check", parseIntegerOption)
     .option("--url", "Print only the ready public preview URL")
-    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 120)
+    .option("--timeout <sec>", "Wait timeout in seconds", parseDurationSec, 120)
     .option("--probe-path <path>", "HTTP path to probe", "/")
     .option("--json", "Output as JSON")
     .action(
@@ -827,6 +827,58 @@ export function register(program: Command): void {
         }),
     );
 
+  sandbox
+    .command("publish <sandbox-id>")
+    .description("Publish a sandbox workspace to durable MIOSA Deploy hosting")
+    .option("--path <path>", "Path inside the sandbox to publish", "/workspace")
+    .option("--app <id>", "Existing app/deployment ID to publish a new release to")
+    .option("--name <name>", "Name for a new durable app")
+    .option("--slug <slug>", "Production slug for a new durable app")
+    .option("--environment <name>", "Target environment label", "production")
+    .option("--build-command <cmd>", "Build command to run before publishing")
+    .option("--run-command <cmd>", "Run command for dynamic/server deployments")
+    .option("--domain <domain>", "Custom domain to attach")
+    .option("--database <mode>", "none, create:postgres, postgres, or existing:<db-id>")
+    .option("--port <port>", "Runtime port for dynamic deployments", parseIntegerOption)
+    .option("--wait", "Wait for the production URL to answer")
+    .option("--timeout <duration>", "Wait timeout", parseDurationSec, 180)
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: {
+          path: string;
+          app?: string;
+          name?: string;
+          slug?: string;
+          environment: string;
+          buildCommand?: string;
+          runCommand?: string;
+          domain?: string;
+          database?: string;
+          port?: number;
+          wait?: boolean;
+          timeout: number;
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const result = await publishSandbox(id, opts);
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(`  ${chalk.bold("Type")}     deployment`);
+          console.log(`  ${chalk.bold("App")}      ${result.deployment_id ?? result.app_id ?? ""}`);
+          if (result.release_id) console.log(`  ${chalk.bold("Release")}  ${result.release_id}`);
+          if (result.url) console.log(`  ${chalk.bold("URL")}      ${chalk.cyan(String(result.url))}`);
+          console.log(`  ${chalk.bold("Ready")}    ${result.ready ? chalk.green("yes") : chalk.yellow("pending")}`);
+          console.log();
+        }),
+    );
+
   const command = sandbox
     .command("command")
     .description("Inspect and control detached sandbox commands");
@@ -843,7 +895,7 @@ export function register(program: Command): void {
   command
     .command("logs <sandbox-id> <command-id>")
     .option("--follow", "Follow logs (currently returns tailed logs when backend SSE is unavailable)")
-    .option("--tail <n>", "Number of lines", parseInt, 200)
+    .option("--tail <n>", "Number of lines", parseIntegerOption, 200)
     .option("--json", "Output as JSON")
     .action(
       (id: string, commandId: string, opts: { follow?: boolean; tail: number; json?: boolean }) =>
@@ -934,7 +986,7 @@ export function register(program: Command): void {
     .command("start <sandbox-id> <name>")
     .requiredOption("--cmd <command>", "Command to start")
     .option("--cwd <path>", "Working directory inside the sandbox", "/workspace")
-    .option("--port <port>", "Port served by this service", parseInt)
+    .option("--port <port>", "Port served by this service", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
       (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
@@ -953,7 +1005,7 @@ export function register(program: Command): void {
     .command("restart <sandbox-id> <name>")
     .option("--cmd <command>", "Ignored when backend service metadata already exists")
     .option("--cwd <path>", "Working directory inside the sandbox", "/workspace")
-    .option("--port <port>", "Port served by this service", parseInt)
+    .option("--port <port>", "Port served by this service", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
       (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
@@ -994,7 +1046,7 @@ export function register(program: Command): void {
 
   service
     .command("logs <sandbox-id> <name>")
-    .option("--lines <n>", "Number of log lines", parseInt, 100)
+    .option("--lines <n>", "Number of log lines", parseIntegerOption, 100)
     .option("--json", "Output as JSON")
     .action((id: string, name: string, opts: { lines: number; json?: boolean }) =>
       runAction(async () => {
@@ -1019,7 +1071,7 @@ export function register(program: Command): void {
     .description(
       "Diagnose sandbox app readiness across sandbox state, internal HTTP, public route, and TLS/edge reachability",
     )
-    .requiredOption("--port <port>", "Port inside the sandbox to check", parseInt)
+    .requiredOption("--port <port>", "Port inside the sandbox to check", parseIntegerOption)
     .option("--probe-path <path>", "HTTP path to probe", "/")
     .option("--json", "Output as JSON")
     .action(
@@ -1081,10 +1133,9 @@ export function register(program: Command): void {
     .option("--json", "Output raw JSON response")
     .action(async (id: string, remotePath: string, opts: JsonOptions) => {
       try {
-        const encoded = enc(remotePath.replace(/^\//, ""));
         const c = client();
         const result = await c.apiGet<unknown>(
-          apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
+          apiPath(`/sandboxes/${enc(id)}/files/read?path=${enc(remotePath)}`),
         );
         if (opts.json) {
           console.log(JSON.stringify(result, null, 2));
@@ -1105,7 +1156,7 @@ export function register(program: Command): void {
             ? ((data as Record<string, unknown>)["content"] as string)
             : null;
         if (contentVal !== null) {
-          process.stdout.write(Buffer.from(contentVal, "base64"));
+          process.stdout.write(contentVal);
         } else {
           console.log(JSON.stringify(data, null, 2));
         }
@@ -1345,7 +1396,7 @@ export function register(program: Command): void {
   sandbox
     .command("logs <sandbox-id>")
     .description("Show Sandbox logs")
-    .option("--lines <n>", "Number of log lines to fetch", parseInt)
+    .option("--lines <n>", "Number of log lines to fetch", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action((id: string, opts: { lines?: number } & JsonOptions) =>
       runAction(async () => {
@@ -1360,7 +1411,7 @@ export function register(program: Command): void {
     .description(
       "Open an SSH session into a running Sandbox via the platform WS tunnel",
     )
-    .option("-p, --port <n>", "Local port for the tunnel listener", parseInt)
+    .option("-p, --port <n>", "Local port for the tunnel listener", parseIntegerOption)
     .option("-l, --user <name>", "SSH user (default: root)")
     .option(
       "--no-spawn",
@@ -1388,7 +1439,7 @@ export function register(program: Command): void {
   sandbox
     .command("shell <sandbox-id>")
     .description("Open an interactive shell into a running Sandbox")
-    .option("-p, --port <n>", "Local port for the tunnel listener", parseInt)
+    .option("-p, --port <n>", "Local port for the tunnel listener", parseIntegerOption)
     .option("-l, --user <name>", "SSH user (default: root)")
     .option("--json", "Output connection info as JSON")
     .action(
@@ -1420,15 +1471,15 @@ export function register(program: Command): void {
     .requiredOption(
       "--remote <port>",
       "Port inside the sandbox to reach",
-      parseInt,
+      parseIntegerOption,
     )
     .option(
       "--local <port>",
       "Local port to listen on (default = remote port)",
-      parseInt,
+      parseIntegerOption,
     )
     .option("--wait", "Probe the local forwarded URL before returning readiness")
-    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 30)
+    .option("--timeout <sec>", "Wait timeout in seconds", parseDurationSec, 30)
     .option("--probe-path <path>", "HTTP path to probe when --wait is set", "/")
     .option("--json", "Output as JSON")
     .action(
@@ -1821,7 +1872,7 @@ async function runSandboxPortForward(
   const endpoint = config.endpoint ?? "https://api.miosa.ai";
   const base = endpoint.replace(/\/$/, "");
   const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/port-tunnel/${opts.remotePort}`;
+  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/tunnel/${opts.remotePort}`;
 
   interface ConnStats {
     active: number;
@@ -1835,7 +1886,7 @@ async function runSandboxPortForward(
     stats.active++;
     stats.total++;
 
-    const ws = new WebSocket(wsUrl, {
+    const ws = new WebSocket(wsUrl, "miosa-tunnel-v1", {
       headers: { Authorization: `Bearer ${String(apiKey)}` },
     });
 
@@ -1936,6 +1987,7 @@ interface SandboxDeployOptions {
   wait?: boolean;
   timeout: number;
   probePath: string;
+  json?: boolean;
 }
 
 interface SandboxDeployResult {
@@ -1947,6 +1999,36 @@ interface SandboxDeployResult {
   edge_status?: number | null;
   latency_ms?: number | null;
   process_pid?: string | null;
+}
+
+interface SandboxPublishOptions {
+  path: string;
+  app?: string;
+  name?: string;
+  slug?: string;
+  environment: string;
+  buildCommand?: string;
+  runCommand?: string;
+  domain?: string;
+  database?: string;
+  port?: number;
+  wait?: boolean;
+  timeout: number;
+  json?: boolean;
+}
+
+interface SandboxPublishResult {
+  type: "deployment";
+  sandbox_id: string;
+  deployment_id: string | null;
+  app_id: string | null;
+  release_id: string | null;
+  version_id: string | null;
+  url: string | null;
+  state: string | null;
+  ready: boolean;
+  probe?: ProbeResult | null;
+  data: unknown;
 }
 
 interface ProbeResult {
@@ -2160,10 +2242,13 @@ async function deploySandbox(
 
   const sandboxId =
     opts.sandbox ??
-    (await createSandboxForDeploy(c, opts.template ?? "miosa-sandbox", opts.name));
+    (deployStep(opts, "Creating sandbox"),
+    await createSandboxForDeploy(c, opts.template ?? "miosa-sandbox", opts.name));
 
+  deployStep(opts, "Waiting for sandbox");
   await waitForSandboxRunning(c, sandboxId, Math.min(opts.timeout, 120));
 
+  deployStep(opts, "Uploading files");
   const archivePath = createDeployArchive(sourceDir);
   const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
   try {
@@ -2172,12 +2257,15 @@ async function deploySandbox(
     fs.rmSync(archivePath, { force: true });
   }
 
+  deployStep(opts, "Extracting workspace");
   await execSandbox(c, sandboxId, `mkdir -p /workspace && tar -xzf ${shellQuote(remoteArchive)} -C /workspace`, "/");
 
   if (installCommand) {
+    deployStep(opts, `Installing dependencies: ${installCommand}`);
     await execSandbox(c, sandboxId, installCommand, "/workspace", opts.timeout);
   }
 
+  deployStep(opts, `Starting app on port ${port}`);
   await execSandbox(
     c,
     sandboxId,
@@ -2185,7 +2273,9 @@ async function deploySandbox(
     "/workspace",
   );
 
+  deployStep(opts, "Checking internal app readiness");
   const internal = await waitForInternalHttp(c, sandboxId, port, opts.probePath, Math.min(opts.timeout, 60));
+  deployStep(opts, "Creating public preview route");
   const exposed = await c.apiPost<unknown>(
     apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
     { port, title: "app preview" },
@@ -2195,6 +2285,7 @@ async function deploySandbox(
     throw new UserError("Sandbox expose did not return a preview URL.");
   }
 
+  if (opts.wait) deployStep(opts, "Checking public preview readiness");
   const edge = opts.wait
     ? await waitForPublicPreview(previewUrl, opts.probePath, opts.timeout)
     : { ok: false, status: null };
@@ -2208,6 +2299,149 @@ async function deploySandbox(
     edge_status: edge.status,
     latency_ms: edge.latency_ms ?? null,
   };
+}
+
+async function publishSandbox(
+  sandboxId: string,
+  opts: SandboxPublishOptions,
+): Promise<SandboxPublishResult> {
+  const c = client();
+  const body: Record<string, unknown> = {
+    output_path: opts.path,
+    path: opts.path,
+    environment: opts.environment,
+    metadata: { environment: opts.environment },
+  };
+  if (opts.app) body["deployment_id"] = opts.app;
+  if (opts.name) body["name"] = opts.name;
+  if (opts.slug) body["slug"] = opts.slug;
+  if (opts.buildCommand) body["build_command"] = opts.buildCommand;
+  if (opts.runCommand) body["run_command"] = opts.runCommand;
+  if (opts.domain) body["domain"] = opts.domain;
+  if (opts.port != null) body["port"] = opts.port;
+
+  const database = parsePublishDatabase(opts.database);
+  if (database !== undefined) body["database"] = database;
+
+  deployStep(opts, "Publishing sandbox workspace to durable deployment");
+  const raw = unwrap(
+    await c.apiPost<unknown>(
+      apiPath(`/sandboxes/${enc(sandboxId)}/publish`),
+      body,
+    ),
+  );
+  const response = asRecord(raw) ?? {};
+  const data = asRecord(response["data"]) ?? response;
+  const deployment = asRecord(data["deployment"]);
+  const version = asRecord(data["version"]);
+  const release = asRecord(data["release"]);
+
+  const deploymentId =
+    stringField(response, "deployment_id") ??
+    stringField(deployment, "id") ??
+    null;
+  const versionId =
+    stringField(response, "version_id") ??
+    stringField(version, "id") ??
+    null;
+  const releaseId =
+    stringField(response, "release_id") ??
+    stringField(release, "id") ??
+    null;
+
+  let state =
+    stringField(response, "state") ??
+    stringField(deployment, "state") ??
+    null;
+  let url =
+    stringField(response, "url") ??
+    extractUrl(deployment) ??
+    stringField(data, "url") ??
+    null;
+
+  if (opts.wait && deploymentId) {
+    deployStep(opts, "Waiting for durable deployment");
+    const waited = await waitForDeploymentReady(c, deploymentId, opts.timeout);
+    state = stringField(waited, "state") ?? state;
+    url = extractUrl(waited) ?? url;
+  }
+
+  let probe: ProbeResult | null = null;
+  if (opts.wait && url) {
+    deployStep(opts, "Checking production URL readiness");
+    probe = await waitForPublicPreview(url, "/", opts.timeout);
+  }
+
+  const ready =
+    (state === null || ["running", "active"].includes(state.toLowerCase())) &&
+    (opts.wait ? probe?.ok !== false : true);
+
+  return {
+    type: "deployment",
+    sandbox_id: sandboxId,
+    deployment_id: deploymentId,
+    app_id: deploymentId,
+    release_id: releaseId,
+    version_id: versionId,
+    url,
+    state,
+    ready,
+    probe,
+    data: raw,
+  };
+}
+
+async function waitForDeploymentReady(
+  c: ReturnType<typeof client>,
+  deploymentId: string,
+  timeoutSec: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: Record<string, unknown> | null = null;
+
+  while (Date.now() < deadline) {
+    const value = unwrap(
+      await c.apiGet<unknown>(apiPath(`/deployments/${enc(deploymentId)}`)),
+    );
+    const deployment = asRecord(value) ?? {};
+    last = deployment;
+    const state = String(deployment["state"] ?? "").toLowerCase();
+    if (state === "running" || state === "active") return deployment;
+    if (state === "failed" || state === "error") {
+      throw new UserError(
+        `Deployment ${deploymentId} entered ${state} state.`,
+        String(deployment["error_message"] ?? deployment["error"] ?? ""),
+      );
+    }
+    await sleep(2000);
+  }
+
+  throw new UserError(
+    `Deployment ${deploymentId} did not become ready within ${timeoutSec}s.`,
+    last ? `Last state: ${String(last["state"] ?? "unknown")}` : undefined,
+  );
+}
+
+function parsePublishDatabase(value?: string): unknown {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase();
+  if (normalized === "none") return false;
+  if (
+    normalized === "postgres" ||
+    normalized === "postgresql" ||
+    normalized === "create:postgres" ||
+    normalized === "create:postgresql"
+  ) {
+    return { engine: "postgresql", engine_version: "15" };
+  }
+  if (normalized.startsWith("existing:")) {
+    return { existing_database_id: value.slice("existing:".length) };
+  }
+  return value;
+}
+
+function deployStep(opts: { json?: boolean }, label: string): void {
+  if (!opts.json) console.error(chalk.dim(`→ ${label}`));
 }
 
 async function doctorSandbox(
@@ -2320,13 +2554,19 @@ function createDeployArchive(sourceDir: string): string {
       ".next",
       "--exclude",
       "dist",
+      "--exclude",
+      ".DS_Store",
+      "--exclude",
+      "._*",
+      "--exclude",
+      "__MACOSX",
       "-czf",
       archivePath,
       "-C",
       sourceDir,
       ".",
     ],
-    { stdio: "pipe" },
+    { stdio: "pipe", env: { ...process.env, COPYFILE_DISABLE: "1" } },
   );
   if (result.status !== 0) {
     throw new UserError(
@@ -2528,6 +2768,19 @@ function extractUrl(value: unknown): string | null {
   return null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stringField(
+  row: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = row?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function isSandboxTarget(value: string): boolean {
   const idx = value.indexOf(":");
   if (idx <= 0) return false;
@@ -2690,6 +2943,12 @@ function parseDurationSec(value: string): number {
   if (unit === "h") return amount * 60 * 60;
   if (unit === "d") return amount * 24 * 60 * 60;
   return amount;
+}
+
+function parseIntegerOption(value: string): number {
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
+  return n;
 }
 
 function parseSizeMb(value: string): number {

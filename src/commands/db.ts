@@ -112,7 +112,7 @@ function normalizeEngine(engine: string): string {
 
 function defaultEngineVersion(engine: string, version?: string): string | undefined {
   if (version) return version;
-  return normalizeEngine(engine) === "postgresql" ? "16" : undefined;
+  return normalizeEngine(engine) === "postgresql" ? "15" : undefined;
 }
 
 async function waitForDatabase(
@@ -141,6 +141,12 @@ async function waitForDatabase(
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function parseIntegerOption(value: string): number {
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
+  return n;
 }
 
 function posixDirname(value: string): string {
@@ -201,7 +207,7 @@ Examples:
     .option("--db-version <version>", "Alias for --engine-version")
     .option("--region <region>", "Region ID")
     .option("--wait", "Wait until the database is running/available")
-    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 180)
+    .option("--timeout <sec>", "Wait timeout in seconds", parseIntegerOption, 180)
     .option("--json", "Output raw JSON")
     .action(
       async (

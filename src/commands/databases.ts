@@ -73,7 +73,7 @@ function normalizeEngine(engine: string): string {
 
 function defaultEngineVersion(engine: string, version?: string): string | undefined {
   if (version) return version;
-  return normalizeEngine(engine) === "postgresql" ? "16" : undefined;
+  return normalizeEngine(engine) === "postgresql" ? "15" : undefined;
 }
 
 function buildDatabaseUrl(creds: DatabaseCredentials): string | null {
