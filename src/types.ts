@@ -93,8 +93,8 @@ export interface Tenant {
   id: TenantId;
   name: string;
   slug: string;
-  plan: string;
-  credit_balance: number;
+  plan?: string | null;
+  credit_balance?: number | null;
   inserted_at: string;
 }
 

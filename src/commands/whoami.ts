@@ -126,8 +126,8 @@ export function register(program: Command): void {
 interface IdentitySummary {
   name: string;
   slug: string;
-  plan: string;
-  credit_balance: number;
+  plan?: string | null;
+  credit_balance?: number | null;
   region: string;
   api_key: string;
   fromCache: boolean;
@@ -146,12 +146,12 @@ function renderIdentity(s: IdentitySummary): void {
       },
       {
         label: "Plan",
-        value: chalk.bold(s.plan),
+        value: s.plan ? chalk.bold(s.plan) : chalk.dim("unknown"),
       },
       {
         label: "Credits",
         value:
-          s.credit_balance > 0
+          s.credit_balance != null && s.credit_balance > 0
             ? chalk.bold(s.credit_balance.toLocaleString())
             : chalk.yellow("0  — top up at https://miosa.ai/billing"),
       },

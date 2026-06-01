@@ -173,9 +173,17 @@ export class MiosaClient {
   // --- Tenant ---
 
   async getTenant(): Promise<Tenant> {
-    return this.get<{ data: Tenant }>("/api/v1/platform/tenants/current").then(
-      (r) => r.data,
+    const response = await this.get<{ data?: Tenant } & Partial<Tenant>>(
+      "/api/v1/platform/tenants/current",
     );
+
+    const tenant = response.data ?? (response as Tenant);
+
+    return {
+      ...tenant,
+      plan: tenant.plan ?? (tenant as { plan_name?: string }).plan_name ?? null,
+      credit_balance: tenant.credit_balance ?? 0,
+    };
   }
 
   // --- Hosts ---

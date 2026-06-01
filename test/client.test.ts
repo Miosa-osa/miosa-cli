@@ -124,6 +124,33 @@ describe("MiosaClient", () => {
       expect(result.credit_balance).toBe(5000);
     });
 
+    it("should normalize tenant data from the unwrapped platform response", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      const tenant = {
+        id: "t_123",
+        name: "Acme Corp",
+        slug: "acme",
+        plan_name: "Platform",
+        inserted_at: "2024-01-01T00:00:00Z",
+      };
+
+      const pool = mock.get("https://api.miosa.ai");
+      pool
+        .intercept({ path: "/api/v1/platform/tenants/current", method: "GET" })
+        .reply(200, JSON.stringify(tenant), {
+          headers: { "content-type": "application/json" },
+        });
+
+      const client = new MiosaClient(makeConfig());
+      const result = await client.getTenant();
+      expect(result.name).toBe("Acme Corp");
+      expect(result.plan).toBe("Platform");
+      expect(result.credit_balance).toBe(0);
+    });
+
     it("should list hosts and return array", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();

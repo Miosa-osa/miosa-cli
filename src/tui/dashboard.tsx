@@ -37,7 +37,12 @@ interface ResourceRow {
 
 interface Snapshot {
   fetchedAt: number;
-  tenant?: { name: string; plan: string; slug: string; credit_balance: number };
+  tenant?: {
+    name: string;
+    plan?: string | null;
+    slug: string;
+    credit_balance?: number | null;
+  };
   computers: ResourceRow[];
   sandboxes: ResourceRow[];
   deployments: ResourceRow[];
@@ -253,9 +258,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ config }) => {
           <Box marginLeft={2}>
             <CountTile
               label="CREDITS"
-              total={snapshot.tenant.credit_balance}
+              total={snapshot.tenant.credit_balance ?? 0}
               active={null}
-              accent={snapshot.tenant.credit_balance > 0 ? "yellow" : "red"}
+              accent={(snapshot.tenant.credit_balance ?? 0) > 0 ? "yellow" : "red"}
             />
           </Box>
         )}

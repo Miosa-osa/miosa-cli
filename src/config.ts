@@ -93,8 +93,8 @@ export interface AuthCache {
   email: string | null;
   name: string;
   slug: string;
-  plan: string;
-  credit_balance: number;
+  plan?: string | null;
+  credit_balance?: number | null;
   region: string | null;
   cached_at: string; // ISO timestamp
 }
