@@ -1133,12 +1133,17 @@ export function register(program: Command): void {
     .option("--json", "Output raw JSON response")
     .action(async (id: string, remotePath: string, opts: JsonOptions) => {
       try {
-        const c = client();
-        const result = await c.apiGet<unknown>(
+        const result = await fetchApiRaw(
           apiPath(`/sandboxes/${enc(id)}/files/read?path=${enc(remotePath)}`),
         );
         if (opts.json) {
-          console.log(JSON.stringify(result, null, 2));
+          console.log(
+            JSON.stringify(
+              typeof result === "string" ? { content: result } : result,
+              null,
+              2,
+            ),
+          );
           return;
         }
         const data =
@@ -1157,6 +1162,8 @@ export function register(program: Command): void {
             : null;
         if (contentVal !== null) {
           process.stdout.write(contentVal);
+        } else if (typeof data === "string") {
+          process.stdout.write(data);
         } else {
           console.log(JSON.stringify(data, null, 2));
         }
@@ -2900,6 +2907,34 @@ async function readSandboxFile(
     return Buffer.from((data as Record<string, unknown>)["content"] as string, "base64");
   }
   throw new UserError(`Could not read sandbox file: ${remotePath}`);
+}
+
+async function fetchApiRaw(path: string): Promise<unknown> {
+  const config = loadConfig();
+  const apiKey = config.api_key;
+  if (!apiKey) throw new UserError("Not authenticated. Run: miosa login");
+
+  const endpoint = (config.endpoint ?? "https://api.miosa.ai").replace(/\/$/, "");
+  const res = await fetch(`${endpoint}${path}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${String(apiKey)}`,
+      Accept: "application/json, text/plain, */*",
+      "User-Agent": "@miosa/cli",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new UserError(
+      `Server error (${res.status}): HTTP ${res.status}`,
+      text || res.statusText,
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function commandInCwd(command: string, cwd?: string): string {
