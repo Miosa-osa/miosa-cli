@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "../cli-env.js";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { MiosaError } from "../errors.js";
 import { scheduleUpdateCheck } from "../update-check.js";
+import { isJsonMode } from "../cli-env.js";
 
 // Dynamically read version from package.json so it stays in sync
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -15,12 +17,47 @@ const pkg = JSON.parse(
 
 const program = new Command();
 
+program.configureOutput({
+  writeErr: (str) => {
+    if (!isJsonMode()) process.stderr.write(str);
+  },
+  outputError: (str, write) => {
+    if (!isJsonMode()) write(str);
+  },
+});
+
+program.exitOverride((err) => {
+  if (err.exitCode === 0) {
+    process.exit(0);
+  }
+  if (isJsonMode()) {
+    const message = err.message.replace(/^error:\s*/i, "");
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          error: {
+            code: "CLI_USAGE_ERROR",
+            message,
+            retryable: false,
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(err.exitCode || 1);
+  }
+  throw err;
+});
+
 program
   .name("miosa")
   .description(
     "MIOSA CLI — application module infrastructure for the Optimal System. Manage Computers, Sandboxes, and OpenComputers hosts from your shell.",
   )
   .version(pkg.version, "-v, --version", "Print version number and exit")
+  .option("--json", "Prefer JSON output for commands that support structured output")
   .addHelpText(
     "after",
     `
@@ -38,11 +75,12 @@ Examples:
   miosa sandbox list                            List all Sandboxes
   miosa sandbox exec <id> --data '{"cmd":"…"}'  Run a command in a Sandbox
   miosa hosts                                   List all OpenComputers hosts
-  miosa ssh my-mac                              Interactive terminal on a host
+  miosa ssh my-mac                              Interactive terminal on a Computer or host
   miosa exec my-mac "npm test"                  Run a command and stream output
   miosa cp ./file.txt my-mac:/tmp/              Upload a file
   miosa tunnel open my-mac --port 3000          Expose a port publicly
   miosa agent my-mac "run the tests"            Dispatch an AI agent task
+  miosa completion zsh > ~/.zsh/completions/_miosa
   miosa watch my-dev-box                        Stream real-time events from a Computer
   miosa watch my-dev-box --filter exec,desktop  Watch only exec and desktop events
   miosa watch my-dev-box --json                 Machine-readable event stream (one JSON/line)
@@ -53,8 +91,18 @@ Examples:
   miosa status                                  Show auth and account info
 
 Documentation: https://miosa.ai/docs/cli/
+
+Environment:
+  MIOSA_JSON=1       Prefer JSON output where supported
+  MIOSA_NO_COLOR=1   Disable ANSI color output
 `,
   );
+
+program.hook("preAction", (rootCommand, actionCommand) => {
+  if (rootCommand.opts<{ json?: boolean }>().json || actionCommand.optsWithGlobals<{ json?: boolean }>().json) {
+    process.env["MIOSA_JSON"] = "1";
+  }
+});
 
 // `miosa version` — explicit subcommand (mirrors `miosa --version`)
 program
@@ -129,6 +177,7 @@ const commandModules = [
   "../commands/billing.js",
   "../commands/templates.js",
   "../commands/dashboard.js",
+  "../commands/completion.js",
   // Keep last — registers the default `program.action()` that fires only
   // when no other subcommand matched. Registering earlier would risk it
   // intercepting commands that haven't been wired up yet.
@@ -144,6 +193,23 @@ async function main(): Promise<void> {
 
   // Global error handler — catches unhandled MiosaErrors thrown outside command actions
   process.on("uncaughtException", (err) => {
+    if (isJsonMode()) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: false,
+            error: {
+              code: err instanceof MiosaError ? "MIOSA_ERROR" : "FATAL",
+              message: err.message,
+              retryable: err instanceof MiosaError ? err.exitCode >= 70 : false,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      process.exit(err instanceof MiosaError ? err.exitCode : 1);
+    }
     if (err instanceof MiosaError) {
       console.error(chalk.red(`Error: ${err.message}`));
       if (err.hint) console.error(chalk.dim(`  Hint: ${err.hint}`));
@@ -155,6 +221,25 @@ async function main(): Promise<void> {
   });
 
   process.on("unhandledRejection", (reason) => {
+    if (isJsonMode()) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      console.log(
+        JSON.stringify(
+          {
+            ok: false,
+            error: {
+              code: reason instanceof MiosaError ? "MIOSA_ERROR" : "FATAL",
+              message,
+              retryable:
+                reason instanceof MiosaError ? reason.exitCode >= 70 : false,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      process.exit(reason instanceof MiosaError ? reason.exitCode : 1);
+    }
     if (reason instanceof MiosaError) {
       console.error(chalk.red(`Error: ${reason.message}`));
       if (reason.hint) console.error(chalk.dim(`  Hint: ${reason.hint}`));
@@ -174,6 +259,20 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  if (isJsonMode()) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          error: { code: "FATAL", message: msg, retryable: false },
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
   const msg = err instanceof Error ? err.message : String(err);
   console.error(chalk.red(`Fatal: ${msg}`));
   process.exit(1);

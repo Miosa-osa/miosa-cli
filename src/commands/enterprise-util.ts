@@ -4,6 +4,7 @@ import { MiosaClient } from "../client.js";
 import { loadConfig } from "../config.js";
 import { renderTable } from "../ui/table.js";
 import { handleError } from "./util.js";
+import { isJsonMode } from "../cli-env.js";
 
 export type ApiObject = Record<string, unknown>;
 export type ApiClient = Pick<
@@ -97,7 +98,7 @@ export async function deleteAndPrint(
   opts: JsonOptions,
 ): Promise<void> {
   const value = unwrap(await client().apiDelete<unknown>(apiPath(path)));
-  if (opts.json) {
+  if (isJsonMode(opts)) {
     console.log(JSON.stringify(value ?? { deleted: true }, null, 2));
     return;
   }
@@ -109,7 +110,7 @@ export function addDataOption(command: Command): Command {
 }
 
 export function printValue(value: unknown, opts: JsonOptions): void {
-  if (opts.json) {
+  if (isJsonMode(opts)) {
     console.log(JSON.stringify(value, null, 2));
     return;
   }

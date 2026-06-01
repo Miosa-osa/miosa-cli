@@ -25,7 +25,7 @@ import {
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
   formatDuration,
@@ -61,7 +61,7 @@ export function register(program: Command): void {
       runAction(async () => {
         const qs = opts.state ? `?state=${enc(opts.state)}` : "";
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           await getAndPrint(`/sandboxes${qs}`, opts);
           return;
         }
@@ -139,7 +139,7 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions & { port?: number; probePath: string }) =>
       runAction(async () => {
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           const data =
             opts.port != null
               ? await showSandboxWithPreview(id, opts.port, opts.probePath)
@@ -278,7 +278,7 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const t0 = Date.now();
-          const json = !!opts.json || process.env["MIOSA_JSON"] === "1";
+          const json = !!isJsonMode(opts) || process.env["MIOSA_JSON"] === "1";
 
           if (opts.data) {
             if (json) {
@@ -444,7 +444,7 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(async () => {
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           await getAndPrint(`/sandboxes/${enc(id)}`, opts);
           return;
         }
@@ -578,7 +578,7 @@ export function register(program: Command): void {
               interactive: !!opts.interactive,
               timeout: opts.timeout,
             });
-            if (opts.json) {
+            if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
               return;
             }
@@ -651,7 +651,7 @@ export function register(program: Command): void {
               interactive: !!opts.interactive,
               timeout: opts.timeout,
             });
-            if (opts.json) {
+            if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
               return;
             }
@@ -701,7 +701,7 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const result = await deploySandbox(localDir, opts);
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -744,7 +744,7 @@ export function register(program: Command): void {
             timeout: opts.timeout,
             probePath: opts.probePath,
           });
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -789,7 +789,7 @@ export function register(program: Command): void {
             console.log(result.url);
             return;
           }
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -820,7 +820,7 @@ export function register(program: Command): void {
             probePath: opts.probePath,
           });
           const data = { port, ...result };
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(data, null, 2));
             return;
           }
@@ -865,7 +865,7 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const result = await publishSandbox(id, opts);
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -971,7 +971,7 @@ export function register(program: Command): void {
           const result = unwrap(await client().apiPatch<unknown>(apiPath(`/sandboxes/${enc(id)}`), {
             metadata: { network_policy: policy },
           }));
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -993,7 +993,7 @@ export function register(program: Command): void {
       (id: string, name: string, opts: { cmd: string; cwd: string; port?: number; json?: boolean }) =>
         runAction(async () => {
           const result = await startSandboxService(id, name, opts);
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -1017,7 +1017,7 @@ export function register(program: Command): void {
               {},
             ),
           ) as Record<string, unknown>;
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -1037,7 +1037,7 @@ export function register(program: Command): void {
           ),
         ) as Record<string, unknown>;
         const status = String(result["status"] ?? "unknown");
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1058,7 +1058,7 @@ export function register(program: Command): void {
             ),
           ),
         ) as Record<string, unknown>;
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -1082,7 +1082,7 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const report = await doctorSandbox(id, opts.port, opts.probePath);
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(report, null, 2));
             return;
           }
@@ -1115,7 +1115,7 @@ export function register(program: Command): void {
             apiPath(`/sandboxes/${enc(id)}/files`),
             { path: remotePath, content: base64 },
           );
-          if (!opts.json) {
+          if (!isJsonMode(opts)) {
             console.log(chalk.green(`Written to ${remotePath}`));
           } else {
             printValue(typeof result === "string" ? { content: result } : result, opts);
@@ -1136,7 +1136,7 @@ export function register(program: Command): void {
         const result = await fetchApiRaw(
           apiPath(`/sandboxes/${enc(id)}/files/read?path=${enc(remotePath)}`),
         );
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(
             JSON.stringify(
               typeof result === "string" ? { content: result } : result,
@@ -1196,7 +1196,7 @@ export function register(program: Command): void {
             apiPath(`/sandboxes/${enc(id)}/files`),
             { path: remotePath, content: base64 },
           );
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             printValue(result, opts);
           } else {
             const filename = path.basename(localPath);
@@ -1224,7 +1224,7 @@ export function register(program: Command): void {
           const result = await uploadDirToSandbox(id, localDir, remoteDir, {
             delete: !!opts.delete,
           });
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -1253,7 +1253,7 @@ export function register(program: Command): void {
           const result = await uploadDirToSandbox(opts.sandbox, localDir, remoteDir, {
             delete: !!opts.delete,
           });
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -1284,7 +1284,7 @@ export function register(program: Command): void {
               parsedSource.remotePath,
               target,
             );
-            if (opts.json) {
+            if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
               return;
             }
@@ -1309,7 +1309,7 @@ export function register(program: Command): void {
               parsed.remotePath,
               { delete: !!opts.delete },
             );
-            if (opts.json) {
+            if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
               return;
             }
@@ -1320,7 +1320,7 @@ export function register(program: Command): void {
           }
           const c = client();
           await uploadFileToSandbox(c, parsed.sandboxId, local, parsed.remotePath);
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(
               JSON.stringify(
                 {
@@ -1360,7 +1360,7 @@ export function register(program: Command): void {
             apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -1455,7 +1455,7 @@ export function register(program: Command): void {
         opts: { port?: number; user?: string; json?: boolean },
       ) => {
         try {
-          await runSandboxSsh(id, { ...opts, spawn: !opts.json });
+          await runSandboxSsh(id, { ...opts, spawn: !isJsonMode(opts) });
         } catch (err) {
           handleError(err);
         }
@@ -1508,7 +1508,7 @@ export function register(program: Command): void {
             wait: !!opts.wait,
             timeoutSec: opts.timeout,
             probePath: opts.probePath,
-            json: !!opts.json,
+            json: !!isJsonMode(opts),
           });
         } catch (err) {
           handleError(err);
@@ -1565,7 +1565,7 @@ export function register(program: Command): void {
               {},
             );
           }
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(
               JSON.stringify(
                 { snapshot, stopped: !!opts.stop },
@@ -1792,7 +1792,7 @@ async function runSandboxSsh(
   const localPort = opts.port ?? (await pickFreePort());
   const user = opts.user ?? "root";
 
-  if (opts.json) {
+  if (isJsonMode(opts)) {
     console.log(
       JSON.stringify({
         sandbox_id: id,
@@ -1943,7 +1943,7 @@ async function runSandboxPortForward(
     );
   }
 
-  if (opts.json) {
+  if (isJsonMode(opts)) {
     console.log(
       JSON.stringify({
         sandbox_id: id,
@@ -1964,7 +1964,7 @@ async function runSandboxPortForward(
   }
 
   const ticker = setInterval(() => {
-    if (opts.json || stats.active === 0) return;
+    if (isJsonMode(opts) || stats.active === 0) return;
     process.stderr.write(
       chalk.dim(
         `\r[${new Date().toLocaleTimeString()}] connections: ${stats.active}  ↑ ${formatBytes(stats.bytesIn)}  ↓ ${formatBytes(stats.bytesOut)}  `,
@@ -2446,7 +2446,7 @@ function parsePublishDatabase(value?: string): unknown {
 }
 
 function deployStep(opts: { json?: boolean }, label: string): void {
-  if (!opts.json) console.error(chalk.dim(`→ ${label}`));
+  if (!isJsonMode(opts)) console.error(chalk.dim(`→ ${label}`));
 }
 
 async function doctorSandbox(

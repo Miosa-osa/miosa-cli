@@ -14,7 +14,7 @@ import {
   icon,
   kvPanel,
 } from "../ui/render.js";
-import { printJson } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 
 export function register(program: Command): void {
   program
@@ -23,11 +23,12 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .option("--refresh", "Force a network refresh of the cached identity")
     .action(async (opts: { json?: boolean; refresh?: boolean }) => {
+      const json = isJsonMode(opts);
       const config = loadConfig();
 
       // ── Not signed in ────────────────────────────────────────────────
       if (!config.api_key) {
-        if (opts.json) {
+        if (json) {
           printJson({ authenticated: false });
           return;
         }
@@ -42,7 +43,7 @@ export function register(program: Command): void {
       const cached = opts.refresh ? null : loadAuthCache();
 
       if (cached) {
-        if (opts.json) {
+        if (json) {
           printJson({
             authenticated: true,
             name: cached.name,
@@ -82,7 +83,7 @@ export function register(program: Command): void {
           cached_at: new Date().toISOString(),
         });
 
-        if (opts.json) {
+        if (json) {
           printJson({
             authenticated: true,
             name: tenant.name,
@@ -105,6 +106,7 @@ export function register(program: Command): void {
           fromCache: false,
         });
       } catch (err) {
+        if (json) handleError(err);
         const message = err instanceof Error ? err.message : String(err);
         console.log();
         console.log(

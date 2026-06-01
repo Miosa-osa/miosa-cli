@@ -2,8 +2,35 @@ import chalk from "chalk";
 import { MiosaError } from "../errors.js";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
+import { isJsonMode } from "../cli-env.js";
 
 export function handleError(err: unknown): never {
+  if (isJsonMode()) {
+    const error =
+      err instanceof MiosaError
+        ? {
+            code: errorCodeFor(err),
+            message: err.message,
+            retryable: err.exitCode >= 70,
+            ...(err.hint ? { hint: err.hint } : {}),
+          }
+        : err instanceof Error
+          ? {
+              code: "UNEXPECTED_ERROR",
+              message: err.message,
+              retryable: false,
+              ...(process.env["MIOSA_DEBUG"] ? { stack: err.stack } : {}),
+            }
+          : {
+              code: "UNKNOWN_ERROR",
+              message: String(err),
+              retryable: false,
+            };
+
+    console.log(JSON.stringify({ ok: false, error }, null, 2));
+    process.exit(err instanceof MiosaError ? err.exitCode : 1);
+  }
+
   if (err instanceof MiosaError) {
     console.error(chalk.red(`Error: ${err.message}`));
     if (err.hint) {
@@ -20,6 +47,13 @@ export function handleError(err: unknown): never {
   }
   console.error(chalk.red(`Unknown error: ${String(err)}`));
   process.exit(1);
+}
+
+function errorCodeFor(err: MiosaError): string {
+  const name = err.constructor.name.replace(/Error$/, "");
+  return name
+    ? name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase()
+    : "MIOSA_ERROR";
 }
 
 /** Parse "host:/path" or just "host" (path defaults to "/") */
@@ -100,6 +134,8 @@ export function objectOf<T extends Record<string, unknown>>(
 export function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
+
+export { isJsonMode };
 
 export function shortId(id: string | null | undefined): string {
   if (!id) return "";

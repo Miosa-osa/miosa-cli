@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, redactKey, getConfigPath } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 import { spin } from "../ui/spinner.js";
 
 // ── Project config (.miosa.json) ─────────────────────────────────────────────
@@ -339,13 +339,12 @@ export function register(program: Command): void {
     )
     .option("--json", "Output raw JSON (machine-readable)")
     .action(async (opts: { json?: boolean }) => {
+      const json = isJsonMode(opts);
       const config = loadConfig();
 
       if (!config.api_key) {
-        if (opts.json) {
-          console.log(
-            JSON.stringify({ authenticated: false, config: getConfigPath() }),
-          );
+        if (json) {
+          printJson({ authenticated: false, config: getConfigPath() });
           return;
         }
         console.log();
@@ -357,7 +356,7 @@ export function register(program: Command): void {
         return;
       }
 
-      const spinner = opts.json ? null : spin("Fetching status...");
+      const spinner = json ? null : spin("Fetching status...");
       const client = new MiosaClient(config);
 
       try {
@@ -396,24 +395,18 @@ export function register(program: Command): void {
 
         spinner?.stop();
 
-        if (opts.json) {
-          console.log(
-            JSON.stringify(
-              {
-                authenticated: true,
-                endpoint: config.endpoint,
-                api_key: redactKey(config.api_key),
-                tenant,
-                project,
-                computers,
-                sandboxes,
-                deployments,
-                agent_sessions: agentSessions,
-              },
-              null,
-              2,
-            ),
-          );
+        if (json) {
+          printJson({
+            authenticated: true,
+            endpoint: config.endpoint,
+            api_key: redactKey(config.api_key),
+            tenant,
+            project,
+            computers,
+            sandboxes,
+            deployments,
+            agent_sessions: agentSessions,
+          });
           return;
         }
 

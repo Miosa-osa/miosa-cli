@@ -4,7 +4,7 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { ServerError, UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 import type { BuildId, Deployment } from "../types.js";
 
 interface ApiClient {
@@ -172,7 +172,7 @@ export function register(program: Command): void {
         const app = await resolveApp(client, appArg);
         const rows = await listReleaseRows(client, app.id);
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(rows, null, 2));
           return;
         }
@@ -232,7 +232,7 @@ export function register(program: Command): void {
             ({ app, release } = await findRelease(client, releaseId));
           }
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify({ app, release }, null, 2));
             return;
           }
@@ -261,7 +261,7 @@ export function register(program: Command): void {
           const app = await resolveApp(client, deploymentId);
           const release = await getReleaseRow(client, app.id, releaseId);
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(release, null, 2));
             return;
           }
@@ -316,7 +316,7 @@ export function register(program: Command): void {
             ),
           );
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
           }
         } catch (err) {

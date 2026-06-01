@@ -4,7 +4,7 @@ import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 
 interface Database {
   id: string;
@@ -120,11 +120,11 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = opts.json ? null : spin("Fetching databases...");
+        const spinner = isJsonMode(opts) ? null : spin("Fetching databases...");
         const rows = unwrapDatabases(await client.apiGet("/api/v1/databases"));
         spinner?.stop();
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(rows, null, 2));
           return;
         }
@@ -177,7 +177,7 @@ export function register(program: Command): void {
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = opts.json ? null : spin(`Creating database ${opts.name}...`);
+          const spinner = isJsonMode(opts) ? null : spin(`Creating database ${opts.name}...`);
           const engine = normalizeEngine(opts.engine);
           const engineVersion = defaultEngineVersion(
             engine,
@@ -195,7 +195,7 @@ export function register(program: Command): void {
           );
           spinner?.succeed(`Created database ${db.name}`);
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(db, null, 2));
             return;
           }
@@ -225,7 +225,7 @@ export function register(program: Command): void {
           await client.apiGet(`/api/v1/databases/${encodeURIComponent(id)}`),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(db, null, 2));
           return;
         }
@@ -264,7 +264,7 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = opts.json ? null : spin("Fetching credentials...");
+        const spinner = isJsonMode(opts) ? null : spin("Fetching credentials...");
         const creds = unwrapCredentials(
           await client.apiGet(
             `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
@@ -272,7 +272,7 @@ export function register(program: Command): void {
         );
         spinner?.stop();
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(creds, null, 2));
           return;
         }
@@ -342,12 +342,12 @@ export function register(program: Command): void {
 
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Deleting database...");
+        const spinner = isJsonMode(opts) ? null : spin("Deleting database...");
         const result = await client.apiDelete(
           `/api/v1/databases/${encodeURIComponent(id)}`,
         );
-        spinner.succeed("Database deleted");
-        if (opts.json)
+        spinner?.succeed("Database deleted");
+        if (isJsonMode(opts))
           console.log(JSON.stringify(result ?? { ok: true }, null, 2));
       } catch (err) {
         handleError(err);
@@ -363,14 +363,14 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Triggering backup...");
+        const spinner = isJsonMode(opts) ? null : spin("Triggering backup...");
         const result = await client.apiPost(
           `/api/v1/databases/${encodeURIComponent(id)}/backup`,
           {},
         );
-        spinner.succeed("Backup started");
+        spinner?.succeed("Backup started");
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
@@ -435,14 +435,14 @@ export function register(program: Command): void {
 
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin("Triggering restore...");
+          const spinner = isJsonMode(opts) ? null : spin("Triggering restore...");
           const result = await client.apiPost(
             `/api/v1/databases/${encodeURIComponent(id)}/restore`,
             { backup_id: backupId },
           );
-          spinner.succeed("Restore started");
+          spinner?.succeed("Restore started");
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
             return;
           }
@@ -477,7 +477,7 @@ export function register(program: Command): void {
         const config = loadConfig();
         const client = new MiosaClient(config);
 
-        if (!opts.json) {
+        if (!isJsonMode(opts)) {
           console.log(chalk.dim(`Streaming logs for database ${id}...`));
         }
 
@@ -498,6 +498,23 @@ export function register(program: Command): void {
 
         if (res.statusCode >= 400) {
           const body = await res.body.text();
+          if (isJsonMode(opts)) {
+            console.log(
+              JSON.stringify(
+                {
+                  ok: false,
+                  error: {
+                    code: `HTTP_${res.statusCode}`,
+                    message: body || `HTTP ${res.statusCode}`,
+                    retryable: res.statusCode >= 500,
+                  },
+                },
+                null,
+                2,
+              ),
+            );
+            process.exit(1);
+          }
           console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
           if (res.statusCode === 406) {
             console.error(
@@ -510,7 +527,7 @@ export function register(program: Command): void {
         }
 
         for await (const event of parseSse(res.body)) {
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(event));
             continue;
           }
