@@ -234,12 +234,21 @@ export function register(program: Command): void {
       )
       .option("--name <name>", "Human-readable name for the Sandbox")
       .option("--cpu <n>", "vCPU count", parseInt)
-      .option("--memory <mb>", "Memory in MB", parseInt)
-      .option("--disk <mb>", "Disk size in MB", parseInt)
-      .option("--timeout <sec>", "Idle timeout in seconds", parseInt)
+      .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
+      .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
+      .option("--timeout <duration>", "Wall-clock timeout, e.g. 300s, 1h", parseDurationSec)
       .option("--publish-port <port>", "Expose this port after create", parseInt)
       .option("--wait", "Wait for sandbox running and published port readiness")
       .option("--probe-path <path>", "HTTP path to probe when --publish-port is set", "/")
+      .option("--source <source>", "Source: git:https://..., tarball:https://..., or snapshot:<id>")
+      .option("--revision <revision>", "Git revision/branch when --source git: is used")
+      .option("--depth <n>", "Git clone depth when --source git: is used", parseInt)
+      .option("--snapshot <id>", "Create from a sandbox snapshot")
+      .option("--workspace <id-or-slug>", "Workspace ID/slug")
+      .option("--network-policy <policy>", "Network policy: allow-all or deny-all")
+      .option("--allowed-domain <domain>", "Allowed egress domain. Repeatable.", collectOption, [])
+      .option("--allowed-cidr <cidr>", "Allowed egress CIDR. Repeatable.", collectOption, [])
+      .option("--denied-cidr <cidr>", "Denied egress CIDR. Repeatable.", collectOption, [])
       .option("--always-on", "Disable auto-destroy on idle"),
   )
     .option("--json", "Output as JSON")
@@ -255,6 +264,15 @@ export function register(program: Command): void {
           publishPort?: number;
           wait?: boolean;
           probePath?: string;
+          source?: string;
+          revision?: string;
+          depth?: number;
+          snapshot?: string;
+          workspace?: string;
+          networkPolicy?: string;
+          allowedDomain?: string[];
+          allowedCidr?: string[];
+          deniedCidr?: string[];
           alwaysOn?: boolean;
         },
       ) =>
@@ -280,6 +298,18 @@ export function register(program: Command): void {
           if (opts.memory != null) body["memory_mb"] = opts.memory;
           if (opts.disk != null) body["disk_size_mb"] = opts.disk;
           if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+          if (opts.source) body["source"] = opts.source;
+          if (opts.revision) body["revision"] = opts.revision;
+          if (opts.depth != null) body["depth"] = opts.depth;
+          if (opts.snapshot) body["snapshot_id"] = opts.snapshot;
+          if (opts.workspace) body["workspace_id"] = opts.workspace;
+          const networkPolicy = buildNetworkPolicy(opts);
+          if (networkPolicy) {
+            body["metadata"] = {
+              ...((body["metadata"] as Record<string, unknown> | undefined) ?? {}),
+              network_policy: networkPolicy,
+            };
+          }
           if (opts.alwaysOn) body["always_on"] = true;
 
           const raw = unwrap(
@@ -593,7 +623,7 @@ export function register(program: Command): void {
     .option("--install-command <command>", "Install command to run before start")
     .option("--no-install", "Skip automatic dependency install")
     .option("--wait", "Wait until the public preview returns a good HTTP status")
-    .option("--timeout <sec>", "Wait timeout in seconds", parseInt, 180)
+    .option("--timeout <duration>", "Wait timeout, e.g. 180s or 3m", parseDurationSec, 180)
     .option("--probe-path <path>", "HTTP path to probe", "/")
     .option("--json", "Output as JSON")
     .action(
@@ -710,6 +740,94 @@ export function register(program: Command): void {
           }
           console.log(chalk.green("Ready"));
           console.log(chalk.cyan(result.url));
+        }),
+    );
+
+  sandbox
+    .command("domain <sandbox-id> <port>")
+    .description("Return the public preview domain/URL for a sandbox port")
+    .option("--wait", "Wait until the public URL is externally ready")
+    .option("--timeout <duration>", "Wait timeout", parseDurationSec, 120)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        portText: string,
+        opts: { wait?: boolean; timeout: number; probePath: string; json?: boolean },
+      ) =>
+        runAction(async () => {
+          const port = Number(portText);
+          if (!Number.isInteger(port)) throw new UserError(`Invalid port: ${portText}`);
+          const result = await previewSandbox(id, port, {
+            wait: !!opts.wait,
+            timeout: opts.timeout,
+            probePath: opts.probePath,
+          });
+          const data = { port, ...result };
+          if (opts.json) {
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.log(result.url);
+        }),
+    );
+
+  sandbox
+    .command("extend <sandbox-id>")
+    .description("Extend or replace a sandbox timeout")
+    .requiredOption("--timeout <duration>", "New timeout, e.g. 2h", parseDurationSec)
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { timeout: number; json?: boolean }) =>
+      runAction(() =>
+        postAndPrint(`/sandboxes/${enc(id)}/extend`, opts, {
+          timeout_sec: opts.timeout,
+        }),
+      ),
+    );
+
+  sandbox
+    .command("usage <sandbox-id>")
+    .description("Show sandbox runtime, rough resource usage, and estimated cost")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/sandboxes/${enc(id)}/usage`, opts)),
+    );
+
+  const config = sandbox
+    .command("config")
+    .description("Configure sandbox settings");
+
+  config
+    .command("network-policy <sandbox-id>")
+    .description("Store egress network policy metadata for a sandbox")
+    .option("--network-policy <policy>", "Network policy: allow-all or deny-all")
+    .option("--allowed-domain <domain>", "Allowed egress domain. Repeatable.", collectOption, [])
+    .option("--allowed-cidr <cidr>", "Allowed egress CIDR. Repeatable.", collectOption, [])
+    .option("--denied-cidr <cidr>", "Denied egress CIDR. Repeatable.", collectOption, [])
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: {
+          networkPolicy?: string;
+          allowedDomain?: string[];
+          allowedCidr?: string[];
+          deniedCidr?: string[];
+          json?: boolean;
+        },
+      ) =>
+        runAction(async () => {
+          const policy = buildNetworkPolicy(opts);
+          if (!policy) throw new UserError("No network policy options provided.");
+          const result = unwrap(await client().apiPatch<unknown>(apiPath(`/sandboxes/${enc(id)}`), {
+            metadata: { network_policy: policy },
+          }));
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green("Network policy updated."));
         }),
     );
 
@@ -2439,6 +2557,53 @@ function parseEnvPairs(pairs: string[]): Record<string, string> {
     env[pair.slice(0, idx)] = pair.slice(idx + 1);
   }
   return env;
+}
+
+function parseDurationSec(value: string): number {
+  const match = String(value).trim().match(/^(\d+)(ms|s|m|h|d)?$/i);
+  if (!match) throw new UserError(`Invalid duration: ${value}`);
+  const amount = Number(match[1]);
+  const unit = (match[2] ?? "s").toLowerCase();
+  if (unit === "ms") return Math.max(1, Math.ceil(amount / 1000));
+  if (unit === "s") return amount;
+  if (unit === "m") return amount * 60;
+  if (unit === "h") return amount * 60 * 60;
+  if (unit === "d") return amount * 24 * 60 * 60;
+  return amount;
+}
+
+function parseSizeMb(value: string): number {
+  const match = String(value).trim().match(/^(\d+)(mb|m|gb|g)?$/i);
+  if (!match) throw new UserError(`Invalid size: ${value}`);
+  const amount = Number(match[1]);
+  const unit = (match[2] ?? "mb").toLowerCase();
+  if (unit === "gb" || unit === "g") return amount * 1024;
+  return amount;
+}
+
+function buildNetworkPolicy(opts: {
+  networkPolicy?: string;
+  allowedDomain?: string[];
+  allowedCidr?: string[];
+  deniedCidr?: string[];
+}): Record<string, unknown> | null {
+  const allowedDomains = opts.allowedDomain ?? [];
+  const allowedCidrs = opts.allowedCidr ?? [];
+  const deniedCidrs = opts.deniedCidr ?? [];
+  if (
+    !opts.networkPolicy &&
+    allowedDomains.length === 0 &&
+    allowedCidrs.length === 0 &&
+    deniedCidrs.length === 0
+  ) {
+    return null;
+  }
+  return {
+    mode: opts.networkPolicy ?? "allow-all",
+    allowed_domains: allowedDomains,
+    allowed_cidrs: allowedCidrs,
+    denied_cidrs: deniedCidrs,
+  };
 }
 
 function shellQuote(value: string): string {
