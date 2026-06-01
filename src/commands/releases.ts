@@ -2,14 +2,10 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { ServerError, UserError } from "../errors.js";
+import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { handleError, isJsonMode } from "./util.js";
 import type { BuildId, Deployment } from "../types.js";
-
-interface ApiClient {
-  apiPost<T>(path: string, body?: unknown): Promise<T>;
-}
 
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -120,6 +116,12 @@ async function listReleaseRows(
   client: MiosaClient,
   appId: Deployment["id"],
 ): Promise<ReleaseRow[]> {
+  const releaseBody = await client.apiGet<unknown>(
+    `/api/v1/deployments/${encodeURIComponent(appId)}/releases`,
+  );
+  const releases = responseRows(releaseBody, "releases");
+  if (releases.length > 0) return releases;
+
   const versionBody = await client.apiGet<unknown>(
     `/api/v1/deployments/${encodeURIComponent(appId)}/versions`,
   );
@@ -135,6 +137,18 @@ async function getReleaseRow(
   appId: Deployment["id"],
   releaseId: string,
 ): Promise<ReleaseRow> {
+  try {
+    const body = await client.apiGet<unknown>(
+      `/api/v1/deployments/${encodeURIComponent(appId)}/releases/${encodeURIComponent(releaseId)}`,
+    );
+    const data = (body as Record<string, unknown> | null)?.["data"];
+    if (data && typeof data === "object" && typeof (data as Record<string, unknown>)["id"] === "string") {
+      return data as ReleaseRow;
+    }
+  } catch {
+    // Fall back to immutable versions and legacy builds for older deployments.
+  }
+
   try {
     const body = await client.apiGet<unknown>(
       `/api/v1/deployments/${encodeURIComponent(appId)}/versions/${encodeURIComponent(releaseId)}`,
@@ -330,13 +344,25 @@ export function register(program: Command): void {
     .description("Rollback to a release")
     .option("--app <app>", "App name, slug, or deployment ID")
     .option("-y, --yes", "Skip confirmation prompt")
+    .option("--json", "Output as JSON")
     .action(
-      async (releaseId: string, opts: { app?: string; yes?: boolean }) => {
+      async (
+        releaseId: string,
+        opts: { app?: string; yes?: boolean; json?: boolean },
+      ) => {
         try {
           const client = new MiosaClient(loadConfig());
-          const app = opts.app
-            ? await resolveApp(client, opts.app)
-            : (await findRelease(client, releaseId)).app;
+          const found = opts.app
+            ? {
+                app: await resolveApp(client, opts.app),
+                release: undefined as ReleaseRow | undefined,
+              }
+            : await findRelease(client, releaseId);
+          const app = found.app;
+          const release =
+            found.release ?? (await getReleaseRow(client, app.id, releaseId));
+          const versionId =
+            textField(release, "deployment_version_id") ?? release.id;
 
           if (!opts.yes) {
             const { default: inquirer } = await import("inquirer");
@@ -354,35 +380,14 @@ export function register(program: Command): void {
             }
           }
 
-          const api = client as unknown as Partial<ApiClient>;
-          if (typeof api.apiPost !== "function") {
-            throw new UserError(
-              "Rollback is not available in this CLI build.",
-              "The backend needs a first-class rollback route before this command can mutate releases.",
-            );
-          }
+          const result = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(app.id)}/rollback`,
+            { version_id: versionId },
+          );
 
-          try {
-            await api.apiPost(
-              `/api/v1/deployments/${encodeURIComponent(app.id)}/builds/${encodeURIComponent(releaseId)}/rollback`,
-            );
-          } catch (err) {
-            if (
-              err instanceof UserError &&
-              err.message.toLowerCase().includes("not found")
-            ) {
-              throw new UserError(
-                "Rollback is not available: backend route not found.",
-                "Expected POST /api/v1/deployments/:id/builds/:release_id/rollback.",
-              );
-            }
-            if (err instanceof ServerError && err.statusCode === 501) {
-              throw new UserError(
-                "Rollback is not available: backend route is not implemented.",
-                "A first-class rollback API is required before this command can proceed.",
-              );
-            }
-            throw err;
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
           }
 
           console.log(
