@@ -1110,15 +1110,14 @@ export function register(program: Command): void {
             ? fs.readFileSync(contentArg)
             : Buffer.from(contentArg, "utf8");
           const base64 = contentBytes.toString("base64");
-          const c = client();
-          const result = await c.apiPost<unknown>(
+          const result = await fetchApiRaw(
             apiPath(`/sandboxes/${enc(id)}/files`),
             { path: remotePath, content: base64 },
           );
           if (!opts.json) {
             console.log(chalk.green(`Written to ${remotePath}`));
           } else {
-            printValue(result, opts);
+            printValue(typeof result === "string" ? { content: result } : result, opts);
           }
         } catch (err) {
           handleError(err);
@@ -2909,19 +2908,21 @@ async function readSandboxFile(
   throw new UserError(`Could not read sandbox file: ${remotePath}`);
 }
 
-async function fetchApiRaw(path: string): Promise<unknown> {
+async function fetchApiRaw(path: string, body?: unknown): Promise<unknown> {
   const config = loadConfig();
   const apiKey = config.api_key;
   if (!apiKey) throw new UserError("Not authenticated. Run: miosa login");
 
   const endpoint = (config.endpoint ?? "https://api.miosa.ai").replace(/\/$/, "");
   const res = await fetch(`${endpoint}${path}`, {
-    method: "GET",
+    method: body === undefined ? "GET" : "POST",
     headers: {
       Authorization: `Bearer ${String(apiKey)}`,
       Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/json",
       "User-Agent": "@miosa/cli",
     },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
   if (!res.ok) {
