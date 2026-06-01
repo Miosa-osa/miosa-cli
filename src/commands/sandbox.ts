@@ -1871,14 +1871,12 @@ async function runSandboxPortForward(
   id: string,
   opts: PortForwardOptions,
 ): Promise<void> {
-  const config = loadConfig();
-  const apiKey = config.api_key;
-  if (!apiKey) throw new Error("Not authenticated. Run: miosa login");
-
-  const endpoint = config.endpoint ?? "https://api.miosa.ai";
-  const base = endpoint.replace(/\/$/, "");
-  const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/tunnel/${opts.remotePort}`;
+  const preview = await previewSandbox(id, opts.remotePort, {
+    wait: true,
+    timeout: opts.timeoutSec,
+    probePath: opts.probePath,
+  });
+  const upstreamBase = new URL(preview.url);
 
   interface ConnStats {
     active: number;
@@ -1888,38 +1886,34 @@ async function runSandboxPortForward(
   }
   const stats: ConnStats = { active: 0, total: 0, bytesIn: 0, bytesOut: 0 };
 
-  const server = createServer((socket) => {
+  const server = http.createServer((req, res) => {
     stats.active++;
     stats.total++;
-
-    const ws = new WebSocket(wsUrl, "miosa-tunnel-v1", {
-      headers: { Authorization: `Bearer ${String(apiKey)}` },
+    const target = new URL(req.url ?? "/", upstreamBase);
+    const headers = { ...req.headers, host: target.host };
+    const mod = target.protocol === "https:" ? https : http;
+    const proxyReq = mod.request(
+      target,
+      { method: req.method, headers },
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+        proxyRes.on("data", (chunk: Buffer) => {
+          stats.bytesOut += chunk.length;
+        });
+        proxyRes.pipe(res);
+      },
+    );
+    req.on("data", (chunk: Buffer) => {
+      stats.bytesIn += chunk.length;
     });
-
-    ws.on("open", () => {
-      socket.on("data", (chunk: Buffer) => {
-        stats.bytesIn += chunk.length;
-        if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
-      });
-      socket.on("close", () => ws.readyState === WebSocket.OPEN && ws.close());
-      socket.on("error", () => ws.close());
+    proxyReq.on("error", (err) => {
+      if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+      res.end(`MIOSA port-forward upstream error: ${err.message}`);
     });
-
-    ws.on("message", (data: Buffer | string) => {
-      const buf = typeof data === "string" ? Buffer.from(data) : data;
-      stats.bytesOut += buf.length;
-      if (!socket.destroyed) socket.write(buf);
-    });
-
-    ws.on("close", () => {
+    res.on("close", () => {
       stats.active = Math.max(0, stats.active - 1);
-      if (!socket.destroyed) socket.destroy();
     });
-
-    ws.on("error", (err) => {
-      process.stderr.write(`\r\nWS error: ${err.message}\r\n`);
-      if (!socket.destroyed) socket.destroy();
-    });
+    req.pipe(proxyReq);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -1952,6 +1946,7 @@ async function runSandboxPortForward(
         sandbox_id: id,
         remote_port: opts.remotePort,
         local_port: opts.localPort,
+        upstream_url: preview.url,
         ready: localProbe?.ok ?? !opts.wait,
         status: localProbe?.status ?? null,
         latency_ms: localProbe?.latency_ms ?? null,
@@ -1961,6 +1956,7 @@ async function runSandboxPortForward(
     console.log(
       `${chalk.green(opts.wait ? "Forwarding ready" : "Forwarding")} ${chalk.cyan(`localhost:${opts.localPort}`)} ${chalk.dim("→")} sandbox ${chalk.cyan(id)}:${chalk.bold(String(opts.remotePort))}`,
     );
+    console.log(chalk.dim(`Upstream: ${preview.url}`));
     console.log(chalk.dim("Press Ctrl+C to close.\n"));
   }
 
