@@ -364,23 +364,11 @@ Examples:
 
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const creds = unwrapCredentials(
-            await client.apiGet(
-              `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
-            ),
-          );
-          const url = buildPsqlUrl(creds);
-          if (!url) {
-            throw new UserError(
-              "Could not construct a DATABASE_URL from the credentials returned by the API.",
-              "Run `miosa db connect <id> --json` to inspect raw credentials.",
-            );
-          }
 
           if (opts.app) {
             const result = await client.apiPost(
-              `/api/v1/deployments/${encodeURIComponent(opts.app)}/env`,
-              { env: { [opts.env]: url } },
+              `/api/v1/deployments/${encodeURIComponent(opts.app)}/database`,
+              { database_id: id, env: opts.env },
             );
 
             if (opts.json) {
@@ -400,10 +388,21 @@ Examples:
               return;
             }
 
-            console.log(
-              chalk.green(`Attached ${opts.env} to app ${opts.app}`),
-            );
+            console.log(chalk.green(`Attached ${opts.env} to app ${opts.app}`));
             return;
+          }
+
+          const creds = unwrapCredentials(
+            await client.apiGet(
+              `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
+            ),
+          );
+          const url = buildPsqlUrl(creds);
+          if (!url) {
+            throw new UserError(
+              "Could not construct a DATABASE_URL from the credentials returned by the API.",
+              "Run `miosa db connect <id> --json` to inspect raw credentials.",
+            );
           }
 
           const sandbox = opts.sandbox;

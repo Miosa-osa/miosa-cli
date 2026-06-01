@@ -457,35 +457,23 @@ describe("miosa db attach", () => {
     setGlobalDispatcher(mock);
 
     const appId = "dep-0000-0000-0000-000000000001";
-    const databaseUrl = "postgresql://admin:secret@proxy.miosa.ai:15432/mydb";
 
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: `/api/v1/databases/${DB_ID}/credentials`,
-        method: "GET",
+        path: `/api/v1/deployments/${appId}/database`,
+        method: "POST",
+        body: JSON.stringify({ database_id: DB_ID, env: "DATABASE_URL" }),
       })
       .reply(
         200,
         JSON.stringify({
           data: {
-            recommended_url: databaseUrl,
+            attached: true,
+            database_id: DB_ID,
+            env: "DATABASE_URL",
+            env_vars: [{ name: "DATABASE_URL", preview: "pos...ydb" }],
           },
-        }),
-        { headers: { "content-type": "application/json" } },
-      );
-
-    mock
-      .get("https://api.miosa.ai")
-      .intercept({
-        path: `/api/v1/deployments/${appId}/env`,
-        method: "POST",
-        body: JSON.stringify({ env: { DATABASE_URL: databaseUrl } }),
-      })
-      .reply(
-        200,
-        JSON.stringify({
-          data: [{ name: "DATABASE_URL", preview: "pos...ydb" }],
         }),
         { headers: { "content-type": "application/json" } },
       );
