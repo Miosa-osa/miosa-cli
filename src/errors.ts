@@ -11,6 +11,8 @@ export class MiosaError extends Error {
     message: string,
     public readonly exitCode: number,
     public readonly hint?: string,
+    public readonly details?: unknown,
+    public readonly requestId?: string | null,
   ) {
     super(message);
     this.name = "MiosaError";
@@ -43,8 +45,23 @@ export class ServerError extends MiosaError {
     message: string,
     public readonly statusCode: number,
     public readonly body?: unknown,
+    requestId?: string | null,
   ) {
-    super(message, EXIT_SERVER_ERROR);
+    super(message, EXIT_SERVER_ERROR, undefined, body, requestId);
+  }
+}
+
+export class ApiResponseError extends MiosaError {
+  constructor(
+    public readonly code: string,
+    message: string,
+    exitCode: number,
+    public readonly retryable: boolean,
+    hint?: string,
+    details?: unknown,
+    requestId?: string | null,
+  ) {
+    super(message, exitCode, hint, details, requestId);
   }
 }
 
@@ -52,8 +69,23 @@ export function mapHttpError(
   status: number,
   body: ApiErrorBody,
   rawBody: string,
+  requestId?: string | null,
 ): MiosaError {
   const msg = body.error?.message ?? body.message ?? `HTTP ${status}`;
+  const apiCode = body.error?.code;
+  const apiDetails = body.error?.details;
+
+  if (apiCode) {
+    return new ApiResponseError(
+      apiCode,
+      msg,
+      status >= 500 ? EXIT_SERVER_ERROR : EXIT_USER_ERROR,
+      status === 429 || status >= 500,
+      undefined,
+      apiDetails ?? rawBody,
+      requestId,
+    );
+  }
 
   switch (status) {
     case 401:
@@ -83,13 +115,14 @@ export function mapHttpError(
     case 429:
       return new UserError("Rate limited. Wait a moment and retry.");
     case 501:
-      return new ServerError(`Feature not available: ${msg}`, status, rawBody);
+      return new ServerError(`Feature not available: ${msg}`, status, rawBody, requestId);
     default:
       if (status >= 500) {
         return new ServerError(
           `Server error (${status}): ${msg}`,
           status,
           rawBody,
+          requestId,
         );
       }
       return new MiosaError(msg, EXIT_USER_ERROR);

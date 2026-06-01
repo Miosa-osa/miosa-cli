@@ -52,6 +52,35 @@ interface ComputerSummary {
   [key: string]: unknown;
 }
 
+function listOf<T>(payload: unknown): T[] {
+  if (Array.isArray(payload)) return payload as T[];
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { data?: unknown }).data)
+  ) {
+    return (payload as { data: T[] }).data;
+  }
+  return [];
+}
+
+async function resolveComputer(
+  client: MiosaClient,
+  nameOrId: string,
+): Promise<ComputerSummary | null> {
+  try {
+    const payload = await client.apiGet<unknown>("/api/v1/computers");
+    const computers = listOf<ComputerSummary>(payload);
+    return (
+      computers.find(
+        (computer) => computer.id === nameOrId || computer.name === nameOrId,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 type DesktopSubcommand =
   | { action: "screenshot" }
   | { action: "click"; x: number; y: number; button: string }
@@ -674,10 +703,14 @@ export function register(program: Command): void {
           const endpoint = config.endpoint.replace(/\/$/, "");
           const apiKey = config.api_key;
 
+          const client = new MiosaClient(config);
+          const resolvedComputer = await resolveComputer(client, computerIdArg);
+          const computerId = resolvedComputer?.id ?? computerIdArg;
+
           // --- Non-interactive JSON / single-command mode ---
           if (opts.json || opts.desktop || opts.cmd) {
             await runJsonMode({
-              computerId: computerIdArg,
+              computerId,
               desktopCmd: opts.desktop,
               shellCmd: opts.cmd,
               endpoint,
@@ -689,23 +722,25 @@ export function register(program: Command): void {
           // --- Interactive mode ---
           const spinner = spin(`Connecting to ${computerIdArg}...`);
 
-          const client = new MiosaClient(config);
-
           // Fetch computer details for the banner (best-effort — don't block on 404)
           let computer: ComputerSummary;
-          try {
-            computer = await client
-              .apiGet<{
-                data: ComputerSummary;
-              }>(`/api/v1/computers/${encodeURIComponent(computerIdArg)}`)
-              .then((r) => r.data ?? (r as unknown as ComputerSummary));
-          } catch {
-            // Fall back to a minimal stub so we can still connect
-            computer = {
-              id: computerIdArg as ComputerId,
-              name: computerIdArg,
-              state: "unknown",
-            };
+          if (resolvedComputer) {
+            computer = resolvedComputer;
+          } else {
+            try {
+              computer = await client
+                .apiGet<{
+                  data: ComputerSummary;
+                }>(`/api/v1/computers/${encodeURIComponent(computerId)}`)
+                .then((r) => r.data ?? (r as unknown as ComputerSummary));
+            } catch {
+              // Fall back to a minimal stub so we can still connect
+              computer = {
+                id: computerId as ComputerId,
+                name: computerIdArg,
+                state: "unknown",
+              };
+            }
           }
 
           if (computer.state !== "running" && computer.state !== "unknown") {
@@ -716,7 +751,7 @@ export function register(program: Command): void {
             spinner.text = `Opening PTY on ${computer.name || computerIdArg}...`;
           }
 
-          const ticket = await createPty(endpoint, apiKey, computerIdArg);
+          const ticket = await createPty(endpoint, apiKey, computerId);
           spinner.stop();
 
           const exitCode = await runInteractiveSession({

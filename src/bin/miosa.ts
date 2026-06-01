@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { MiosaError } from "../errors.js";
 import { scheduleUpdateCheck } from "../update-check.js";
-import { isJsonMode } from "../cli-env.js";
+import { isJsonMode, isQuietMode } from "../cli-env.js";
 
 // Dynamically read version from package.json so it stays in sync
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +58,11 @@ program
   )
   .version(pkg.version, "-v, --version", "Print version number and exit")
   .option("--json", "Prefer JSON output for commands that support structured output")
+  .option("--debug", "Show request IDs and backend error details")
+  .option("--quiet", "Suppress non-essential human-readable output")
+  .option("--no-color", "Disable ANSI color output")
+  .option("--tenant <tenant>", "Scope API requests to a tenant slug or ID")
+  .option("--workspace <workspace>", "Scope API requests to a workspace ID")
   .addHelpText(
     "after",
     `
@@ -95,13 +100,34 @@ Documentation: https://miosa.ai/docs/cli/
 Environment:
   MIOSA_JSON=1       Prefer JSON output where supported
   MIOSA_NO_COLOR=1   Disable ANSI color output
+  MIOSA_DEBUG=1      Show request IDs and backend error details
+  MIOSA_QUIET=1      Suppress non-essential human-readable output
+  MIOSA_TENANT=...   Default tenant slug or ID request scope
+  MIOSA_WORKSPACE=... Default workspace ID request scope
 `,
   );
 
 program.hook("preAction", (rootCommand, actionCommand) => {
-  if (rootCommand.opts<{ json?: boolean }>().json || actionCommand.optsWithGlobals<{ json?: boolean }>().json) {
+  const opts = actionCommand.optsWithGlobals<{
+    json?: boolean;
+    debug?: boolean;
+    quiet?: boolean;
+    noColor?: boolean;
+    tenant?: string;
+    workspace?: string;
+  }>();
+  if (rootCommand.opts<{ json?: boolean }>().json || opts.json) {
     process.env["MIOSA_JSON"] = "1";
   }
+  if (opts.debug) process.env["MIOSA_DEBUG"] = "1";
+  if (opts.quiet) process.env["MIOSA_QUIET"] = "1";
+  if (opts.noColor) {
+    process.env["MIOSA_NO_COLOR"] = "1";
+    process.env["NO_COLOR"] = process.env["NO_COLOR"] || "1";
+    process.env["FORCE_COLOR"] = "0";
+  }
+  if (opts.tenant) process.env["MIOSA_TENANT"] = opts.tenant;
+  if (opts.workspace) process.env["MIOSA_WORKSPACE"] = opts.workspace;
 });
 
 // `miosa version` — explicit subcommand (mirrors `miosa --version`)
@@ -255,7 +281,9 @@ async function main(): Promise<void> {
   await program.parseAsync(process.argv);
 
   // Schedule async update check — never blocks, prints notice after command output
-  scheduleUpdateCheck(pkg.version);
+  if (!isJsonMode() && !isQuietMode()) {
+    scheduleUpdateCheck(pkg.version);
+  }
 }
 
 main().catch((err: unknown) => {

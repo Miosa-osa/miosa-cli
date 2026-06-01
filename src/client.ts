@@ -25,10 +25,13 @@ import type {
   TunnelSlug,
 } from "./types.js";
 import { AuthError, mapHttpError, NetworkError } from "./errors.js";
+import { isDebugMode } from "./cli-env.js";
 
 export class MiosaClient {
   private readonly endpoint: string;
   private readonly apiKey: string;
+  private readonly tenant: string | null;
+  private readonly workspace: string | null;
 
   constructor(config: MiosaConfig) {
     if (!config.api_key) {
@@ -39,30 +42,43 @@ export class MiosaClient {
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
     this.apiKey = config.api_key;
+    this.tenant = config.tenant ?? null;
+    this.workspace = config.workspace ?? null;
   }
 
   private headers(): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
       "User-Agent": `@miosa/cli/0.1.0`,
     };
+
+    if (this.tenant) headers["X-MIOSA-Tenant"] = this.tenant;
+    if (this.workspace) headers["X-MIOSA-Workspace"] = this.workspace;
+
+    return headers;
   }
 
   private url(path: string): string {
     return `${this.endpoint}${path}`;
   }
 
-  private async parseError(res: Dispatcher.ResponseData): Promise<never> {
+  private async parseError(
+    res: Dispatcher.ResponseData,
+    method: string,
+    path: string,
+  ): Promise<never> {
     const rawBody = await res.body.text();
+    const requestId = responseHeader(res, "x-request-id");
     let body: ApiErrorBody = {};
     try {
       body = JSON.parse(rawBody) as ApiErrorBody;
     } catch {
       body = { message: rawBody || `HTTP ${res.statusCode}` };
     }
-    throw mapHttpError(res.statusCode, body, rawBody);
+    debugHttpError(method, path, res.statusCode, requestId, rawBody);
+    throw mapHttpError(res.statusCode, body, rawBody, requestId);
   }
 
   private async get<T>(path: string): Promise<T> {
@@ -78,7 +94,7 @@ export class MiosaClient {
         "Check your connection and endpoint: miosa status",
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "GET", path);
     return res.body.json() as Promise<T>;
   }
 
@@ -96,7 +112,7 @@ export class MiosaClient {
         "Check your connection and endpoint: miosa status",
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "POST", path);
     return res.body.json() as Promise<T>;
   }
 
@@ -112,7 +128,7 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "DELETE", path);
     if (res.statusCode === 204) return undefined as T;
     return res.body.json() as Promise<T>;
   }
@@ -142,7 +158,7 @@ export class MiosaClient {
         "Check your connection and endpoint: miosa status",
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "PUT", path);
     return res.body.json() as Promise<T>;
   }
 
@@ -161,7 +177,7 @@ export class MiosaClient {
         "Check your connection and endpoint: miosa status",
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "PATCH", path);
     return res.body.json() as Promise<T>;
   }
 
@@ -259,7 +275,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "POST",
+        `/api/v1/opencomputers/hosts/${hostId}/jobs`,
+      );
+    }
     return res;
   }
 
@@ -288,7 +310,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/opencomputers/hosts/${hostId}/fs/content`,
+      );
+    }
     return res;
   }
 
@@ -317,10 +345,9 @@ export class MiosaClient {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${this.apiKey}`,
+            ...this.headers(),
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
             "X-Remote-Path": remotePath,
-            "User-Agent": `@miosa/cli/0.1.0`,
           },
           body,
         },
@@ -330,7 +357,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) await this.parseError(res);
+    if (res.statusCode >= 400) {
+      await this.parseError(
+        res,
+        "POST",
+        `/api/v1/opencomputers/hosts/${hostId}/fs/content`,
+      );
+    }
     await res.body.dump();
   }
 
@@ -386,7 +419,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/computers/${computerId}/files/download`,
+      );
+    }
     return res;
   }
 
@@ -415,10 +454,9 @@ export class MiosaClient {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${this.apiKey}`,
+            ...this.headers(),
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
             "X-Remote-Path": remotePath,
-            "User-Agent": `@miosa/cli/0.1.0`,
           },
           body,
         },
@@ -428,7 +466,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) await this.parseError(res);
+    if (res.statusCode >= 400) {
+      await this.parseError(
+        res,
+        "POST",
+        `/api/v1/computers/${computerId}/files/upload`,
+      );
+    }
     await res.body.dump();
   }
 
@@ -486,7 +530,7 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) return this.parseError(res, "POST", path);
     return res;
   }
 
@@ -538,7 +582,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "POST",
+        `/api/v1/opencomputers/hosts/${hostId}/agent/dispatch`,
+      );
+    }
     return res;
   }
 
@@ -612,7 +662,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/deployments/${encodeURIComponent(id)}/logs`,
+      );
+    }
     return res;
   }
 
@@ -640,7 +696,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/deployments/${encodeURIComponent(id)}/builds/${encodeURIComponent(buildId)}/logs`,
+      );
+    }
     return res;
   }
 
@@ -680,7 +742,13 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/opencomputers/hosts/${hostId}/events`,
+      );
+    }
     return res;
   }
 
@@ -702,8 +770,55 @@ export class MiosaClient {
         `Network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (res.statusCode >= 400) return this.parseError(res);
+    if (res.statusCode >= 400) {
+      return this.parseError(
+        res,
+        "GET",
+        `/api/v1/computers/${computerId}/events`,
+      );
+    }
     return res;
+  }
+}
+
+function responseHeader(
+  res: Dispatcher.ResponseData,
+  name: string,
+): string | null {
+  const headers = res.headers as
+    | Record<string, string | string[] | undefined>
+    | Array<string | Buffer>
+    | undefined;
+
+  if (Array.isArray(headers)) {
+    for (let i = 0; i < headers.length; i += 2) {
+      const key = String(headers[i] ?? "").toLowerCase();
+      if (key === name.toLowerCase()) return String(headers[i + 1] ?? "");
+    }
+    return null;
+  }
+
+  const value = headers?.[name] ?? headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function debugHttpError(
+  method: string,
+  path: string,
+  status: number,
+  requestId: string | null,
+  rawBody: string,
+): void {
+  if (!isDebugMode()) return;
+
+  const requestIdText = requestId ? ` request_id=${requestId}` : "";
+  process.stderr.write(
+    `[debug] ${method} ${path} -> HTTP ${status}${requestIdText}\n`,
+  );
+
+  if (rawBody) {
+    process.stderr.write(`[debug] response_body=${rawBody}\n`);
   }
 }
 

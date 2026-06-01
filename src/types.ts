@@ -54,6 +54,10 @@ export interface MiosaConfig {
   default_host: string | null;
   region: string | null;
   output: string;
+  tenant?: string | null;
+  workspace?: string | null;
+  quiet?: boolean;
+  debug?: boolean;
 }
 
 // API resource types — match backend shapes exactly

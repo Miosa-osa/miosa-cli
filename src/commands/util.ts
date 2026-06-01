@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { MiosaError } from "../errors.js";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { isJsonMode } from "../cli-env.js";
+import { isDebugMode, isJsonMode } from "../cli-env.js";
 
 export function handleError(err: unknown): never {
   if (isJsonMode()) {
@@ -11,15 +11,17 @@ export function handleError(err: unknown): never {
         ? {
             code: errorCodeFor(err),
             message: err.message,
-            retryable: err.exitCode >= 70,
+            retryable: retryableFor(err),
             ...(err.hint ? { hint: err.hint } : {}),
+            ...(err.requestId ? { request_id: err.requestId } : {}),
+            ...(isDebugMode() && err.details ? { details: err.details } : {}),
           }
         : err instanceof Error
           ? {
               code: "UNEXPECTED_ERROR",
               message: err.message,
               retryable: false,
-              ...(process.env["MIOSA_DEBUG"] ? { stack: err.stack } : {}),
+              ...(isDebugMode() ? { stack: err.stack } : {}),
             }
           : {
               code: "UNKNOWN_ERROR",
@@ -36,11 +38,17 @@ export function handleError(err: unknown): never {
     if (err.hint) {
       console.error(chalk.dim(`  Hint: ${err.hint}`));
     }
+    if (isDebugMode() && err.requestId) {
+      console.error(chalk.dim(`  Request ID: ${err.requestId}`));
+    }
+    if (isDebugMode() && err.details) {
+      console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
+    }
     process.exit(err.exitCode);
   }
   if (err instanceof Error) {
     console.error(chalk.red(`Unexpected error: ${err.message}`));
-    if (process.env["MIOSA_DEBUG"]) {
+    if (isDebugMode()) {
       console.error(err.stack);
     }
     process.exit(1);
@@ -50,10 +58,20 @@ export function handleError(err: unknown): never {
 }
 
 function errorCodeFor(err: MiosaError): string {
+  if ("code" in err && typeof err.code === "string") return err.code;
   const name = err.constructor.name.replace(/Error$/, "");
   return name
     ? name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase()
     : "MIOSA_ERROR";
+}
+
+function retryableFor(err: MiosaError): boolean {
+  if ("retryable" in err && typeof err.retryable === "boolean") return err.retryable;
+  return err.exitCode >= 70;
+}
+
+function formatDetails(details: unknown): string {
+  return typeof details === "string" ? details : JSON.stringify(details);
 }
 
 /** Parse "host:/path" or just "host" (path defaults to "/") */
