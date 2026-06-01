@@ -12,6 +12,7 @@ import {
 import { hintBlock, icon, kvPanel, printBanner } from "../ui/render.js";
 import { renderTable } from "../ui/table.js";
 import { UserError } from "../errors.js";
+import { isJsonMode } from "../cli-env.js";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -27,7 +28,9 @@ function domainName(domain: ApiObject, fallback?: string): string {
 }
 
 function domainStatus(domain: ApiObject): string {
-  const status = String(domain["status"] ?? domain["verification_status"] ?? "pending");
+  const status = String(
+    domain["status"] ?? domain["verification_status"] ?? "pending",
+  );
   if (status === "active" || status === "verified") return chalk.green(status);
   if (status === "failed" || status === "error") return chalk.red(status);
   return chalk.yellow(status);
@@ -41,19 +44,31 @@ function printDomain(domain: ApiObject, fallback?: string): void {
   console.log();
   console.log(
     kvPanel([
-      { icon: icon.info, label: "Domain", value: chalk.bold(domainName(domain, fallback)) },
+      {
+        icon: icon.info,
+        label: "Domain",
+        value: chalk.bold(domainName(domain, fallback)),
+      },
       { label: "Status", value: domainStatus(domain) },
       { label: "App", value: chalk.dim(appId(domain)) },
-      { label: "Target", value: chalk.dim(String(domain["verification_target"] ?? "—")) },
+      {
+        label: "Target",
+        value: chalk.dim(String(domain["verification_target"] ?? "—")),
+      },
     ]),
   );
 
-  const records = Array.isArray(domain["dns_records"]) ? domain["dns_records"] : [];
+  const records = Array.isArray(domain["dns_records"])
+    ? domain["dns_records"]
+    : [];
   if (records.length > 0) {
     console.log();
     console.log(chalk.bold("DNS records"));
     renderTable(
-      records.filter((r): r is ApiObject => r !== null && typeof r === "object" && !Array.isArray(r)),
+      records.filter(
+        (r): r is ApiObject =>
+          r !== null && typeof r === "object" && !Array.isArray(r),
+      ),
       [
         { header: "TYPE", key: (r) => String(r["type"] ?? "—"), width: 8 },
         { header: "NAME", key: (r) => String(r["name"] ?? "—"), width: 28 },
@@ -80,11 +95,17 @@ async function resolveAppId(app: string): Promise<string> {
     // Fall through to list lookup by name/slug.
   }
 
-  const list = unwrap<unknown>(await c.apiGet<unknown>(apiPath("/deployments")));
+  const list = unwrap<unknown>(
+    await c.apiGet<unknown>(apiPath("/deployments")),
+  );
   const rows = Array.isArray(list)
-    ? (list.filter((v) => v !== null && typeof v === "object" && !Array.isArray(v)) as ApiObject[])
+    ? (list.filter(
+        (v) => v !== null && typeof v === "object" && !Array.isArray(v),
+      ) as ApiObject[])
     : [];
-  const match = rows.find((row) => row["id"] === app || row["name"] === app || row["slug"] === app);
+  const match = rows.find(
+    (row) => row["id"] === app || row["name"] === app || row["slug"] === app,
+  );
   if (typeof match?.["id"] === "string") return match["id"];
 
   throw new UserError(`App not found: ${app}`);
@@ -107,7 +128,7 @@ export function register(program: Command): void {
           await client().apiGet<unknown>(apiPath(`/domains/${enc(fqdn)}`)),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(domain, null, 2));
           return;
         }
@@ -131,7 +152,7 @@ export function register(program: Command): void {
           ),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(value, null, 2));
           return;
         }
@@ -180,76 +201,86 @@ export function register(program: Command): void {
     .description("Register a custom FQDN for an app or Computer")
     .option("--app <app>", "App/deployment ID, name, or slug")
     .option("--json", "Output as JSON")
-    .action((targetOrFqdn: string, fqdnArg: string | undefined, opts: JsonOptions & { app?: string }) =>
-      runAction(async () => {
-        let value: unknown;
-        let targetLabel: string;
-        let fqdn: string;
+    .action(
+      (
+        targetOrFqdn: string,
+        fqdnArg: string | undefined,
+        opts: JsonOptions & { app?: string },
+      ) =>
+        runAction(async () => {
+          let value: unknown;
+          let targetLabel: string;
+          let fqdn: string;
 
-        if (opts.app) {
-          fqdn = targetOrFqdn;
-          const deploymentId = await resolveAppId(opts.app);
-          targetLabel = deploymentId;
-          value = unwrap(
-            await client().apiPost<unknown>(apiPath("/domains"), {
-              domain: fqdn,
-              deployment_id: deploymentId,
-            }),
-          );
-        } else {
-          if (!fqdnArg) {
-            throw new UserError(
-              "Missing domain.",
-              "Use `miosa domains add app.example.com --app <app>` or `miosa domains add <computer-id> app.example.com`.",
+          if (opts.app) {
+            fqdn = targetOrFqdn;
+            const deploymentId = await resolveAppId(opts.app);
+            targetLabel = deploymentId;
+            value = unwrap(
+              await client().apiPost<unknown>(apiPath("/domains"), {
+                domain: fqdn,
+                deployment_id: deploymentId,
+              }),
+            );
+          } else {
+            if (!fqdnArg) {
+              throw new UserError(
+                "Missing domain.",
+                "Use `miosa domains add app.example.com --app <app>` or `miosa domains add <computer-id> app.example.com`.",
+              );
+            }
+            const computerId = targetOrFqdn;
+            fqdn = fqdnArg;
+            targetLabel = computerId;
+            value = unwrap(
+              await client().apiPost<unknown>(
+                apiPath(`/computers/${enc(computerId)}/domains`),
+                { fqdn },
+              ),
             );
           }
-          const computerId = targetOrFqdn;
-          fqdn = fqdnArg;
-          targetLabel = computerId;
-          value = unwrap(
-            await client().apiPost<unknown>(
-              apiPath(`/computers/${enc(computerId)}/domains`),
-              { fqdn },
-            ),
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(value, null, 2));
+            return;
+          }
+
+          const domain = value as ApiObject;
+
+          printBanner({ subtitle: "Domain registered" });
+          console.log(
+            kvPanel([
+              {
+                icon: icon.ok,
+                label: "FQDN",
+                value: chalk.bold(String(domain["fqdn"] ?? fqdn)),
+              },
+              {
+                icon: icon.ok,
+                label: "ID",
+                value: chalk.dim(String(domain["id"] ?? "—")),
+              },
+              { label: "Status", value: domainStatus(domain) },
+              {
+                label: opts.app ? "App" : "Computer",
+                value: chalk.dim(targetLabel),
+              },
+            ]),
           );
-        }
-
-        if (opts.json) {
-          console.log(JSON.stringify(value, null, 2));
-          return;
-        }
-
-        const domain = value as ApiObject;
-
-        printBanner({ subtitle: "Domain registered" });
-        console.log(
-          kvPanel([
-            {
-              icon: icon.ok,
-              label: "FQDN",
-              value: chalk.bold(String(domain["fqdn"] ?? fqdn)),
-            },
-            {
-              icon: icon.ok,
-              label: "ID",
-              value: chalk.dim(String(domain["id"] ?? "—")),
-            },
-            { label: "Status", value: domainStatus(domain) },
-            { label: opts.app ? "App" : "Computer", value: chalk.dim(targetLabel) },
-          ]),
-        );
-        printDomain(domain, fqdn);
-        console.log();
-        console.log(
-          hintBlock("Next", [
-            opts.app
-              ? `miosa domains verify ${fqdn}`
-              : `miosa domains verify ${targetLabel} ${String(domain["id"] ?? "<domain-id>")}`,
-            opts.app ? `miosa domains status ${fqdn}` : `miosa domains list ${targetLabel}`,
-          ]),
-        );
-        console.log();
-      }),
+          printDomain(domain, fqdn);
+          console.log();
+          console.log(
+            hintBlock("Next", [
+              opts.app
+                ? `miosa domains verify ${fqdn}`
+                : `miosa domains verify ${targetLabel} ${String(domain["id"] ?? "<domain-id>")}`,
+              opts.app
+                ? `miosa domains status ${fqdn}`
+                : `miosa domains list ${targetLabel}`,
+            ]),
+          );
+          console.log();
+        }),
     );
 
   // ── verify ─────────────────────────────────────────────────────────────────
@@ -259,60 +290,78 @@ export function register(program: Command): void {
     .option("--wait", "Retry verification until it succeeds or timeout elapses")
     .option("--timeout <sec>", "Wait timeout in seconds", "120")
     .option("--json", "Output as JSON")
-    .action((targetOrFqdn: string, domainId: string | undefined, opts: JsonOptions & { wait?: boolean; timeout: string }) =>
-      runAction(async () => {
-        const timeoutSec = Number.parseInt(opts.timeout, 10);
-        const deadline = Date.now() + (Number.isFinite(timeoutSec) ? timeoutSec : 120) * 1000;
-        let value: unknown;
+    .action(
+      (
+        targetOrFqdn: string,
+        domainId: string | undefined,
+        opts: JsonOptions & { wait?: boolean; timeout: string },
+      ) =>
+        runAction(async () => {
+          const timeoutSec = Number.parseInt(opts.timeout, 10);
+          const deadline =
+            Date.now() +
+            (Number.isFinite(timeoutSec) ? timeoutSec : 120) * 1000;
+          let value: unknown;
 
-        while (true) {
-          try {
-            value = domainId
-              ? unwrap(
-                  await client().apiPost<unknown>(
-                    apiPath(`/computers/${enc(targetOrFqdn)}/domains/${enc(domainId)}/verify`),
-                  ),
-                )
-              : unwrap(
-                  await client().apiPost<unknown>(
-                    apiPath(`/domains/${enc(targetOrFqdn)}/verify`),
-                    {},
-                  ),
-                );
-            break;
-          } catch (err) {
-            if (!opts.wait || Date.now() >= deadline) throw err;
-            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          while (true) {
+            try {
+              value = domainId
+                ? unwrap(
+                    await client().apiPost<unknown>(
+                      apiPath(
+                        `/computers/${enc(targetOrFqdn)}/domains/${enc(domainId)}/verify`,
+                      ),
+                    ),
+                  )
+                : unwrap(
+                    await client().apiPost<unknown>(
+                      apiPath(`/domains/${enc(targetOrFqdn)}/verify`),
+                      {},
+                    ),
+                  );
+              break;
+            } catch (err) {
+              if (!opts.wait || Date.now() >= deadline) throw err;
+              await new Promise((resolve) => setTimeout(resolve, 5_000));
+            }
           }
-        }
 
-        if (opts.json) {
-          console.log(JSON.stringify(value, null, 2));
-          return;
-        }
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(value, null, 2));
+            return;
+          }
 
-        const domain = value as ApiObject;
+          const domain = value as ApiObject;
 
-        printBanner({ subtitle: "Domain verification" });
-        console.log(
-          kvPanel([
-            {
-              icon: icon.ok,
-              label: "Domain",
-              value: chalk.bold(domainName(domain, domainId ?? targetOrFqdn)),
-            },
-            {
-              icon: icon.ok,
-              label: "Status",
-              value: domainStatus(domain),
-            },
-            { label: domainId ? "Computer" : "App", value: chalk.dim(domainId ? targetOrFqdn : appId(domain)) },
-          ]),
-        );
-        console.log();
-        console.log(hintBlock("Next", [domainId ? `miosa domains list ${targetOrFqdn}` : `miosa domains status ${targetOrFqdn}`]));
-        console.log();
-      }),
+          printBanner({ subtitle: "Domain verification" });
+          console.log(
+            kvPanel([
+              {
+                icon: icon.ok,
+                label: "Domain",
+                value: chalk.bold(domainName(domain, domainId ?? targetOrFqdn)),
+              },
+              {
+                icon: icon.ok,
+                label: "Status",
+                value: domainStatus(domain),
+              },
+              {
+                label: domainId ? "Computer" : "App",
+                value: chalk.dim(domainId ? targetOrFqdn : appId(domain)),
+              },
+            ]),
+          );
+          console.log();
+          console.log(
+            hintBlock("Next", [
+              domainId
+                ? `miosa domains list ${targetOrFqdn}`
+                : `miosa domains status ${targetOrFqdn}`,
+            ]),
+          );
+          console.log();
+        }),
     );
 
   domains
@@ -324,12 +373,15 @@ export function register(program: Command): void {
       runAction(async () => {
         const deploymentId = await resolveAppId(opts.app);
         const domain = unwrap<ApiObject>(
-          await client().apiPost<unknown>(apiPath(`/domains/${enc(fqdn)}/assign`), {
-            deployment_id: deploymentId,
-          }),
+          await client().apiPost<unknown>(
+            apiPath(`/domains/${enc(fqdn)}/assign`),
+            {
+              deployment_id: deploymentId,
+            },
+          ),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(domain, null, 2));
           return;
         }
@@ -345,46 +397,56 @@ export function register(program: Command): void {
     .command("delete <target-or-fqdn> [domain-id]")
     .description("Delete a custom domain mapping")
     .option("--json", "Output as JSON")
-    .action((targetOrFqdn: string, domainId: string | undefined, opts: JsonOptions) =>
-      runAction(async () => {
-        let value: unknown;
+    .action(
+      (targetOrFqdn: string, domainId: string | undefined, opts: JsonOptions) =>
+        runAction(async () => {
+          let value: unknown;
 
-        if (domainId) {
-          value = await client().apiDelete<unknown>(
-            apiPath(`/computers/${enc(targetOrFqdn)}/domains/${enc(domainId)}`),
-          );
-        } else {
-          value = unwrap(
-            await client().apiDelete<unknown>(
-              apiPath(`/domains/${enc(targetOrFqdn)}`),
-            ),
-          );
-        }
+          if (domainId) {
+            value = await client().apiDelete<unknown>(
+              apiPath(
+                `/computers/${enc(targetOrFqdn)}/domains/${enc(domainId)}`,
+              ),
+            );
+          } else {
+            value = unwrap(
+              await client().apiDelete<unknown>(
+                apiPath(`/domains/${enc(targetOrFqdn)}`),
+              ),
+            );
+          }
 
-        if (opts.json) {
+          if (isJsonMode(opts)) {
+            console.log(
+              JSON.stringify(
+                value ?? { deleted: true, id: domainId, domain: targetOrFqdn },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+
+          console.log();
           console.log(
-            JSON.stringify(value ?? { deleted: true, id: domainId, domain: targetOrFqdn }, null, 2),
+            kvPanel([
+              {
+                icon: icon.ok,
+                label: "Deleted",
+                value: chalk.bold(domainId ?? targetOrFqdn),
+              },
+              {
+                label: domainId ? "Computer" : "Domain",
+                value: chalk.dim(targetOrFqdn),
+              },
+            ]),
           );
-          return;
-        }
-
-        console.log();
-        console.log(
-          kvPanel([
-            {
-              icon: icon.ok,
-              label: "Deleted",
-              value: chalk.bold(domainId ?? targetOrFqdn),
-            },
-            {
-              label: domainId ? "Computer" : "Domain",
-              value: chalk.dim(targetOrFqdn),
-            },
-          ]),
-        );
-        console.log();
-        if (domainId) console.log(hintBlock("Try", [`miosa domains list ${targetOrFqdn}`]));
-        console.log();
-      }),
+          console.log();
+          if (domainId)
+            console.log(
+              hintBlock("Try", [`miosa domains list ${targetOrFqdn}`]),
+            );
+          console.log();
+        }),
     );
 }
