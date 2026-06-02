@@ -151,24 +151,10 @@ async function waitForDatabase(
   );
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
 function parseIntegerOption(value: string): number {
   const n = Number.parseInt(String(value), 10);
   if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
   return n;
-}
-
-function posixDirname(value: string): string {
-  const idx = value.lastIndexOf("/");
-  if (idx <= 0) return "/";
-  return value.slice(0, idx);
-}
-
-function escapeBasicRegex(value: string): string {
-  return value.replace(/[.[\*^$()+?{|\\]/g, "\\$&");
 }
 
 function unwrapBackup(raw: unknown): BackupRecord {
@@ -403,7 +389,11 @@ Examples:
     .option("--sandbox <sandbox-id>", "Sandbox ID")
     .option("--app <deployment-id>", "Deployment app ID")
     .option("--env <name>", "Environment variable name", "DATABASE_URL")
-    .option("--path <path>", "Env file path inside the sandbox", "/workspace/.env")
+    .option(
+      "--path <path>",
+      "Deprecated; sandbox DB attach now uses encrypted sandbox env",
+      "/workspace/.env",
+    )
     .option("--json", "Output raw JSON")
     .action(
       async (
@@ -460,40 +450,14 @@ Examples:
             return;
           }
 
-          const creds = unwrapCredentials(
-            await client.apiGet(
-              `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
-            ),
-          );
-          const url = buildPsqlUrl(creds);
-          if (!url) {
-            throw new UserError(
-              "Could not construct a DATABASE_URL from the credentials returned by the API.",
-              "Run `miosa db connect <id> --json` to inspect raw credentials.",
-            );
-          }
-
           const sandbox = opts.sandbox;
           if (!sandbox) {
             throw new UserError("Sandbox ID is required.");
           }
 
-          const command = [
-            `mkdir -p ${shellQuote(posixDirname(opts.path))}`,
-            `touch ${shellQuote(opts.path)}`,
-            `grep -v '^${escapeBasicRegex(opts.env)}=' ${shellQuote(opts.path)} > ${shellQuote(`${opts.path}.tmp`)} || true`,
-            `printf '%s\\n' ${shellQuote(`${opts.env}=${url}`)} >> ${shellQuote(`${opts.path}.tmp`)}`,
-            `mv ${shellQuote(`${opts.path}.tmp`)} ${shellQuote(opts.path)}`,
-          ].join(" && ");
-
           const result = await client.apiPost(
-            `/api/v1/sandboxes/${encodeURIComponent(sandbox)}/exec`,
-            {
-              command,
-              cwd: "/",
-              dir: "/",
-              timeout: 15,
-            },
+            `/api/v1/sandboxes/${encodeURIComponent(sandbox)}/database`,
+            { database_id: id, env: opts.env },
           );
 
           if (opts.json) {
@@ -503,9 +467,8 @@ Examples:
                   database_id: id,
                   sandbox_id: sandbox,
                   env: opts.env,
-                  path: opts.path,
                   attached: true,
-                  exec: result,
+                  result,
                 },
                 null,
                 2,
@@ -516,7 +479,7 @@ Examples:
 
           console.log(
             chalk.green(
-              `Attached ${opts.env} to sandbox ${sandbox} at ${opts.path}`,
+              `Attached database ${id} to sandbox ${sandbox} encrypted env`,
             ),
           );
         } catch (err) {

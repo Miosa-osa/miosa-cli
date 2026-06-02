@@ -1264,6 +1264,127 @@ export function register(program: Command): void {
         }),
     );
 
+  const env = sandbox
+    .command("env")
+    .description("Manage encrypted environment variables for a sandbox");
+
+  env
+    .command("list <sandbox-id>")
+    .description("List sandbox env var names and masked previews")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const result = unwrap(
+          await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}/env`)),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        const rows = Array.isArray(result) ? (result as Record<string, unknown>[]) : [];
+        if (rows.length === 0) {
+          console.log(chalk.dim("No sandbox env vars."));
+          return;
+        }
+        renderTable(rows, [
+          { header: "NAME", key: "name" as keyof Record<string, unknown>, width: 32 },
+          { header: "VALUE", key: "preview" as keyof Record<string, unknown>, width: 24 },
+          { header: "UPDATED", key: "updated_at" as keyof Record<string, unknown>, width: 28 },
+        ]);
+      }),
+    );
+
+  env
+    .command("set <sandbox-id> <pairs...>")
+    .description("Set encrypted sandbox env vars as KEY=VALUE")
+    .option("--json", "Output as JSON")
+    .action((id: string, pairs: string[], opts: JsonOptions) =>
+      runAction(async () => {
+        const vars = Object.entries(parseEnvPairs(pairs)).map(([key, value]) => ({
+          key,
+          value,
+        }));
+        const result = unwrap(
+          await client().apiPut<unknown>(apiPath(`/sandboxes/${enc(id)}/env`), {
+            vars,
+          }),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
+      }),
+    );
+
+  env
+    .command("delete <sandbox-id> <key>")
+    .alias("unset")
+    .description("Delete an encrypted sandbox env var")
+    .option("--json", "Output as JSON")
+    .action((id: string, key: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const result = unwrap(
+          await client().apiDelete<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/env/${enc(key)}`),
+          ),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(chalk.green(`Deleted ${key}.`));
+      }),
+    );
+
+  env
+    .command("sync <sandbox-id>")
+    .description("Sync encrypted sandbox env vars into the running VM")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const result = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/env/sync`),
+            {},
+          ),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        const status =
+          result && typeof result === "object" && "status" in result
+            ? String((result as Record<string, unknown>)["status"])
+            : "ok";
+        console.log(chalk.green(`Sandbox env sync ${status}.`));
+      }),
+    );
+
+  const sandboxDb = sandbox
+    .command("db")
+    .description("Attach managed databases to sandboxes");
+
+  sandboxDb
+    .command("attach <sandbox-id> <database-id>")
+    .description("Attach a managed database and persist DATABASE_URL env vars")
+    .option("--json", "Output as JSON")
+    .action((id: string, databaseId: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const result = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/database`),
+            { database_id: databaseId },
+          ),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(chalk.green(`Attached database ${databaseId} to sandbox ${id}.`));
+      }),
+    );
+
   sandbox
     .command("doctor <sandbox-id>")
     .description(

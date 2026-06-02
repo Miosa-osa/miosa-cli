@@ -619,4 +619,56 @@ describe("miosa db attach", () => {
     expect(errored.join(" ")).toContain("Choose where to attach");
     expect(process.exit).toHaveBeenCalledWith(1);
   });
+
+  it("attaches DATABASE_URL to sandbox encrypted env through backend API", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const sandboxId = "sbx-0000-0000-0000-000000000001";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/sandboxes/${sandboxId}/database`,
+        method: "POST",
+        body: JSON.stringify({ database_id: DB_ID, env: "DATABASE_URL" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            attached: true,
+            sandbox_id: sandboxId,
+            database_id: DB_ID,
+            env_vars: [{ name: "DATABASE_URL", preview: "pos...app" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "attach",
+      DB_ID,
+      "--sandbox",
+      sandboxId,
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      database_id: DB_ID,
+      sandbox_id: sandboxId,
+      env: "DATABASE_URL",
+      attached: true,
+    });
+  });
 });

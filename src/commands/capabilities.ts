@@ -142,6 +142,7 @@ const manifest: CapabilitiesManifest = {
       notes: [
         "Use sandbox deploy for preview readiness.",
         "Use sandbox publish to promote to durable app hosting.",
+        "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
       ],
     },
     {
@@ -357,10 +358,24 @@ const manifest: CapabilitiesManifest = {
           purpose: "Read recent DB logs without relying on SSE.",
           json: true,
         },
+        {
+          command:
+            "miosa sandbox db attach <sandbox-id> <db-id> --json",
+          purpose:
+            "Persist DATABASE_URL and PG* vars in encrypted sandbox env and sync them into the live VM.",
+          json: true,
+        },
+        {
+          command: "miosa sandbox env sync <sandbox-id> --json",
+          purpose:
+            "Re-sync encrypted sandbox env vars after a restart/rebuild when needed.",
+          json: true,
+        },
       ],
       success_signals: [
         "state running",
         "connection_test.status ok",
+        "sandbox db attach attached true",
         "proxy_status ready or not_configured for single-host dev",
       ],
       failure_signals: [

@@ -198,3 +198,155 @@ describe("miosa sandbox exec", () => {
     expect(parsed.data.app_consistency_pending).toBe(false);
   });
 });
+
+describe("miosa sandbox env", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sets encrypted sandbox env vars through the API", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/env",
+        method: "PUT",
+        body: JSON.stringify({
+          vars: [{ key: "APP_SECRET", value: "supersecret" }],
+        }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: [{ name: "APP_SECRET", preview: "sup...ret" }],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "env",
+      "set",
+      "sbx_123",
+      "APP_SECRET=supersecret",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Array<Record<string, unknown>>;
+    expect(parsed[0]?.["name"]).toBe("APP_SECRET");
+  });
+
+  it("syncs sandbox env vars into the running VM", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/env/sync",
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { status: "synced", env_keys: ["APP_SECRET"] },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "env",
+      "sync",
+      "sbx_123",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["status"]).toBe("synced");
+  });
+});
+
+describe("miosa sandbox db", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("attaches a database to sandbox encrypted env", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/database",
+        method: "POST",
+        body: JSON.stringify({ database_id: "db_123" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            attached: true,
+            sandbox_id: "sbx_123",
+            database_id: "db_123",
+            env_vars: [{ name: "DATABASE_URL", preview: "pos...app" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "db",
+      "attach",
+      "sbx_123",
+      "db_123",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["attached"]).toBe(true);
+    expect(parsed["database_id"]).toBe("db_123");
+  });
+});
