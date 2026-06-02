@@ -9,6 +9,14 @@ import * as https from "node:https";
 import type { Socket } from "node:net";
 import chalk from "chalk";
 import WebSocket from "ws";
+import {
+  loadAppManifest,
+  manifestPort,
+  manifestProbePath,
+  manifestStartCommand,
+  parseAppManifest,
+  type MiosaAppManifest,
+} from "../app-manifest.js";
 import { detectFramework } from "../framework-detector.js";
 import {
   addDataOption,
@@ -767,6 +775,12 @@ export function register(program: Command): void {
     )
     .option("--no-install", "Skip automatic dependency install")
     .option(
+      "--source <source>",
+      "Source: git:https://... or tarball:https://... for repo-backed preview deploy",
+    )
+    .option("--revision <revision>", "Git revision/branch for --source git:...")
+    .option("--depth <n>", "Git clone depth for --source git:...", parseIntegerOption)
+    .option(
       "--wait",
       "Wait until the public preview returns a good HTTP status",
     )
@@ -776,7 +790,7 @@ export function register(program: Command): void {
       parseDurationSec,
       180,
     )
-    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--probe-path <path>", "HTTP path to probe")
     .option("--json", "Output as JSON")
     .action(
       (
@@ -790,9 +804,12 @@ export function register(program: Command): void {
           start?: string;
           installCommand?: string;
           install?: boolean;
+          source?: string;
+          revision?: string;
+          depth?: number;
           wait?: boolean;
           timeout: number;
-          probePath: string;
+          probePath?: string;
           json?: boolean;
         },
       ) =>
@@ -2341,9 +2358,12 @@ interface SandboxDeployOptions {
   start?: string;
   installCommand?: string;
   install?: boolean;
+  source?: string;
+  revision?: string;
+  depth?: number;
   wait?: boolean;
   timeout: number;
-  probePath: string;
+  probePath?: string;
   json?: boolean;
 }
 
@@ -2596,73 +2616,100 @@ async function deploySandbox(
   opts: SandboxDeployOptions,
 ): Promise<SandboxDeployResult> {
   const sourceDir = path.resolve(localDir);
-  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+  const sourceBacked = !!opts.source;
+  if (!sourceBacked && (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory())) {
     throw new UserError(`Local directory not found: ${sourceDir}`);
   }
 
   const c = client();
-  const detection = detectFramework(sourceDir);
-  const port = opts.port ?? opts.publishPort ?? detection?.port ?? 5173;
-  const start = opts.start ?? defaultStartCommand(detection?.framework, port);
-  const installCommand =
-    opts.install === false
-      ? null
-      : (opts.installCommand ?? defaultInstallCommand(sourceDir));
-
+  let appManifest = sourceBacked ? null : loadAppManifest(sourceDir)?.manifest ?? null;
+  const detection = sourceBacked ? null : detectFramework(sourceDir);
+  const port =
+    opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? detection?.port ?? 5173;
+  const probePath = opts.probePath ?? manifestProbePath(appManifest) ?? "/";
+  let remoteWorkdir = normalizeRemoteWorkdir(appManifest?.workdir ?? "/workspace");
+  const start =
+    opts.start ??
+    manifestStartCommand(appManifest) ??
+    defaultStartCommand(detection?.framework ?? appManifest?.framework, port);
   const sandboxId =
     opts.sandbox ??
     (deployStep(opts, "Creating sandbox"),
     await createSandboxForDeploy(
       c,
-      opts.template ?? "miosa-sandbox",
+      opts.template ?? appManifest?.template ?? "miosa-sandbox",
       opts.name,
+      {
+        source: opts.source,
+        revision: opts.revision,
+        depth: opts.depth,
+      },
     ));
 
   deployStep(opts, "Waiting for sandbox");
   await waitForSandboxRunning(c, sandboxId, Math.min(opts.timeout, 120));
 
-  deployStep(opts, "Uploading files");
-  const archivePath = createDeployArchive(sourceDir);
-  const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
-  try {
-    await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
-  } finally {
-    fs.rmSync(archivePath, { force: true });
+  if (sourceBacked) {
+    deployStep(opts, "Waiting for source import");
+    appManifest = await readRemoteAppManifest(c, sandboxId, opts.timeout);
+    remoteWorkdir = normalizeRemoteWorkdir(appManifest?.workdir ?? "/workspace");
+  } else {
+    deployStep(opts, "Uploading files");
+    const archivePath = createDeployArchive(sourceDir);
+    const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
+    try {
+      await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
+      deployStep(opts, "Extracting workspace");
+      await execSandbox(
+        c,
+        sandboxId,
+        `mkdir -p ${shellQuote(remoteWorkdir)} && tar -xzf ${shellQuote(remoteArchive)} -C ${shellQuote(remoteWorkdir)}`,
+        "/",
+      );
+    } finally {
+      fs.rmSync(archivePath, { force: true });
+    }
   }
 
-  deployStep(opts, "Extracting workspace");
-  await execSandbox(
-    c,
-    sandboxId,
-    `mkdir -p /workspace && tar -xzf ${shellQuote(remoteArchive)} -C /workspace`,
-    "/",
-  );
+  const resolvedPort =
+    opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? port;
+  const resolvedProbePath = opts.probePath ?? manifestProbePath(appManifest) ?? probePath;
+  const resolvedStart =
+    opts.start ??
+    manifestStartCommand(appManifest) ??
+    start;
+  const installCommand =
+    opts.install === false
+      ? null
+      : (opts.installCommand ??
+        (appManifest?.install === false ? null : appManifest?.install) ??
+        (sourceBacked ? "npm install" : defaultInstallCommand(sourceDir)));
 
   if (installCommand) {
     deployStep(opts, `Installing dependencies: ${installCommand}`);
-    await execSandbox(c, sandboxId, installCommand, "/workspace", opts.timeout);
+    await execSandbox(c, sandboxId, installCommand, remoteWorkdir, opts.timeout);
   }
 
-  deployStep(opts, `Starting app on port ${port}`);
+  deployStep(opts, `Starting app on port ${resolvedPort}`);
   await execSandbox(
     c,
     sandboxId,
-    `fuser -k ${port}/tcp >/dev/null 2>&1 || true; nohup sh -lc ${shellQuote(start)} > ${shellQuote(`/tmp/miosa-app-${port}.log`)} 2>&1 & echo $!`,
-    "/workspace",
+    `fuser -k ${resolvedPort}/tcp >/dev/null 2>&1 || true; nohup sh -lc ${shellQuote(resolvedStart)} > ${shellQuote(`/tmp/miosa-app-${resolvedPort}.log`)} 2>&1 & echo $!`,
+    remoteWorkdir,
   );
 
   deployStep(opts, "Checking internal app readiness");
   const internal = await waitForInternalHttp(
     c,
     sandboxId,
-    port,
-    opts.probePath,
+    resolvedPort,
+    resolvedProbePath,
     Math.min(opts.timeout, 60),
   );
   deployStep(opts, "Creating public preview route");
   const exposed = await c.apiPost<unknown>(
     apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
-    { port, title: "app preview" },
+    { port: resolvedPort, title: "app preview" },
   );
   const previewUrl = extractUrl(unwrap(exposed));
   if (!previewUrl) {
@@ -2671,12 +2718,12 @@ async function deploySandbox(
 
   if (opts.wait) deployStep(opts, "Checking public preview readiness");
   const edge = opts.wait
-    ? await waitForPublicPreview(previewUrl, opts.probePath, opts.timeout)
+    ? await waitForPublicPreview(previewUrl, resolvedProbePath, opts.timeout)
     : { ok: false, status: null };
 
   return {
     sandbox_id: sandboxId,
-    port,
+    port: resolvedPort,
     preview_url: previewUrl,
     preview_ready: edge.ok,
     internal_status: internal.status,
@@ -2906,15 +2953,45 @@ async function createSandboxForDeploy(
   c: ReturnType<typeof client>,
   template: string,
   name?: string,
+  source?: { source?: string; revision?: string; depth?: number },
 ): Promise<string> {
   const body: Record<string, unknown> = { template_id: template };
   if (name) body["name"] = name;
+  if (source?.source) body["source"] = source.source;
+  if (source?.revision) body["revision"] = source.revision;
+  if (source?.depth != null) body["depth"] = source.depth;
   const created = unwrap(
     await c.apiPost<unknown>(apiPath("/sandboxes"), body),
   ) as Record<string, unknown>;
   const sandboxId = typeof created["id"] === "string" ? created["id"] : "";
   if (!sandboxId) throw new UserError("Sandbox create did not return an id.");
   return sandboxId;
+}
+
+async function readRemoteAppManifest(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  timeoutSec: number,
+): Promise<MiosaAppManifest | null> {
+  const deadline = Date.now() + Math.min(timeoutSec, 120) * 1000;
+  while (Date.now() < deadline) {
+    for (const filename of ["miosa.app.yml", "miosa.app.yaml", "miosa.app.json"]) {
+      const result = await c
+        .apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/exec`), {
+          command: `test -f /workspace/${filename} && cat /workspace/${filename}`,
+          cwd: "/workspace",
+          timeout: 10,
+        })
+        .then(unwrap)
+        .catch(() => null);
+      const row = asRecord(result);
+      if (Number(row?.["exit_code"] ?? 1) === 0 && typeof row?.["stdout"] === "string") {
+        return parseAppManifest(filename, row["stdout"]);
+      }
+    }
+    await sleep(1500);
+  }
+  return null;
 }
 
 async function waitForSandboxRunning(
@@ -3194,6 +3271,12 @@ function defaultStartCommand(
   if (framework === "static")
     return `python3 -m http.server ${port} --bind 0.0.0.0`;
   return `npm run dev -- --host 0.0.0.0 --port ${port}`;
+}
+
+function normalizeRemoteWorkdir(value: string): string {
+  if (!value || value === ".") return "/workspace";
+  if (!value.startsWith("/")) return `/workspace/${value.replace(/^\.\//, "")}`;
+  return value;
 }
 
 function extractUrl(value: unknown): string | null {

@@ -166,6 +166,7 @@ const commandModules = [
   "../commands/agent.js",
   "../commands/watch.js",
   "../commands/status.js",
+  "../commands/new.js",
   "../commands/up.js",
   "../commands/deploy.js",
   "../commands/apps.js",
