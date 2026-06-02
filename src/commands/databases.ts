@@ -2,19 +2,26 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
+import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { handleError, isJsonMode } from "./util.js";
 
 interface Database {
   id: string;
-  name: string;
+  name?: string;
   engine?: string;
   engine_version?: string;
   state?: string;
   region?: string;
   created_at?: string;
   updated_at?: string;
+  connection_test?: {
+    status?: string;
+    host?: string;
+    port?: number;
+    reason?: string;
+  } | null;
 }
 
 interface DatabaseCredentials {
@@ -67,6 +74,90 @@ function fmtState(db: Database): string {
   if (state === "stopped" || state === "stopping") return chalk.dim(state);
   if (state === "error" || state === "failed") return chalk.red(state);
   return state;
+}
+
+function parseIntegerOption(value: string): number {
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
+  return n;
+}
+
+function isDatabaseReady(db: Database): boolean {
+  const state = String(db.state ?? "").toLowerCase();
+  if (state !== "running" && state !== "available") return false;
+  const connectionStatus = db.connection_test?.status;
+  return connectionStatus === undefined || connectionStatus === "ok";
+}
+
+async function waitForDatabaseReady(
+  client: MiosaClient,
+  id: string,
+  timeoutSec: number,
+): Promise<Database> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: Database = { id };
+
+  while (Date.now() < deadline) {
+    last = unwrapDatabase(
+      await client.apiGet(`/api/v1/databases/${encodeURIComponent(id)}`),
+    );
+    const state = String(last.state ?? "").toLowerCase();
+
+    if (isDatabaseReady(last)) return last;
+
+    if (state === "error" || state === "failed") {
+      const reason = last.connection_test?.reason;
+      throw new UserError(
+        `Database ${id} entered ${state} state.`,
+        reason ? `Connection test: ${reason}` : undefined,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+
+  throw new UserError(
+    `Database ${id} did not become ready within ${timeoutSec}s.`,
+    `Last state: ${last.state ?? "unknown"}`,
+  );
+}
+
+interface LogEntry {
+  t?: string | null;
+  stream?: string;
+  line?: string;
+  message?: string;
+}
+
+function unwrapLogs(raw: unknown): { database_id?: string; logs: LogEntry[] } {
+  const root =
+    raw && typeof raw === "object" && "data" in raw
+      ? (raw as Record<string, unknown>)["data"]
+      : raw;
+
+  if (root && typeof root === "object") {
+    const r = root as Record<string, unknown>;
+    const logs = Array.isArray(r["logs"]) ? (r["logs"] as LogEntry[]) : [];
+    return {
+      database_id:
+        typeof r["database_id"] === "string" ? r["database_id"] : undefined,
+      logs,
+    };
+  }
+
+  return { logs: [] };
+}
+
+function formatLogEntry(entry: LogEntry): string {
+  const message = entry.line ?? entry.message ?? "";
+  if (entry.t) return `${entry.t} ${message}`;
+  return message;
+}
+
+function lifecycleVerb(action: "start" | "stop" | "restart"): string {
+  if (action === "start") return "Starting";
+  if (action === "stop") return "Stopping";
+  return "Restarting";
 }
 
 function databaseConnectRetryable(state: string): boolean {
@@ -191,6 +282,9 @@ export function register(program: Command): void {
     .option("--engine-version <version>", "Engine version")
     .option("--db-version <version>", "Alias for --engine-version")
     .option("--region <region>", "Region ID")
+    .option("--workspace <workspace-id>", "Workspace ID")
+    .option("--wait", "Wait until the database is ready")
+    .option("--timeout <seconds>", "Wait timeout in seconds", parseIntegerOption, 120)
     .option("--json", "Output raw JSON")
     .action(
       async (opts: {
@@ -199,6 +293,9 @@ export function register(program: Command): void {
         engineVersion?: string;
         dbVersion?: string;
         region?: string;
+        workspace?: string;
+        wait?: boolean;
+        timeout: number;
         json?: boolean;
       }) => {
         try {
@@ -216,11 +313,16 @@ export function register(program: Command): void {
           };
           if (engineVersion) body["engine_version"] = engineVersion;
           if (opts.region) body["region"] = opts.region;
+          if (opts.workspace) body["workspace_id"] = opts.workspace;
 
-          const db = unwrapDatabase(
+          let db = unwrapDatabase(
             await client.apiPost("/api/v1/databases", body),
           );
-          spinner?.succeed(`Created database ${db.name}`);
+          spinner?.succeed(`Created database ${db.name ?? db.id}`);
+
+          if (opts.wait) {
+            db = await waitForDatabaseReady(client, db.id, opts.timeout);
+          }
 
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(db, null, 2));
@@ -280,6 +382,94 @@ export function register(program: Command): void {
         handleError(err);
       }
     });
+
+  const lifecycleAction =
+    (action: "start" | "stop" | "restart") =>
+    async (id: string, opts: { json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const spinner = isJsonMode(opts)
+          ? null
+          : spin(`${lifecycleVerb(action)} database...`);
+        const db = unwrapDatabase(
+          await client.apiPost(
+            `/api/v1/databases/${encodeURIComponent(id)}/${action}`,
+            {},
+          ),
+        );
+        spinner?.succeed(`Database ${action} requested`);
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(db, null, 2));
+          return;
+        }
+
+        console.log();
+        console.log(`  ${chalk.bold("ID")}      ${db.id}`);
+        console.log(`  ${chalk.bold("State")}   ${db.state ?? "unknown"}`);
+        console.log();
+      } catch (err) {
+        handleError(err);
+      }
+    };
+
+  databases
+    .command("start <id>")
+    .description("Start a stopped or errored database")
+    .option("--json", "Output raw JSON")
+    .action(lifecycleAction("start"));
+
+  databases
+    .command("stop <id>")
+    .description("Stop a running database")
+    .option("--json", "Output raw JSON")
+    .action(lifecycleAction("stop"));
+
+  databases
+    .command("restart <id>")
+    .description("Restart a managed database")
+    .option("--json", "Output raw JSON")
+    .action(lifecycleAction("restart"));
+
+  databases
+    .command("wait <id>")
+    .description("Wait for a database to become ready")
+    .option("--ready", "Wait for running state and successful connection test", true)
+    .option("--timeout <seconds>", "Wait timeout in seconds", parseIntegerOption, 120)
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string,
+        opts: { ready?: boolean; timeout: number; json?: boolean },
+      ) => {
+        try {
+          void opts.ready;
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const spinner = isJsonMode(opts) ? null : spin("Waiting for database...");
+          const db = await waitForDatabaseReady(client, id, opts.timeout);
+          spinner?.succeed("Database ready");
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(db, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(`  ${chalk.bold("ID")}      ${db.id}`);
+          console.log(`  ${chalk.bold("State")}   ${db.state ?? "running"}`);
+          if (db.connection_test?.host) {
+            console.log(
+              `  ${chalk.bold("Endpoint")} ${db.connection_test.host}:${db.connection_test.port ?? ""}`,
+            );
+          }
+          console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 
   // connect — print connection string
   databases
@@ -512,15 +702,41 @@ export function register(program: Command): void {
       },
     );
 
-  // logs (SSE stream)
+  // logs
   databases
     .command("logs <id>")
-    .description("Stream live logs from a database (SSE)")
-    .option("--json", "Output raw JSON event frames")
-    .action(async (id: string, opts: { json?: boolean }) => {
+    .description("Show recent managed database logs")
+    .option("--lines <n>", "Number of lines to fetch", parseIntegerOption, 100)
+    .option("--follow", "Follow live logs with SSE")
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { lines: number; follow?: boolean; json?: boolean }) => {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
+
+        if (!opts.follow) {
+          const lines = Math.max(1, Math.min(opts.lines, 500));
+          const result = unwrapLogs(
+            await client.apiGet(
+              `/api/v1/databases/${encodeURIComponent(id)}/logs?lines=${lines}`,
+            ),
+          );
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          if (result.logs.length === 0) {
+            console.log(chalk.dim("No database logs."));
+            return;
+          }
+
+          for (const entry of result.logs) {
+            console.log(formatLogEntry(entry));
+          }
+          return;
+        }
 
         if (!isJsonMode(opts)) {
           console.log(chalk.dim(`Streaming logs for database ${id}...`));

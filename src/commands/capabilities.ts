@@ -178,13 +178,16 @@ const manifest: CapabilitiesManifest = {
       label: "Managed Database",
       purpose:
         "Managed Postgres lifecycle, connection strings, logs, backup/restore, and attachment.",
-      status: "partial",
-      list: "miosa db list --json",
-      create: "miosa db create --engine postgres --wait --json",
-      show: "miosa db show <db-id> --json",
-      delete: "miosa db delete <db-id> --force --json",
+      status: "beta",
+      list: "miosa databases list --json",
+      create:
+        "miosa databases create --name <name> --engine postgres --workspace <workspace-id> --wait --json",
+      show: "miosa databases get <db-id> --json",
+      delete: "miosa databases delete <db-id> --force --json",
       notes: [
-        "Agents should smoke-test connect URLs before marking app/database flows ready.",
+        "Use miosa databases wait <db-id> --ready --timeout 120 --json before attaching.",
+        "Use start/stop/restart for explicit lifecycle recovery.",
+        "Agents should smoke-test recommended/proxy connect URLs before marking app/database flows ready.",
       ],
     },
     {
@@ -320,6 +323,50 @@ const manifest: CapabilitiesManifest = {
         "preview_ready false",
         "TLS pending",
         "edge probe failed",
+      ],
+    },
+    {
+      id: "managed_postgres_ready",
+      title: "Create Managed Postgres And Wait For Proxy Readiness",
+      goal: "Provision a workspace-scoped database and only continue after the reachable endpoint accepts TCP.",
+      status: "beta",
+      steps: [
+        {
+          command:
+            "miosa databases create --name <name> --engine postgres --workspace <workspace-id> --wait --timeout 120 --json",
+          purpose:
+            "Create Postgres in the intended workspace and wait for running plus connection_test ok.",
+          json: true,
+          wait: true,
+        },
+        {
+          command:
+            "miosa databases wait <db-id> --ready --timeout 120 --json",
+          purpose:
+            "Re-check readiness before attaching to a sandbox or deployment.",
+          json: true,
+          wait: true,
+        },
+        {
+          command: "miosa databases connect <db-id> --print-url",
+          purpose: "Fetch the recommended connection URL for smoke tests.",
+          json: false,
+        },
+        {
+          command: "miosa databases logs <db-id> --lines 100 --json",
+          purpose: "Read recent DB logs without relying on SSE.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "state running",
+        "connection_test.status ok",
+        "proxy_status ready or not_configured for single-host dev",
+      ],
+      failure_signals: [
+        "DATABASE_PROVISION_FAILED",
+        "DATABASE_CONNECTIVITY_FAILED",
+        "state error",
       ],
     },
     {
