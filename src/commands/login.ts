@@ -137,7 +137,7 @@ async function browserLogin(
         const tenant = await client.getTenant();
         cacheIdentity(tenant, freshConfig);
         tenantName = tenant.name;
-        tenantPlan = tenant.plan;
+        tenantPlan = tenant.plan ?? undefined;
       } catch {
         /* cache unavailable */
       }
@@ -297,7 +297,8 @@ export function register(program: Command): void {
               icon: icon.ok,
               label: "Authenticated",
               value:
-                chalk.bold(tenant.name) + chalk.dim(` · ${tenant.plan} plan`),
+                chalk.bold(tenant.name) +
+                (tenant.plan ? chalk.dim(` · ${tenant.plan} plan`) : ""),
             },
             {
               icon: icon.ok,

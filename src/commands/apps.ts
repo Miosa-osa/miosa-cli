@@ -6,7 +6,7 @@ import { MiosaClient } from "../client.js";
 import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 import type { Deployment } from "../types.js";
 
 interface ApiClient {
@@ -91,7 +91,7 @@ export function register(program: Command): void {
         const client = new MiosaClient(loadConfig());
         const rows = (await client.listDeployments()) as App[];
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(rows, null, 2));
           return;
         }
@@ -144,7 +144,7 @@ export function register(program: Command): void {
             );
           }
 
-          const spinner = opts.json ? null : spin("Creating app...");
+          const spinner = isJsonMode(opts) ? null : spin("Creating app...");
           const app = unwrapData<App>(
             await api.apiPost<unknown>("/api/v1/deployments", {
               name,
@@ -157,7 +157,7 @@ export function register(program: Command): void {
           );
           spinner?.succeed(`Created app ${app.name} (${shortId(app.id)})`);
 
-          if (opts.json) console.log(JSON.stringify(app, null, 2));
+          if (isJsonMode(opts)) console.log(JSON.stringify(app, null, 2));
         } catch (err) {
           handleError(err);
         }
@@ -176,7 +176,7 @@ export function register(program: Command): void {
           client.getTenant().catch(() => null),
         ]);
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(app, null, 2));
           return;
         }
@@ -252,7 +252,7 @@ export function register(program: Command): void {
           }
 
           const result = await client.deleteDeployment(app.id);
-          if (opts.json) console.log(JSON.stringify(result, null, 2));
+          if (isJsonMode(opts)) console.log(JSON.stringify(result, null, 2));
           else console.log(chalk.green(`Destroyed app ${app.name}`));
         } catch (err) {
           handleError(err);

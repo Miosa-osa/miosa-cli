@@ -4,7 +4,10 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { handleError, parseHostPath } from "./util.js";
 import { formatBytes } from "../ui/progress.js";
+import { UserError } from "../errors.js";
 import type { FsEntry } from "../types.js";
+
+const SANDBOX_ID_RE = /^(sbx_|sb_)/;
 
 function formatMode(entry: FsEntry): string {
   const typeChar =
@@ -31,6 +34,13 @@ export function register(program: Command): void {
           const client = new MiosaClient(config);
 
           const { host: hostName, path: remotePath } = parseHostPath(hostPath);
+
+          if (SANDBOX_ID_RE.test(hostName)) {
+            throw new UserError(
+              `"${hostName}" looks like a sandbox id, not a fleet host.`,
+              "Use `miosa sandbox ls` to list files in a sandbox.",
+            );
+          }
 
           const host = await client.getHost(hostName);
           let entries = await client.listFs(host.id, remotePath);

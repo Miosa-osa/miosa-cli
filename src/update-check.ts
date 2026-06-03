@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
+import { isJsonMode, isQuietMode } from "./cli-env.js";
 
 const CACHE_PATH = join(homedir(), ".miosa", "update-check.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -55,6 +56,8 @@ function compareVersions(current: string, latest: string): boolean {
  * command output. Uses `setImmediate` to yield first, then fires a fetch.
  */
 export function scheduleUpdateCheck(currentVersion: string): void {
+  if (isJsonMode() || isQuietMode()) return;
+
   setImmediate(() => {
     void (async () => {
       try {

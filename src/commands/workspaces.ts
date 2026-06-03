@@ -1,13 +1,17 @@
 import type { Command } from "commander";
 import {
   addDataOption,
+  apiPath,
+  client,
   deleteAndPrint,
   enc,
   getAndPrint,
   patchAndPrint,
+  printValue,
   postAndPrint,
   requireAction,
   runAction,
+  unwrap,
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
@@ -17,6 +21,7 @@ const actions = ["pull", "open-terminal", "run", "expose"] as const;
 export function register(program: Command): void {
   const workspaces = program
     .command("workspaces")
+    .alias("workspace")
     .description("Manage tenant workspaces and open-computer host workspaces");
 
   // ── Tenant workspace CRUD (/workspaces) ─────────────────────────────────
@@ -79,9 +84,50 @@ export function register(program: Command): void {
   workspaces
     .command("delete <workspace-id>")
     .description("Delete a tenant workspace")
+    .option("--force", "Delete workspace resources in dependency order first")
+    .option("--dry-run", "Return what would happen without deleting anything")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions & CleanupOptions) =>
+      runAction(async () => {
+        const query = queryString({
+          force: opts.force,
+          dry_run: opts.dryRun,
+        });
+        const value = await client().apiDelete<unknown>(
+          apiPath(`/workspaces/${enc(id)}${query}`),
+        );
+        printValue(value, opts);
+      }),
+    );
+
+  workspaces
+    .command("inventory <workspace-id>")
+    .description("Show every resource in a tenant workspace")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
-      runAction(() => deleteAndPrint(`/workspaces/${enc(id)}`, opts)),
+      runAction(() => getAndPrint(`/workspaces/${enc(id)}/inventory`, opts)),
+    );
+
+  workspaces
+    .command("cleanup <workspace-id>")
+    .description("Cleanup workspace resources with filters, dry-run, and force")
+    .option("--resource-type <type>", "Resource type or comma-separated types")
+    .option("--state <state>", "Filter by resource state")
+    .option("--name-prefix <prefix>", "Filter by resource name prefix")
+    .option("--tag <tag>", "Filter sandboxes by tag key or key=value")
+    .option("--older-than <duration>", "Filter by age, for example 2h or 30m")
+    .option("--limit <n>", "Maximum resources per type")
+    .option("--dry-run", "Return exact resources without deleting")
+    .option("--force", "Actually delete matched resources")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions & CleanupOptions) =>
+      runAction(async () => {
+        const value = await client().apiPost<unknown>(
+          apiPath(`/workspaces/${enc(id)}/cleanup`),
+          cleanupBody(opts),
+        );
+        printValue(unwrap(value), opts);
+      }),
     );
 
   workspaces
@@ -188,4 +234,37 @@ export function register(program: Command): void {
         ),
       ),
     );
+}
+
+type CleanupOptions = {
+  resourceType?: string;
+  state?: string;
+  namePrefix?: string;
+  tag?: string;
+  olderThan?: string;
+  limit?: string;
+  dryRun?: boolean;
+  force?: boolean;
+};
+
+function cleanupBody(opts: CleanupOptions): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (opts.resourceType) body["resource_type"] = opts.resourceType;
+  if (opts.state) body["state"] = opts.state;
+  if (opts.namePrefix) body["name_prefix"] = opts.namePrefix;
+  if (opts.tag) body["tag"] = opts.tag;
+  if (opts.olderThan) body["older_than"] = opts.olderThan;
+  if (opts.limit) body["limit"] = Number.parseInt(opts.limit, 10);
+  if (opts.dryRun) body["dry_run"] = true;
+  if (opts.force) body["force"] = true;
+  return body;
+}
+
+function queryString(values: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== false) params.set(key, String(value));
+  }
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
 }

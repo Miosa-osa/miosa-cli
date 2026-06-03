@@ -5,7 +5,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -103,8 +103,24 @@ function getGitInfo(dir: string): GitInfo {
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
-function deploymentUrl(slug: string, tenantSlug: string): string {
-  return `https://${slug}.${tenantSlug}.miosa.app`;
+function deploymentUrl(
+  deployment: Pick<Deployment, "slug" | "public_url" | "auto_subdomain">,
+  tenantSlug?: string | null,
+): string | null {
+  if (deployment.public_url) return deployment.public_url;
+  if (deployment.auto_subdomain) return deployment.auto_subdomain;
+  if (tenantSlug && deployment.slug) {
+    return `https://${deployment.slug}.${tenantSlug}.miosa.app`;
+  }
+  return null;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive integer: ${value}`);
+  }
+  return parsed;
 }
 
 // ── Deployment ID resolution ──────────────────────────────────────────────────
@@ -447,10 +463,10 @@ Examples:
             const tenant = await client.getTenant();
             spinner.stop();
 
-            const url = deploymentUrl(dep.slug, tenant.slug);
+            const url = deploymentUrl(dep, tenant.slug);
             console.log(chalk.green("  Deployed"));
             console.log();
-            console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url)}`);
+            console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
             console.log();
             console.log(chalk.dim("  Next steps:"));
             console.log(
@@ -491,70 +507,89 @@ Examples:
   deploy
     .command("list")
     .description("List all deployments for this tenant")
+    .option("--state <state>", "Filter by deployment state")
+    .option("--workspace <id>", "Filter by workspace ID")
+    .option(
+      "--limit <n>",
+      "Maximum number of deployments to return",
+      parsePositiveInteger,
+    )
     .option("--json", "Output raw JSON")
-    .action(async (opts: { json?: boolean }) => {
-      try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const spinner = spin("Fetching deployments...");
-        const deployments = await client.listDeployments();
-        spinner.stop();
+    .action(
+      async (opts: {
+        state?: string;
+        workspace?: string;
+        limit?: number;
+        json?: boolean;
+      }) => {
+        try {
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Fetching deployments...");
+          const deployments = await client.listDeployments({
+            state: opts.state,
+            workspace: opts.workspace,
+            limit: opts.limit,
+          });
+          spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(deployments, null, 2));
-          return;
-        }
+          if (json) {
+            console.log(JSON.stringify(deployments, null, 2));
+            return;
+          }
 
-        const n = deployments.length;
-        console.log();
-        console.log(
-          `  ${icon.info}  ${chalk.bold(String(n))} ${chalk.dim(n === 1 ? "deployment" : "deployment(s)")}`,
-        );
-        console.log();
-
-        if (n === 0) {
+          const n = deployments.length;
+          console.log();
           console.log(
-            kvPanel([{ label: "Deployments", value: chalk.dim("none yet") }]),
+            `  ${icon.info}  ${chalk.bold(String(n))} ${chalk.dim(n === 1 ? "deployment" : "deployment(s)")}`,
           );
+          console.log();
+
+          if (n === 0) {
+            console.log(
+              kvPanel([{ label: "Deployments", value: chalk.dim("none yet") }]),
+            );
+            console.log();
+            console.log(
+              hintBlock("Try", [
+                "miosa deploy  # deploy a project from the current directory",
+              ]),
+            );
+            console.log();
+            return;
+          }
+
+          renderTable(deployments, [
+            { header: "ID", key: (d) => d.id.slice(0, 8), width: 10 },
+            { header: "NAME", key: "name", width: 24 },
+            { header: "SLUG", key: "slug", width: 24 },
+            { header: "BRANCH", key: "branch", width: 12 },
+            {
+              header: "STATE",
+              key: (d) => fmtDeployState(d.state),
+              width: 10,
+            },
+            {
+              header: "UPDATED",
+              key: (d) => new Date(d.updated_at).toLocaleString(),
+              width: 20,
+            },
+          ]);
           console.log();
           console.log(
             hintBlock("Try", [
-              "miosa deploy  # deploy a project from the current directory",
+              "miosa deploy show <id>",
+              "miosa deploy redeploy <id>  # redeploy",
+              "miosa deploy rollback <id>",
             ]),
           );
           console.log();
-          return;
+        } catch (err) {
+          handleError(err);
         }
-
-        renderTable(deployments, [
-          { header: "ID", key: (d) => d.id.slice(0, 8), width: 10 },
-          { header: "NAME", key: "name", width: 24 },
-          { header: "SLUG", key: "slug", width: 24 },
-          { header: "BRANCH", key: "branch", width: 12 },
-          {
-            header: "STATE",
-            key: (d) => fmtDeployState(d.state),
-            width: 10,
-          },
-          {
-            header: "UPDATED",
-            key: (d) => new Date(d.updated_at).toLocaleString(),
-            width: 20,
-          },
-        ]);
-        console.log();
-        console.log(
-          hintBlock("Try", [
-            "miosa deploy show <id>",
-            "miosa deploy redeploy <id>  # redeploy",
-            "miosa deploy rollback <id>",
-          ]),
-        );
-        console.log();
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   // ── deploy show ─────────────────────────────────────────────────────────────
 
@@ -568,11 +603,12 @@ Examples:
         const client = new MiosaClient(config);
         const deploymentId = toDeploymentId(id);
 
-        const spinner = spin("Fetching deployment...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching deployment...");
         const dep = await client.getDeployment(deploymentId);
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(dep, null, 2));
           return;
         }
@@ -595,12 +631,8 @@ Examples:
           }
         };
 
-        const tenantSlug = config.endpoint
-          .replace(/^https?:\/\//, "")
-          .split(".")[0];
-        const publicUrl = dep.slug
-          ? `https://${dep.slug}.${tenantSlug}.miosa.app`
-          : chalk.dim("—");
+        const tenant = await client.getTenant().catch(() => null);
+        const publicUrl = deploymentUrl(dep, tenant?.slug) ?? chalk.dim("—");
 
         printBanner({ subtitle: "Deployment" });
         console.log(

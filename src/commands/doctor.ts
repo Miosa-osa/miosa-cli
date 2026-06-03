@@ -13,7 +13,7 @@ import {
   redactKey,
 } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { printJson } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 import {
   banner,
   errorEnvelope,
@@ -98,6 +98,7 @@ export function register(program: Command): void {
     .description("Diagnose CLI, auth, API reachability, and toolchain")
     .option("--json", "Output raw JSON")
     .action(async (opts: { json?: boolean }) => {
+      const json = isJsonMode(opts);
       try {
         const config = loadConfig();
         const checks: Check[] = [];
@@ -260,7 +261,7 @@ export function register(program: Command): void {
         }
 
         // ── Output ───────────────────────────────────────────────────────────
-        if (opts.json) {
+        if (json) {
           return printJson({
             ok: checks.every((c) => c.ok),
             checks: checks.map((c) => ({
@@ -343,6 +344,7 @@ export function register(program: Command): void {
           process.exit(1);
         }
       } catch (err) {
+        if (json) handleError(err);
         console.log();
         console.log(
           errorEnvelope({

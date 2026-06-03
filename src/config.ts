@@ -13,6 +13,10 @@ const DEFAULTS: MiosaConfig = {
   default_host: null,
   region: null,
   output: "text",
+  tenant: null,
+  workspace: null,
+  quiet: false,
+  debug: false,
 };
 
 export function loadConfig(): MiosaConfig {
@@ -37,9 +41,18 @@ export function loadConfig(): MiosaConfig {
     default_host: fileConfig.default_host ?? null,
     region: process.env["MIOSA_REGION"] ?? fileConfig.region ?? null,
     output: fileConfig.output ?? DEFAULTS.output,
+    tenant: process.env["MIOSA_TENANT"] ?? fileConfig.tenant ?? null,
+    workspace: process.env["MIOSA_WORKSPACE"] ?? fileConfig.workspace ?? null,
+    quiet: truthy(process.env["MIOSA_QUIET"]) || Boolean(fileConfig.quiet),
+    debug: truthy(process.env["MIOSA_DEBUG"]) || Boolean(fileConfig.debug),
   };
 
   return config;
+}
+
+function truthy(value: string | undefined): boolean {
+  if (!value) return false;
+  return !["0", "false", "no", "off"].includes(value.toLowerCase());
 }
 
 export function saveConfig(updates: Partial<MiosaConfig>): void {
@@ -93,8 +106,8 @@ export interface AuthCache {
   email: string | null;
   name: string;
   slug: string;
-  plan: string;
-  credit_balance: number;
+  plan?: string | null;
+  credit_balance?: number | null;
   region: string | null;
   cached_at: string; // ISO timestamp
 }

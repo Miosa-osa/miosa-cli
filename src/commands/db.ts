@@ -16,12 +16,32 @@ import { spin } from "../ui/spinner.js";
 import { handleError } from "./util.js";
 
 interface DatabaseCredentials {
+  recommended_url?: string;
+  proxy_url?: string;
+  internal_url?: string;
   url?: string;
+  uri?: string;
+  database_url?: string;
+  connection_url?: string;
+  connection_string?: string;
+  connectionString?: string;
   host?: string;
   port?: number;
   database?: string;
+  dbname?: string;
+  name?: string;
   username?: string;
+  user?: string;
   password?: string;
+}
+
+interface DatabaseRecord {
+  id: string;
+  name?: string;
+  engine?: string;
+  engine_version?: string;
+  state?: string;
+  region?: string;
 }
 
 interface BackupRecord {
@@ -40,6 +60,13 @@ interface RestoreRecord {
   started_at?: string | null;
 }
 
+interface LogEntry {
+  t?: string | null;
+  stream?: string;
+  line?: string;
+  message?: string;
+}
+
 function unwrapCredentials(raw: unknown): DatabaseCredentials {
   if (raw && typeof raw === "object") {
     const r = raw as Record<string, unknown>;
@@ -51,13 +78,83 @@ function unwrapCredentials(raw: unknown): DatabaseCredentials {
 }
 
 function buildPsqlUrl(creds: DatabaseCredentials): string | null {
-  if (creds.url) return creds.url;
-  if (creds.host && creds.database && creds.username) {
+  const direct =
+    creds.recommended_url ??
+    creds.proxy_url ??
+    creds.url ??
+    creds.database_url ??
+    creds.connection_url ??
+    creds.connection_string ??
+    creds.connectionString ??
+    creds.uri;
+  if (direct) return normalizePostgresUrl(direct);
+
+  const database = creds.database ?? creds.dbname ?? creds.name;
+  const username = creds.username ?? creds.user;
+  if (creds.host && database && username) {
     const port = creds.port ?? 5432;
-    const pass = creds.password ? `:${creds.password}` : "";
-    return `postgres://${creds.username}${pass}@${creds.host}:${port}/${creds.database}`;
+    const pass = creds.password ? `:${encodeURIComponent(creds.password)}` : "";
+    return `postgresql://${encodeURIComponent(username)}${pass}@${creds.host}:${port}/${database}`;
   }
   return null;
+}
+
+function normalizePostgresUrl(url: string): string {
+  return url.startsWith("postgres://")
+    ? `postgresql://${url.slice("postgres://".length)}`
+    : url;
+}
+
+function unwrapDatabase(raw: unknown): DatabaseRecord {
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    if (r["data"] && typeof r["data"] === "object")
+      return r["data"] as unknown as DatabaseRecord;
+    if (r["database"] && typeof r["database"] === "object")
+      return r["database"] as unknown as DatabaseRecord;
+    return raw as unknown as DatabaseRecord;
+  }
+  return { id: "" };
+}
+
+function normalizeEngine(engine: string): string {
+  const normalized = engine.trim().toLowerCase();
+  return normalized === "postgres" ? "postgresql" : normalized;
+}
+
+function defaultEngineVersion(engine: string, version?: string): string | undefined {
+  if (version) return version;
+  return normalizeEngine(engine) === "postgresql" ? "15" : undefined;
+}
+
+async function waitForDatabase(
+  client: MiosaClient,
+  id: string,
+  timeoutSec: number,
+): Promise<DatabaseRecord> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  let last: DatabaseRecord = { id };
+  while (Date.now() < deadline) {
+    last = unwrapDatabase(
+      await client.apiGet(`/api/v1/databases/${encodeURIComponent(id)}`),
+    );
+    const state = String(last.state ?? "").toLowerCase();
+    if (state === "running" || state === "available") return last;
+    if (state === "error" || state === "failed") {
+      throw new UserError(`Database ${id} entered ${state} state.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new UserError(
+    `Database ${id} did not become available within ${timeoutSec}s.`,
+    `Last state: ${last.state ?? "unknown"}`,
+  );
+}
+
+function parseIntegerOption(value: string): number {
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
+  return n;
 }
 
 function unwrapBackup(raw: unknown): BackupRecord {
@@ -80,6 +177,30 @@ function unwrapRestore(raw: unknown): RestoreRecord {
   return { id: "", database_id: "", backup_id: "" };
 }
 
+function unwrapLogs(raw: unknown): { database_id?: string; logs: LogEntry[] } {
+  const root =
+    raw && typeof raw === "object" && "data" in raw
+      ? (raw as Record<string, unknown>)["data"]
+      : raw;
+
+  if (root && typeof root === "object") {
+    const r = root as Record<string, unknown>;
+    const logs = Array.isArray(r["logs"]) ? (r["logs"] as LogEntry[]) : [];
+    return {
+      database_id: typeof r["database_id"] === "string" ? r["database_id"] : undefined,
+      logs,
+    };
+  }
+
+  return { logs: [] };
+}
+
+function formatLogEntry(entry: LogEntry): string {
+  const message = entry.line ?? entry.message ?? "";
+  if (entry.t) return `${entry.t} ${message}`;
+  return message;
+}
+
 export function register(program: Command): void {
   const db = program
     .command("db")
@@ -90,11 +211,80 @@ export function register(program: Command): void {
       "after",
       `
 Examples:
+  miosa db create postgres --name clinic-db --wait
   miosa db connect <id>                 Open psql with fetched DATABASE_URL
   miosa db connect <id> --print-url     Print the connection URL without opening psql
+  miosa db logs <id>                    Show recent database logs
+  miosa db attach <id> --sandbox <sid>  Write DATABASE_URL into /workspace/.env
   miosa db backup <id>                  Trigger an on-demand backup
   miosa db restore <id> --backup <bid>  Restore from a specific backup
 `,
+    );
+
+  // ── db create ─────────────────────────────────────────────────────────────
+
+  db.command("create [engine]")
+    .description("Create a managed database")
+    .requiredOption("--name <name>", "Database name")
+    .option("--engine-version <version>", "Engine version")
+    .option("--db-version <version>", "Alias for --engine-version")
+    .option("--region <region>", "Region ID")
+    .option("--wait", "Wait until the database is running/available")
+    .option("--timeout <sec>", "Wait timeout in seconds", parseIntegerOption, 180)
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        engineArg = "postgresql",
+        opts: {
+          name: string;
+          engineVersion?: string;
+          dbVersion?: string;
+          region?: string;
+          wait?: boolean;
+          timeout: number;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const engine = normalizeEngine(engineArg);
+          const engineVersion = defaultEngineVersion(
+            engine,
+            opts.engineVersion ?? opts.dbVersion,
+          );
+          const body: Record<string, unknown> = {
+            name: opts.name,
+            engine,
+          };
+          if (engineVersion) body["engine_version"] = engineVersion;
+          if (opts.region) body["region"] = opts.region;
+
+          const spinner = opts.json ? null : spin(`Creating database ${opts.name}...`);
+          let db = unwrapDatabase(await client.apiPost("/api/v1/databases", body));
+          spinner?.succeed(`Created database ${db.name ?? db.id}`);
+
+          if (opts.wait) {
+            db = await waitForDatabase(client, db.id, opts.timeout);
+          }
+
+          if (opts.json) {
+            console.log(JSON.stringify(db, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(`  ${chalk.bold("ID")}      ${db.id}`);
+          console.log(`  ${chalk.bold("Name")}    ${db.name ?? opts.name}`);
+          console.log(
+            `  ${chalk.bold("Engine")}  ${[db.engine ?? engine, db.engine_version ?? engineVersion].filter(Boolean).join(" ")}`,
+          );
+          console.log(`  ${chalk.bold("State")}   ${db.state ?? "creating"}`);
+          console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
     );
 
   // ── db connect ────────────────────────────────────────────────────────────
@@ -110,14 +300,14 @@ Examples:
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin("Fetching credentials...");
+          const spinner = opts.json || opts.printUrl ? null : spin("Fetching credentials...");
 
           const creds = unwrapCredentials(
             await client.apiGet(
               `/api/v1/databases/${encodeURIComponent(id)}/credentials`,
             ),
           );
-          spinner.stop();
+          spinner?.stop();
 
           if (opts.json) {
             console.log(JSON.stringify(creds, null, 2));
@@ -150,6 +340,148 @@ Examples:
           psql.on("close", (code) => {
             process.exit(code ?? 0);
           });
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  // ── db logs ────────────────────────────────────────────────────────────────
+
+  db.command("logs <id>")
+    .description("Show recent managed database logs")
+    .option("--lines <n>", "Number of lines to fetch", parseIntegerOption, 100)
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { lines: number; json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const lines = Math.max(1, Math.min(opts.lines, 500));
+
+        const result = unwrapLogs(
+          await client.apiGet(
+            `/api/v1/databases/${encodeURIComponent(id)}/logs?lines=${lines}`,
+          ),
+        );
+
+        if (opts.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (result.logs.length === 0) {
+          console.log(chalk.dim("No database logs."));
+          return;
+        }
+
+        for (const entry of result.logs) {
+          console.log(formatLogEntry(entry));
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  // ── db attach ─────────────────────────────────────────────────────────────
+
+  db.command("attach <id>")
+    .description("Attach database credentials to a sandbox or deployment app")
+    .option("--sandbox <sandbox-id>", "Sandbox ID")
+    .option("--app <deployment-id>", "Deployment app ID")
+    .option("--env <name>", "Environment variable name", "DATABASE_URL")
+    .option(
+      "--path <path>",
+      "Deprecated; sandbox DB attach now uses encrypted sandbox env",
+      "/workspace/.env",
+    )
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string,
+        opts: {
+          sandbox?: string;
+          app?: string;
+          env: string;
+          path: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          if (!opts.sandbox && !opts.app) {
+            throw new UserError(
+              "Choose where to attach the database.",
+              "Use --sandbox <sandbox-id> or --app <deployment-id>.",
+            );
+          }
+          if (opts.sandbox && opts.app) {
+            throw new UserError(
+              "Choose only one attach target.",
+              "Use either --sandbox or --app, not both.",
+            );
+          }
+
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+
+          if (opts.app) {
+            const result = await client.apiPost(
+              `/api/v1/deployments/${encodeURIComponent(opts.app)}/database`,
+              { database_id: id, env: opts.env },
+            );
+
+            if (opts.json) {
+              console.log(
+                JSON.stringify(
+                  {
+                    database_id: id,
+                    app_id: opts.app,
+                    env: opts.env,
+                    attached: true,
+                    result,
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
+
+            console.log(chalk.green(`Attached ${opts.env} to app ${opts.app}`));
+            return;
+          }
+
+          const sandbox = opts.sandbox;
+          if (!sandbox) {
+            throw new UserError("Sandbox ID is required.");
+          }
+
+          const result = await client.apiPost(
+            `/api/v1/sandboxes/${encodeURIComponent(sandbox)}/database`,
+            { database_id: id, env: opts.env },
+          );
+
+          if (opts.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  database_id: id,
+                  sandbox_id: sandbox,
+                  env: opts.env,
+                  attached: true,
+                  result,
+                },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+
+          console.log(
+            chalk.green(
+              `Attached database ${id} to sandbox ${sandbox} encrypted env`,
+            ),
+          );
         } catch (err) {
           handleError(err);
         }

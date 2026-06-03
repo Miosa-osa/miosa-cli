@@ -1608,7 +1608,7 @@ const TOOL_LIST: McpTool[] = [
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Database name' },
-        engine: { type: 'string', enum: ['postgres', 'mysql', 'redis'], description: 'Database engine' },
+        engine: { type: 'string', enum: ['postgres', 'postgresql', 'mysql', 'redis'], description: 'Database engine' },
         version: { type: 'string', description: 'Engine version (optional)' },
         size: { type: 'string', description: 'Database size/tier (optional)' },
         region: { type: 'string', description: 'Region (optional)' },
@@ -1749,6 +1749,19 @@ function ok(text: string): McpToolResult {
 
 function err(msg: string): McpToolResult {
   return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function commandInCwd(command: string, cwd?: string): string {
+  return cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+}
+
+function normalizeDatabaseEngine(engine: unknown): string {
+  const value = String(engine ?? "postgresql").trim().toLowerCase();
+  return value === "postgres" ? "postgresql" : value;
 }
 
 function image(pngBytes: Buffer): McpToolResult {
@@ -2711,8 +2724,14 @@ async function dispatchTool(
     if (name === "sandbox_exec") {
       const sid = String(args["sandbox_id"] ?? "");
       if (!sid) return err("sandbox_id is required");
-      const body: Record<string, unknown> = { command: args["command"] };
-      if (args["cwd"]) body["cwd"] = args["cwd"];
+      const cwd = args["cwd"] ? String(args["cwd"]) : undefined;
+      const body: Record<string, unknown> = {
+        command: commandInCwd(String(args["command"] ?? ""), cwd),
+      };
+      if (cwd) {
+        body["cwd"] = cwd;
+        body["dir"] = cwd;
+      }
       if (args["timeout"] !== undefined) body["timeout"] = args["timeout"];
       const result = await client.apiPost<unknown>(
         `/api/v1/sandboxes/${encodeURIComponent(sid)}/exec`,
@@ -3271,10 +3290,13 @@ async function dispatchTool(
     }
 
     if (name === "database_create") {
-      const body: Record<string, unknown> = { name: args["name"], engine: args["engine"] };
-      for (const key of ["version", "size", "region"]) {
+      const engine = normalizeDatabaseEngine(args["engine"]);
+      const body: Record<string, unknown> = { name: args["name"], engine };
+      if (engine === "postgresql" && !args["version"]) body["engine_version"] = "15";
+      for (const key of ["size", "region"]) {
         if (args[key]) body[key] = args[key];
       }
+      if (args["version"]) body["engine_version"] = args["version"];
       const result = await client.apiPost<unknown>("/api/v1/databases", body);
       const data = unwrapData(result) as Record<string, unknown>;
       return ok("Created database '" + String(data["name"] ?? args["name"]) + "' (id=" + data["id"] + ")");

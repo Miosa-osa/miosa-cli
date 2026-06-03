@@ -5,15 +5,18 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 
 interface SandboxTemplate {
   id: string;
   name: string;
   state?: string;
+  status?: string;
   image?: string;
+  image_id?: string;
   dockerfile?: string;
   created_at?: string;
+  inserted_at?: string;
   updated_at?: string;
 }
 
@@ -59,6 +62,18 @@ function fmtTemplateState(state: string | undefined): string {
   return chalk.dim(state);
 }
 
+function templateState(template: SandboxTemplate): string | undefined {
+  return template.state ?? template.status;
+}
+
+function templateImage(template: SandboxTemplate): string | undefined {
+  return template.image ?? template.image_id;
+}
+
+function templateCreatedAt(template: SandboxTemplate): string | undefined {
+  return template.created_at ?? template.inserted_at;
+}
+
 function fmtBuildState(state: string | undefined): string {
   if (!state) return chalk.dim("-");
   if (state === "success" || state === "complete") return chalk.green(state);
@@ -82,14 +97,15 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching templates...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching templates...");
         const rows = unwrapTemplates(
           await client.apiGet("/api/v1/sandbox-templates"),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+        if (json) {
+          printJson(rows);
           return;
         }
 
@@ -103,23 +119,27 @@ export function register(program: Command): void {
           { header: "NAME", key: "name", width: 28 },
           {
             header: "STATE",
-            key: (t) => fmtTemplateState(t.state),
+            key: (t) => fmtTemplateState(templateState(t)),
             width: 12,
           },
           {
             header: "IMAGE",
-            key: (t) =>
-              t.image
-                ? t.image.length > 32
-                  ? `${t.image.slice(0, 29)}...`
-                  : t.image
-                : chalk.dim("-"),
+            key: (t) => {
+              const image = templateImage(t);
+              return image
+                ? image.length > 32
+                  ? `${image.slice(0, 29)}...`
+                  : image
+                : chalk.dim("-");
+            },
             width: 34,
           },
           {
             header: "CREATED",
-            key: (t) =>
-              t.created_at ? t.created_at.slice(0, 10) : chalk.dim("-"),
+            key: (t) => {
+              const createdAt = templateCreatedAt(t);
+              return createdAt ? createdAt.slice(0, 10) : chalk.dim("-");
+            },
             width: 12,
           },
         ]);
@@ -137,16 +157,17 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching template...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching template...");
         const tmpl = unwrapTemplate(
           await client.apiGet(
             `/api/v1/sandbox-templates/${encodeURIComponent(id)}`,
           ),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(tmpl, null, 2));
+        if (json) {
+          printJson(tmpl);
           return;
         }
 
@@ -154,12 +175,12 @@ export function register(program: Command): void {
         console.log(`  ${chalk.bold("ID")}       ${tmpl.id}`);
         console.log(`  ${chalk.bold("Name")}     ${tmpl.name}`);
         console.log(
-          `  ${chalk.bold("State")}    ${fmtTemplateState(tmpl.state)}`,
+          `  ${chalk.bold("State")}    ${fmtTemplateState(templateState(tmpl))}`,
         );
-        if (tmpl.image)
-          console.log(`  ${chalk.bold("Image")}    ${tmpl.image}`);
-        if (tmpl.created_at)
-          console.log(`  ${chalk.bold("Created")}  ${tmpl.created_at}`);
+        const image = templateImage(tmpl);
+        if (image) console.log(`  ${chalk.bold("Image")}    ${image}`);
+        const createdAt = templateCreatedAt(tmpl);
+        if (createdAt) console.log(`  ${chalk.bold("Created")}  ${createdAt}`);
         if (tmpl.updated_at)
           console.log(`  ${chalk.bold("Updated")}  ${tmpl.updated_at}`);
         console.log();
@@ -243,16 +264,17 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching builds...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching builds...");
         const rows = unwrapBuilds(
           await client.apiGet(
             `/api/v1/sandbox-templates/${encodeURIComponent(id)}/builds`,
           ),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+        if (json) {
+          printJson(rows);
           return;
         }
 

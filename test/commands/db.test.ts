@@ -116,7 +116,7 @@ describe("miosa db connect --print-url", () => {
       "--print-url",
     ]);
 
-    expect(logged.join("\n")).toContain("postgres://");
+    expect(logged.join("\n")).toContain("postgresql://");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
@@ -187,6 +187,110 @@ describe("miosa db connect --print-url", () => {
 
     expect(errored.join(" ")).toMatch(/not found/i);
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+// ── db logs ───────────────────────────────────────────────────────────────────
+
+describe("miosa db logs", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetches recent database logs without requiring SSE", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/logs?lines=50`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          logs: [
+            {
+              t: "2026-06-01T08:00:00Z",
+              stream: "stdout",
+              line: "database system is ready",
+            },
+          ],
+          database_id: DB_ID,
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "logs",
+      DB_ID,
+      "--lines",
+      "50",
+    ]);
+
+    expect(logged.join("\n")).toContain("database system is ready");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("outputs structured JSON for database logs", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/logs?lines=100`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            logs: [{ line: "checkpoint complete" }],
+            database_id: DB_ID,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "logs",
+      DB_ID,
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      database_id: string;
+      logs: Array<{ line: string }>;
+    };
+
+    expect(parsed.database_id).toBe(DB_ID);
+    expect(parsed.logs[0]?.line).toBe("checkpoint complete");
   });
 });
 
@@ -389,5 +493,182 @@ describe("miosa db restore", () => {
 
     expect(errored.join(" ")).toMatch(/not found/i);
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("miosa db connect credential shapes", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("should print database_url when the API does not return url", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/credentials`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            database_url: "postgresql://admin:secret@db.miosa.ai:5432/mydb",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "connect",
+      DB_ID,
+      "--print-url",
+    ]);
+
+    expect(logged.join("\n")).toContain("postgresql://admin");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+});
+
+describe("miosa db attach", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("attaches DATABASE_URL to a deployment app env", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const appId = "dep-0000-0000-0000-000000000001";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/deployments/${appId}/database`,
+        method: "POST",
+        body: JSON.stringify({ database_id: DB_ID, env: "DATABASE_URL" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            attached: true,
+            database_id: DB_ID,
+            env: "DATABASE_URL",
+            env_vars: [{ name: "DATABASE_URL", preview: "pos...ydb" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "attach",
+      DB_ID,
+      "--app",
+      appId,
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      database_id: DB_ID,
+      app_id: appId,
+      env: "DATABASE_URL",
+      attached: true,
+    });
+  });
+
+  it("requires exactly one attach target", async () => {
+    const errored: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errored.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "db", "attach", DB_ID]);
+
+    expect(errored.join(" ")).toContain("Choose where to attach");
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("attaches DATABASE_URL to sandbox encrypted env through backend API", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const sandboxId = "sbx-0000-0000-0000-000000000001";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/sandboxes/${sandboxId}/database`,
+        method: "POST",
+        body: JSON.stringify({ database_id: DB_ID, env: "DATABASE_URL" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            attached: true,
+            sandbox_id: sandboxId,
+            database_id: DB_ID,
+            env_vars: [{ name: "DATABASE_URL", preview: "pos...app" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "db",
+      "attach",
+      DB_ID,
+      "--sandbox",
+      sandboxId,
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      database_id: DB_ID,
+      sandbox_id: sandboxId,
+      env: "DATABASE_URL",
+      attached: true,
+    });
   });
 });

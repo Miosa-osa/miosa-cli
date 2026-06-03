@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { clearApiKey, loadConfig } from "../config.js";
+import { clearApiKey, clearAuthCache, loadConfig } from "../config.js";
 import { hintBlock, icon, kvPanel } from "../ui/render.js";
 
 export function register(program: Command): void {
@@ -10,6 +10,9 @@ export function register(program: Command): void {
     .action(() => {
       const config = loadConfig();
       if (!config.api_key) {
+        // Account switching can leave an old identity cache behind if the
+        // token was cleared by another command/process first.
+        clearAuthCache();
         console.log();
         console.log(`  ${icon.info}  ${chalk.dim("Not logged in.")}`);
         console.log();

@@ -4,7 +4,8 @@ import { enterRawMode, exitRawMode, getTerminalSize } from "./raw-mode.js";
 
 export interface WsPtyOptions {
   url: string;
-  token: string;
+  token?: string;
+  headers?: Record<string, string>;
   /** If set, send this command then exit when a shell prompt appears (best-effort) */
   oneShot?: string;
 }
@@ -15,8 +16,12 @@ export interface WsPtyOptions {
  */
 export async function runWsPty(options: WsPtyOptions): Promise<number> {
   return new Promise((resolve) => {
+    const headers = {
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...(options.headers ?? {}),
+    };
     const ws = new WebSocket(options.url, {
-      headers: { Authorization: `Bearer ${options.token}` },
+      headers,
     });
 
     let cleanedUp = false;

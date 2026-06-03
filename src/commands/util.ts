@@ -2,24 +2,77 @@ import chalk from "chalk";
 import { MiosaError } from "../errors.js";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
+import { isDebugMode, isJsonMode } from "../cli-env.js";
 
 export function handleError(err: unknown): never {
+  if (isJsonMode()) {
+    const error =
+      err instanceof MiosaError
+        ? {
+            code: errorCodeFor(err),
+            message: err.message,
+            retryable: retryableFor(err),
+            ...(err.hint ? { hint: err.hint } : {}),
+            ...(err.requestId ? { request_id: err.requestId } : {}),
+            ...(isDebugMode() && err.details ? { details: err.details } : {}),
+          }
+        : err instanceof Error
+          ? {
+              code: "UNEXPECTED_ERROR",
+              message: err.message,
+              retryable: false,
+              ...(isDebugMode() ? { stack: err.stack } : {}),
+            }
+          : {
+              code: "UNKNOWN_ERROR",
+              message: String(err),
+              retryable: false,
+            };
+
+    console.log(JSON.stringify({ ok: false, error }, null, 2));
+    return process.exit(err instanceof MiosaError ? err.exitCode : 1);
+  }
+
   if (err instanceof MiosaError) {
     console.error(chalk.red(`Error: ${err.message}`));
     if (err.hint) {
       console.error(chalk.dim(`  Hint: ${err.hint}`));
     }
-    process.exit(err.exitCode);
+    if (isDebugMode() && err.requestId) {
+      console.error(chalk.dim(`  Request ID: ${err.requestId}`));
+    }
+    if (isDebugMode() && err.details) {
+      console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
+    }
+    return process.exit(err.exitCode);
   }
   if (err instanceof Error) {
     console.error(chalk.red(`Unexpected error: ${err.message}`));
-    if (process.env["MIOSA_DEBUG"]) {
+    if (isDebugMode()) {
       console.error(err.stack);
     }
-    process.exit(1);
+    return process.exit(1);
   }
   console.error(chalk.red(`Unknown error: ${String(err)}`));
-  process.exit(1);
+  return process.exit(1);
+}
+
+function errorCodeFor(err: MiosaError): string {
+  if ("code" in err && typeof err.code === "string") return err.code;
+  const name = err.constructor.name.replace(/Error$/, "");
+  return name
+    ? name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase()
+    : "MIOSA_ERROR";
+}
+
+function retryableFor(err: MiosaError): boolean {
+  if ("retryable" in err && typeof err.retryable === "boolean")
+    return err.retryable;
+  return err.exitCode >= 70;
+}
+
+function formatDetails(details: unknown): string {
+  return typeof details === "string" ? details : JSON.stringify(details);
 }
 
 /** Parse "host:/path" or just "host" (path defaults to "/") */
@@ -100,6 +153,8 @@ export function objectOf<T extends Record<string, unknown>>(
 export function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
+
+export { isJsonMode };
 
 export function shortId(id: string | null | undefined): string {
   if (!id) return "";

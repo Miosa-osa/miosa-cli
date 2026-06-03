@@ -138,6 +138,8 @@ Precedence: CLI flags > environment variables > config file > interactive prompt
 |---|---|
 | `MIOSA_API_KEY` | API key (overrides config file) |
 | `MIOSA_ENDPOINT` | API endpoint (overrides config file) |
+| `MIOSA_JSON` | Prefer JSON output for commands that support structured output |
+| `MIOSA_NO_COLOR` | Disable ANSI color output |
 | `MIOSA_DEBUG` | Set to any value to enable debug output |
 
 ## Commands
@@ -198,9 +200,9 @@ miosa connect
 miosa connect my-new-server
 ```
 
-### `miosa ssh <host> [--cmd "..."]`
+### `miosa ssh <computer-or-host> [--cmd "..."]`
 
-Open an interactive PTY terminal session on a host.
+Open an interactive PTY terminal session on a MIOSA Computer. If no Computer matches, the CLI falls back to an OpenComputers host with the same name or ID.
 
 ```bash
 miosa ssh my-mac
@@ -268,14 +270,27 @@ List active tunnels on a host.
 
 Close (revoke) a tunnel.
 
-### `miosa agent <host> "<task>" [--model] [--steps] [--timeout]`
+### `miosa agent <computer> "<task>" [--model] [--max-turns]`
 
-Dispatch an AI agent task. Streams thoughts, tool calls, and results live.
+Start a resumable Computer Use Agent session on a Computer.
 
 ```bash
 miosa agent my-mac "run the test suite and fix any failing tests"
-miosa agent my-mac "update all npm dependencies" --steps 20
+miosa agent my-mac "update all npm dependencies" --max-turns 20
 miosa agent my-mac "optimize the database queries" --model nemotron-3-super
+miosa agent my-mac --resume <session-id> "continue from the last failure"
+miosa agent ls
+miosa agent history <session-id> --computer my-mac
+```
+
+### `miosa completion <shell>`
+
+Print shell completion for `bash`, `zsh`, or `fish`.
+
+```bash
+miosa completion zsh > ~/.zsh/completions/_miosa
+miosa completion bash > ~/.local/share/bash-completion/completions/miosa
+miosa completion fish > ~/.config/fish/completions/miosa.fish
 ```
 
 ### `miosa watch <host>`

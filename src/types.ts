@@ -54,6 +54,10 @@ export interface MiosaConfig {
   default_host: string | null;
   region: string | null;
   output: string;
+  tenant?: string | null;
+  workspace?: string | null;
+  quiet?: boolean;
+  debug?: boolean;
 }
 
 // API resource types — match backend shapes exactly
@@ -93,8 +97,8 @@ export interface Tenant {
   id: TenantId;
   name: string;
   slug: string;
-  plan: string;
-  credit_balance: number;
+  plan?: string | null;
+  credit_balance?: number | null;
   inserted_at: string;
 }
 
@@ -216,6 +220,8 @@ export interface Deployment {
   state: DeploymentState;
   auto_deploy: boolean;
   custom_domain_id: string | null;
+  public_url?: string | null;
+  auto_subdomain?: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
