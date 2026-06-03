@@ -579,8 +579,10 @@ export function register(program: Command): void {
     sandbox
       .command("exec <sandbox-id> [command...]")
       .description(
-        "Run a command inside a Sandbox (positional args joined as shell command)",
+        'Run a command inside a Sandbox (positional args joined as shell command). Use `--` before the command to pass flags, e.g. `sandbox exec <id> -- bash -c "cd x && y"`.',
       )
+      .allowUnknownOption()
+      .allowExcessArguments()
       .option("--cwd <path>", "Working directory inside the Sandbox")
       .option("--workdir <path>", "Alias for --cwd")
       .option(
@@ -597,6 +599,11 @@ export function register(program: Command): void {
         "--detached",
         "Create a durable backend command and return command_id immediately",
       )
+      .option(
+        "--follow",
+        "Stream command output until it exits (alias --stream)",
+      )
+      .option("--stream", "Alias for --follow")
       .option("--user <user>", "Run command as user")
       .option("--sudo", "Run command through sudo")
       .option("--tty", "Request TTY metadata for command resource")
@@ -617,6 +624,8 @@ export function register(program: Command): void {
           env?: string[];
           background?: boolean;
           detached?: boolean;
+          follow?: boolean;
+          stream?: boolean;
           user?: string;
           sudo?: boolean;
           tty?: boolean;
@@ -625,11 +634,12 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
+          opts.follow = opts.follow || opts.stream;
           if (opts.data) {
             await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
             return;
           }
-          const cmd = words.join(" ");
+          const cmd = joinCommandWords(words);
           const effectiveCommand = opts.background
             ? backgroundCommand(cmd)
             : cmd;
@@ -643,7 +653,7 @@ export function register(program: Command): void {
           }
           const env = parseEnvPairs(opts.env ?? []);
           if (opts.detached) {
-            const result = await createSandboxCommand(id, cmd, {
+            const result = await createSandboxCommand(id, words.join(" "), {
               cwd,
               env,
               user: opts.user,
@@ -657,6 +667,10 @@ export function register(program: Command): void {
               return;
             }
             console.log(String(result["id"] ?? result["command_id"] ?? ""));
+            return;
+          }
+          if (opts.follow) {
+            await runFollowExec(id, cmd, cwd, env, opts.timeout, opts);
             return;
           }
           if (Object.keys(env).length > 0) body["env"] = env;
@@ -669,7 +683,11 @@ export function register(program: Command): void {
   addDataOption(
     sandbox
       .command("run <sandbox-id> [command...]")
-      .description("Run a command inside a Sandbox (alias for exec)")
+      .description(
+        "Run a command inside a Sandbox (alias for exec). Use `--` before the command to pass flags.",
+      )
+      .allowUnknownOption()
+      .allowExcessArguments()
       .option("--cwd <path>", "Working directory inside the Sandbox")
       .option("--workdir <path>", "Alias for --cwd")
       .option(
@@ -686,6 +704,11 @@ export function register(program: Command): void {
         "--detached",
         "Create a durable backend command and return command_id immediately",
       )
+      .option(
+        "--follow",
+        "Stream command output until it exits (alias --stream)",
+      )
+      .option("--stream", "Alias for --follow")
       .option("--user <user>", "Run command as user")
       .option("--sudo", "Run command through sudo")
       .option("--tty", "Request TTY metadata for command resource")
@@ -706,6 +729,8 @@ export function register(program: Command): void {
           env?: string[];
           background?: boolean;
           detached?: boolean;
+          follow?: boolean;
+          stream?: boolean;
           user?: string;
           sudo?: boolean;
           tty?: boolean;
@@ -714,11 +739,12 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
+          opts.follow = opts.follow || opts.stream;
           if (opts.data) {
             await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
             return;
           }
-          const cmd = words.join(" ");
+          const cmd = joinCommandWords(words);
           const effectiveCommand = opts.background
             ? backgroundCommand(cmd)
             : cmd;
@@ -732,7 +758,7 @@ export function register(program: Command): void {
           }
           const env = parseEnvPairs(opts.env ?? []);
           if (opts.detached) {
-            const result = await createSandboxCommand(id, cmd, {
+            const result = await createSandboxCommand(id, words.join(" "), {
               cwd,
               env,
               user: opts.user,
@@ -748,10 +774,51 @@ export function register(program: Command): void {
             console.log(String(result["id"] ?? result["command_id"] ?? ""));
             return;
           }
+          if (opts.follow) {
+            await runFollowExec(id, cmd, cwd, env, opts.timeout, opts);
+            return;
+          }
           if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
           await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
         }),
+    );
+
+  sandbox
+    .command("ports <sandbox-id>")
+    .description("List listening TCP ports inside a Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const c = client();
+        const result = await execSandboxRaw(
+          c,
+          id,
+          "ss -ltnH 2>/dev/null || cat /proc/net/tcp /proc/net/tcp6 2>/dev/null",
+        );
+        const stdout = String(result["stdout"] ?? "");
+        const ports = parseListeningPorts(stdout);
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(ports, null, 2));
+          return;
+        }
+        if (ports.length === 0) {
+          console.log(chalk.dim("(no listening ports)"));
+          return;
+        }
+        renderTable(ports, [
+          {
+            header: "PORT",
+            key: "port" as keyof PortBinding,
+            width: 8,
+          },
+          {
+            header: "ADDRESS",
+            key: "address" as keyof PortBinding,
+            width: 24,
+          },
+        ]);
+      }),
     );
 
   sandbox
@@ -779,7 +846,11 @@ export function register(program: Command): void {
       "Source: git:https://... or tarball:https://... for repo-backed preview deploy",
     )
     .option("--revision <revision>", "Git revision/branch for --source git:...")
-    .option("--depth <n>", "Git clone depth for --source git:...", parseIntegerOption)
+    .option(
+      "--depth <n>",
+      "Git clone depth for --source git:...",
+      parseIntegerOption,
+    )
     .option(
       "--wait",
       "Wait until the public preview returns a good HTTP status",
@@ -988,7 +1059,11 @@ export function register(program: Command): void {
       parseIntegerOption,
     )
     .option("--wait", "Wait for the production URL to answer")
-    .option("--timeout <duration>", "Wait timeout", parseDurationSec, 180)
+    .option(
+      "--no-wait",
+      "Return immediately without waiting (this is the default)",
+    )
+    .option("--timeout <duration>", "Wait timeout", parseDurationSec, 600)
     .option("--json", "Output as JSON")
     .action(
       (
@@ -1298,15 +1373,29 @@ export function register(program: Command): void {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
-        const rows = Array.isArray(result) ? (result as Record<string, unknown>[]) : [];
+        const rows = Array.isArray(result)
+          ? (result as Record<string, unknown>[])
+          : [];
         if (rows.length === 0) {
           console.log(chalk.dim("No sandbox env vars."));
           return;
         }
         renderTable(rows, [
-          { header: "NAME", key: "name" as keyof Record<string, unknown>, width: 32 },
-          { header: "VALUE", key: "preview" as keyof Record<string, unknown>, width: 24 },
-          { header: "UPDATED", key: "updated_at" as keyof Record<string, unknown>, width: 28 },
+          {
+            header: "NAME",
+            key: "name" as keyof Record<string, unknown>,
+            width: 32,
+          },
+          {
+            header: "VALUE",
+            key: "preview" as keyof Record<string, unknown>,
+            width: 24,
+          },
+          {
+            header: "UPDATED",
+            key: "updated_at" as keyof Record<string, unknown>,
+            width: 28,
+          },
         ]);
       }),
     );
@@ -1317,10 +1406,12 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, pairs: string[], opts: JsonOptions) =>
       runAction(async () => {
-        const vars = Object.entries(parseEnvPairs(pairs)).map(([key, value]) => ({
-          key,
-          value,
-        }));
+        const vars = Object.entries(parseEnvPairs(pairs)).map(
+          ([key, value]) => ({
+            key,
+            value,
+          }),
+        );
         const result = unwrap(
           await client().apiPut<unknown>(apiPath(`/sandboxes/${enc(id)}/env`), {
             vars,
@@ -1398,7 +1489,9 @@ export function register(program: Command): void {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
-        console.log(chalk.green(`Attached database ${databaseId} to sandbox ${id}.`));
+        console.log(
+          chalk.green(`Attached database ${databaseId} to sandbox ${id}.`),
+        );
       }),
     );
 
@@ -2617,17 +2710,28 @@ async function deploySandbox(
 ): Promise<SandboxDeployResult> {
   const sourceDir = path.resolve(localDir);
   const sourceBacked = !!opts.source;
-  if (!sourceBacked && (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory())) {
+  if (
+    !sourceBacked &&
+    (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory())
+  ) {
     throw new UserError(`Local directory not found: ${sourceDir}`);
   }
 
   const c = client();
-  let appManifest = sourceBacked ? null : loadAppManifest(sourceDir)?.manifest ?? null;
+  let appManifest = sourceBacked
+    ? null
+    : (loadAppManifest(sourceDir)?.manifest ?? null);
   const detection = sourceBacked ? null : detectFramework(sourceDir);
   const port =
-    opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? detection?.port ?? 5173;
+    opts.port ??
+    opts.publishPort ??
+    manifestPort(appManifest) ??
+    detection?.port ??
+    5173;
   const probePath = opts.probePath ?? manifestProbePath(appManifest) ?? "/";
-  let remoteWorkdir = normalizeRemoteWorkdir(appManifest?.workdir ?? "/workspace");
+  let remoteWorkdir = normalizeRemoteWorkdir(
+    appManifest?.workdir ?? "/workspace",
+  );
   const start =
     opts.start ??
     manifestStartCommand(appManifest) ??
@@ -2652,7 +2756,9 @@ async function deploySandbox(
   if (sourceBacked) {
     deployStep(opts, "Waiting for source import");
     appManifest = await readRemoteAppManifest(c, sandboxId, opts.timeout);
-    remoteWorkdir = normalizeRemoteWorkdir(appManifest?.workdir ?? "/workspace");
+    remoteWorkdir = normalizeRemoteWorkdir(
+      appManifest?.workdir ?? "/workspace",
+    );
   } else {
     deployStep(opts, "Uploading files");
     const archivePath = createDeployArchive(sourceDir);
@@ -2673,11 +2779,10 @@ async function deploySandbox(
 
   const resolvedPort =
     opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? port;
-  const resolvedProbePath = opts.probePath ?? manifestProbePath(appManifest) ?? probePath;
+  const resolvedProbePath =
+    opts.probePath ?? manifestProbePath(appManifest) ?? probePath;
   const resolvedStart =
-    opts.start ??
-    manifestStartCommand(appManifest) ??
-    start;
+    opts.start ?? manifestStartCommand(appManifest) ?? start;
   const installCommand =
     opts.install === false
       ? null
@@ -2687,7 +2792,13 @@ async function deploySandbox(
 
   if (installCommand) {
     deployStep(opts, `Installing dependencies: ${installCommand}`);
-    await execSandbox(c, sandboxId, installCommand, remoteWorkdir, opts.timeout);
+    await execSandbox(
+      c,
+      sandboxId,
+      installCommand,
+      remoteWorkdir,
+      opts.timeout,
+    );
   }
 
   deployStep(opts, `Starting app on port ${resolvedPort}`);
@@ -2732,6 +2843,43 @@ async function deploySandbox(
   };
 }
 
+const NON_TERMINAL_DEPLOY_STATES = new Set([
+  "building",
+  "pending",
+  "queued",
+  "deploying",
+]);
+
+// Bug 9: look for an existing non-terminal deployment with a matching name so
+// retries attach a new release instead of creating a duplicate app. Defensive:
+// returns null (fall back to create) if the list call fails or finds nothing.
+async function findExistingDeploymentByName(
+  c: ReturnType<typeof client>,
+  name: string,
+): Promise<{ id: string; state: string } | null> {
+  try {
+    const raw = unwrap(await c.apiGet<unknown>(apiPath("/deployments")));
+    const items = Array.isArray(raw)
+      ? raw
+      : Array.isArray((asRecord(raw) ?? {})["data"])
+        ? ((asRecord(raw) ?? {})["data"] as unknown[])
+        : [];
+    for (const item of items) {
+      const rec = asRecord(item);
+      if (!rec) continue;
+      if (stringField(rec, "name") !== name) continue;
+      const state = (stringField(rec, "state") ?? "").toLowerCase();
+      const id = stringField(rec, "id");
+      if (id && NON_TERMINAL_DEPLOY_STATES.has(state)) {
+        return { id, state };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function publishSandbox(
   sandboxId: string,
   opts: SandboxPublishOptions,
@@ -2744,6 +2892,21 @@ async function publishSandbox(
     metadata: { environment: opts.environment },
   };
   if (opts.app) body["deployment_id"] = opts.app;
+  // Bug 9: avoid creating a duplicate deployment on retry. When publishing by
+  // name (no explicit app id), reuse an existing non-terminal deployment with
+  // the same name by attaching a new release to it.
+  if (opts.name && !opts.app) {
+    const existing = await findExistingDeploymentByName(c, opts.name);
+    if (existing) {
+      body["deployment_id"] = existing.id;
+      deployStep(
+        opts,
+        chalk.dim(
+          `Attaching to existing deployment ${existing.id} (${existing.state})`,
+        ),
+      );
+    }
+  }
   if (opts.name) body["name"] = opts.name;
   if (opts.slug) body["slug"] = opts.slug;
   if (opts.buildCommand) body["build_command"] = opts.buildCommand;
@@ -2848,9 +3011,10 @@ async function waitForDeploymentReady(
     await sleep(2000);
   }
 
+  const lastState = last ? String(last["state"] ?? "unknown") : "unknown";
   throw new UserError(
-    `Deployment ${deploymentId} did not become ready within ${timeoutSec}s.`,
-    last ? `Last state: ${String(last["state"] ?? "unknown")}` : undefined,
+    `Deployment still building after ${timeoutSec}s — it may still finish. Re-check with \`miosa sandbox show ${deploymentId}\` or \`miosa deploy logs\`.`,
+    `Last state: ${lastState}`,
   );
 }
 
@@ -2975,7 +3139,11 @@ async function readRemoteAppManifest(
 ): Promise<MiosaAppManifest | null> {
   const deadline = Date.now() + Math.min(timeoutSec, 120) * 1000;
   while (Date.now() < deadline) {
-    for (const filename of ["miosa.app.yml", "miosa.app.yaml", "miosa.app.json"]) {
+    for (const filename of [
+      "miosa.app.yml",
+      "miosa.app.yaml",
+      "miosa.app.json",
+    ]) {
       const result = await c
         .apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/exec`), {
           command: `test -f /workspace/${filename} && cat /workspace/${filename}`,
@@ -2985,7 +3153,10 @@ async function readRemoteAppManifest(
         .then(unwrap)
         .catch(() => null);
       const row = asRecord(result);
-      if (Number(row?.["exit_code"] ?? 1) === 0 && typeof row?.["stdout"] === "string") {
+      if (
+        Number(row?.["exit_code"] ?? 1) === 0 &&
+        typeof row?.["stdout"] === "string"
+      ) {
         return parseAppManifest(filename, row["stdout"]);
       }
     }
@@ -3135,6 +3306,147 @@ async function execSandbox(
     );
   }
   return result;
+}
+
+// Like execSandbox but does NOT throw on a non-zero exit code.
+async function execSandboxRaw(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  command: string,
+  cwd?: string,
+  timeout?: number,
+): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = { command: commandInCwd(command, cwd) };
+  if (cwd) {
+    body["cwd"] = cwd;
+    body["dir"] = cwd;
+  }
+  if (timeout != null) body["timeout"] = timeout;
+  return unwrap(
+    await c.apiPost<unknown>(
+      apiPath(`/sandboxes/${enc(sandboxId)}/exec`),
+      body,
+    ),
+  ) as Record<string, unknown>;
+}
+
+interface PortBinding {
+  port: number;
+  address: string;
+}
+
+function parseListeningPorts(stdout: string): PortBinding[] {
+  const lines = stdout.split("\n").map((l) => l.trim());
+  const seen = new Set<number>();
+  const out: PortBinding[] = [];
+
+  // ss -ltnH columns: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port
+  const ssLine = /^LISTEN\s+\d+\s+\d+\s+(\S+):(\d+)\s+/;
+  // /proc/net/tcp: sl local_address rem_address st ... (hex)
+  const procLine =
+    /^\d+:\s+([0-9A-Fa-f]+):([0-9A-Fa-f]+)\s+\S+\s+([0-9A-Fa-f]+)/;
+
+  for (const line of lines) {
+    if (!line) continue;
+    const ss = ssLine.exec(line);
+    if (ss && ss[2]) {
+      const port = Number(ss[2]);
+      if (!seen.has(port)) {
+        seen.add(port);
+        out.push({ port, address: ss[1] ?? "*" });
+      }
+      continue;
+    }
+    const proc = procLine.exec(line);
+    if (proc && proc[3] === "0A" && proc[2]) {
+      const port = parseInt(proc[2], 16);
+      if (!Number.isNaN(port) && !seen.has(port)) {
+        seen.add(port);
+        out.push({ port, address: "*" });
+      }
+    }
+  }
+  out.sort((a, b) => a.port - b.port);
+  return out;
+}
+
+// Stream exec output: run in background to a log file, poll-read new bytes
+// until the process exits, then print the final exit code.
+async function runFollowExec(
+  sandboxId: string,
+  cmd: string,
+  cwd: string | undefined,
+  env: Record<string, string>,
+  timeoutSec: number | undefined,
+  opts: JsonOptions,
+): Promise<void> {
+  if (!cmd) {
+    throw new UserError("No command given to follow.");
+  }
+  const c = client();
+  const logPath = `/tmp/miosa-follow-${Date.now()}.log`;
+  const envPrefix = Object.entries(env)
+    .map(([k, v]) => `${k}=${shellQuote(v)} `)
+    .join("");
+  // Run command, capture exit code into a sentinel file, in the background.
+  const exitPath = `${logPath}.exit`;
+  const inner = `${envPrefix}${cmd}`;
+  const launch = `nohup sh -lc ${shellQuote(
+    `( ${inner} ) > ${shellQuote(logPath)} 2>&1; echo $? > ${shellQuote(exitPath)}`,
+  )} >/dev/null 2>&1 & echo $!`;
+  const started = await execSandboxRaw(c, sandboxId, launch, cwd, timeoutSec);
+  const pid = String(started["stdout"] ?? "").trim();
+  if (!pid) {
+    throw new UserError("Could not start background command for --follow.");
+  }
+
+  const deadline = timeoutSec ? Date.now() + timeoutSec * 1000 : Infinity;
+  let offset = 0;
+  for (;;) {
+    const read = await execSandboxRaw(
+      c,
+      sandboxId,
+      `tail -c +${offset + 1} ${shellQuote(logPath)} 2>/dev/null`,
+    );
+    const chunk = String(read["stdout"] ?? "");
+    if (chunk.length > 0) {
+      process.stdout.write(chunk);
+      offset += Buffer.byteLength(chunk);
+    }
+    const alive = await execSandboxRaw(
+      c,
+      sandboxId,
+      `kill -0 ${shellQuote(pid)} 2>/dev/null && echo alive || echo done`,
+    );
+    if (String(alive["stdout"] ?? "").trim() === "done") break;
+    if (Date.now() > deadline) {
+      console.error(
+        chalk.yellow(
+          `\nTimed out after ${timeoutSec}s — command may still be running (pid ${pid}).`,
+        ),
+      );
+      return;
+    }
+    await sleep(1000);
+  }
+  // Drain any trailing output.
+  const tail = await execSandboxRaw(
+    c,
+    sandboxId,
+    `tail -c +${offset + 1} ${shellQuote(logPath)} 2>/dev/null`,
+  );
+  const tailChunk = String(tail["stdout"] ?? "");
+  if (tailChunk.length > 0) process.stdout.write(tailChunk);
+
+  const exitRead = await execSandboxRaw(
+    c,
+    sandboxId,
+    `cat ${shellQuote(exitPath)} 2>/dev/null`,
+  );
+  const exitCode = Number(String(exitRead["stdout"] ?? "0").trim() || "0");
+  if (!isJsonMode(opts) && exitCode !== 0) {
+    console.error(chalk.red(`\nexit code: ${exitCode}`));
+  }
 }
 
 async function waitForInternalHttp(
@@ -3558,6 +3870,18 @@ function buildNetworkPolicy(opts: {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+// Join argv words back into a shell command, quoting only words that contain
+// whitespace or shell-significant characters. Simple tokens stay bare so
+// `exec <id> ls -la` reads naturally, while `bash -c "cd x && y"` survives.
+function joinCommandWords(words: string[]): string {
+  const SAFE = /^[A-Za-z0-9_./:=@%+-]+$/;
+  return words
+    .map((word) =>
+      word.length > 0 && SAFE.test(word) ? word : shellQuote(word),
+    )
+    .join(" ");
 }
 
 function joinUrlPath(basePath: string, probePath: string): string {

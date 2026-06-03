@@ -390,7 +390,7 @@ export class MiosaClient {
 
   async listHosts(): Promise<Host[]> {
     return this.get<{ data: Host[] }>("/api/v1/opencomputers/hosts").then(
-      (r) => r.data,
+      (r) => r.data ?? [],
     );
   }
 
@@ -406,7 +406,10 @@ export class MiosaClient {
       const match = hosts.find((h) => h.name === idOrName || h.id === idOrName);
       if (!match) {
         const { UserError } = await import("./errors.js");
-        throw new UserError(`Host not found: ${idOrName}`);
+        const hint = /^(sbx_|sb_)/.test(idOrName)
+          ? "This looks like a sandbox id. Use `miosa sandbox ls` / `miosa sandbox cp` for sandboxes."
+          : "Run `miosa hosts` to list available fleet hosts.";
+        throw new UserError(`Host not found: ${idOrName}`, hint);
       }
       return match;
     }

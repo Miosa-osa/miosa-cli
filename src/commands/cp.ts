@@ -7,6 +7,18 @@ import { MiosaClient } from "../client.js";
 import { handleError, parseHostPath } from "./util.js";
 import { ProgressBar } from "../ui/progress.js";
 import { spin } from "../ui/spinner.js";
+import { UserError } from "../errors.js";
+
+const SANDBOX_ID_RE = /^(sbx_|sb_)/;
+
+function assertNotSandbox(hostName: string): void {
+  if (SANDBOX_ID_RE.test(hostName)) {
+    throw new UserError(
+      `"${hostName}" looks like a sandbox id, not a fleet host.`,
+      "Use `miosa sandbox cp` to copy files to/from a sandbox.",
+    );
+  }
+}
 
 export function register(program: Command): void {
   program
@@ -42,6 +54,7 @@ export function register(program: Command): void {
         if (!srcIsRemote && dstIsRemote) {
           // Upload: local → host
           const { host: hostName, path: remotePath } = parseHostPath(dst);
+          assertNotSandbox(hostName);
           const spinner = spin(`Resolving host ${hostName}...`);
           const host = await client.getHost(hostName);
           spinner.stop();
@@ -56,6 +69,7 @@ export function register(program: Command): void {
         } else {
           // Download: host → local
           const { host: hostName, path: remotePath } = parseHostPath(src);
+          assertNotSandbox(hostName);
           const spinner = spin(`Resolving host ${hostName}...`);
           const host = await client.getHost(hostName);
           spinner.stop();

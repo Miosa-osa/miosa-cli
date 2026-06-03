@@ -71,6 +71,43 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("passes through unknown flags and preserves quoting for bash -c", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    // bash -c "cd x && y" arrives as argv words; the multi-word arg must be
+    // re-quoted so the shell command survives intact.
+    const expectedBody = JSON.stringify({
+      command: "bash -c 'cd /tmp && echo hi'",
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "hi\n" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_123",
+      "bash",
+      "-c",
+      "cd /tmp && echo hi",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("creates a durable command for detached exec with workdir and env", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -248,7 +285,9 @@ describe("miosa sandbox env", () => {
       "--json",
     ]);
 
-    const parsed = JSON.parse(logged.join("")) as Array<Record<string, unknown>>;
+    const parsed = JSON.parse(logged.join("")) as Array<
+      Record<string, unknown>
+    >;
     expect(parsed[0]?.["name"]).toBe("APP_SECRET");
   });
 

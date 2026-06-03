@@ -147,8 +147,19 @@ export function printList(items: unknown[]): void {
 
 export function printObject(row: ApiObject): void {
   for (const [key, value] of Object.entries(row)) {
-    console.log(`${chalk.bold(key.padEnd(18))} ${formatCell(value)}`);
+    console.log(`${chalk.bold(key.padEnd(18))} ${formatDetailValue(value)}`);
   }
+}
+
+// Non-truncating formatter for the key/value detail view (e.g. `exec`
+// stdout/stderr). Unlike formatCell, full strings are printed verbatim.
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined || value === "")
+    return chalk.dim("-");
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
+  return JSON.stringify(value);
 }
 
 export function resourceCommands(config: {
