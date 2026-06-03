@@ -140,6 +140,8 @@ const manifest: CapabilitiesManifest = {
       show: "miosa sandbox show <sandbox-id> --json",
       delete: "miosa sandbox delete <sandbox-id> --force --json",
       notes: [
+        "For app templates, prefer --template <id> --auto-start --publish-port <port> --wait --json.",
+        "Next.js starter template: miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --json.",
         "Use sandbox deploy for preview readiness.",
         "Use sandbox publish to promote to durable app hosting.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
@@ -298,6 +300,54 @@ const manifest: CapabilitiesManifest = {
         "template build failed",
         "sandbox create timeout",
         "missing expected tools",
+      ],
+    },
+    {
+      id: "nextjs_template_preview",
+      title: "Create Working Next.js Preview From Template",
+      goal: "Give an agent a ready-to-edit Next.js app with a public preview URL, without manually scaffolding package.json or app files.",
+      status: "stable",
+      steps: [
+        {
+          command:
+            "miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --timeout 900 --json",
+          purpose:
+            "Create a Next.js sandbox, seed starter files into /workspace, install dependencies, start dev server, expose port 3000, and wait for public HTTP 200.",
+          json: true,
+          wait: true,
+          notes: [
+            "Expected JSON includes id, state=running, ready=true, template_id=nextjs, preview.url, preview.status=200.",
+            "The backend seeds /workspace/package.json and /workspace/app/page.jsx only when /workspace is empty.",
+          ],
+        },
+        {
+          command:
+            "miosa sandbox exec <sandbox-id> --cwd /workspace --json -- bash -lc \"ls package.json app/page.jsx && npm run build\"",
+          purpose:
+            "Verify the scaffold exists and the app builds before publishing.",
+          json: true,
+        },
+        {
+          command:
+            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
+          purpose:
+            "Promote the working Next.js sandbox into durable app hosting.",
+          json: true,
+          wait: true,
+        },
+      ],
+      success_signals: [
+        "sandbox state running",
+        "ready true",
+        "preview.status 200",
+        "preview.url returns Next.js HTML",
+        "scaffold status ready in sandbox metadata",
+      ],
+      failure_signals: [
+        "workspace missing package.json",
+        "template_lifecycle.status error",
+        "npm install timeout",
+        "preview.status not 200",
       ],
     },
     {
@@ -516,6 +566,14 @@ const manifest: CapabilitiesManifest = {
       {
         command: "miosa sandbox create --wait --json",
         purpose: "Verify sandbox creation and wait semantics.",
+        json: true,
+        wait: true,
+      },
+      {
+        command:
+          "miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --timeout 900 --json",
+        purpose:
+          "Verify app-template scaffold, lifecycle start, preview route, TLS, and public probe.",
         json: true,
         wait: true,
       },

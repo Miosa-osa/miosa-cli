@@ -74,6 +74,50 @@ miosa deploy
 miosa deploy redeploy
 ```
 
+## Agentic sandbox app templates
+
+Agents should start from app templates instead of empty sandboxes when building common web apps. For a working Next.js starter with a public preview:
+
+```bash
+miosa sandbox create \
+  --template nextjs \
+  --auto-start \
+  --publish-port 3000 \
+  --wait \
+  --timeout 900 \
+  --json
+```
+
+Expected machine-readable success signals:
+
+```json
+{
+  "state": "running",
+  "ready": true,
+  "template_id": "nextjs",
+  "preview": {
+    "ready": true,
+    "status": 200,
+    "url": "https://3000-<id>.sandbox.<domain>"
+  }
+}
+```
+
+The backend seeds `/workspace/package.json`, `/workspace/app/page.jsx`, and related starter files only when `/workspace` is empty. Agents should verify before publishing:
+
+```bash
+miosa sandbox exec <sandbox-id> \
+  --cwd /workspace \
+  --json \
+  -- bash -lc "ls package.json app/page.jsx && npm run build"
+```
+
+Discover the full agent contract with:
+
+```bash
+miosa capabilities --json
+```
+
 ### Deploy sub-commands
 
 ```bash
