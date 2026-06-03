@@ -6,8 +6,7 @@ import { handleError, parseHostPath } from "./util.js";
 import { formatBytes } from "../ui/progress.js";
 import { UserError } from "../errors.js";
 import type { FsEntry } from "../types.js";
-
-const SANDBOX_ID_RE = /^(sbx_|sb_)/;
+import { isJsonMode } from "../cli-env.js";
 
 function formatMode(entry: FsEntry): string {
   const typeChar =
@@ -27,26 +26,33 @@ export function register(program: Command): void {
     .description("List files on a host (host:/path syntax)")
     .option("-a, --all", "Show hidden files")
     .option("-l, --long", "Long format")
+    .option("--json", "Output as JSON")
     .action(
-      async (hostPath: string, opts: { all?: boolean; long?: boolean }) => {
+      async (
+        hostPath: string,
+        opts: { all?: boolean; long?: boolean; json?: boolean },
+      ) => {
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
 
           const { host: hostName, path: remotePath } = parseHostPath(hostPath);
 
-          if (SANDBOX_ID_RE.test(hostName)) {
-            throw new UserError(
-              `"${hostName}" looks like a sandbox id, not a fleet host.`,
-              "Use `miosa sandbox ls` to list files in a sandbox.",
-            );
+          let entries: FsEntry[];
+          try {
+            const host = await client.getHost(hostName);
+            entries = await client.listFs(host.id, remotePath);
+          } catch (err) {
+            entries = await listSandboxPath(client, hostName, remotePath, err);
           }
-
-          const host = await client.getHost(hostName);
-          let entries = await client.listFs(host.id, remotePath);
 
           if (!opts.all) {
             entries = entries.filter((e) => !e.name.startsWith("."));
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(entries, null, 2));
+            return;
           }
 
           if (entries.length === 0) {
@@ -89,4 +95,59 @@ export function register(program: Command): void {
         }
       },
     );
+}
+
+async function listSandboxPath(
+  client: MiosaClient,
+  sandboxId: string,
+  remotePath: string,
+  hostError: unknown,
+): Promise<FsEntry[]> {
+  try {
+    await client.apiGet<unknown>(
+      `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}`,
+    );
+  } catch {
+    if (hostError instanceof Error) throw hostError;
+    throw new UserError(`Remote target not found: ${sandboxId}`);
+  }
+
+  const result = await client.apiPost<unknown>(
+    `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/exec`,
+    {
+      command: `find ${shellQuote(remotePath)} -maxdepth 1 -mindepth 1 -printf '%f\\t%y\\t%s\\t%M\\t%T@\\n'`,
+      cwd: "/",
+      dir: "/",
+    },
+  );
+  const data =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? ((result as Record<string, unknown>)["data"] ?? result)
+      : result;
+  const stdout =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? String((data as Record<string, unknown>)["stdout"] ?? "")
+      : "";
+  if (!stdout.trim()) return [];
+  return stdout
+    .trimEnd()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [name = "", type = "f", size = "0", mode = "----------", ts = ""] =
+        line.split("\t");
+      return {
+        name,
+        path: `${remotePath.replace(/\/$/, "")}/${name}`,
+        type:
+          type === "d" ? "dir" : type === "l" ? "symlink" : "file",
+        size: Number.parseInt(size, 10),
+        mode: mode.slice(1),
+        modified_at: ts ? new Date(Number(ts) * 1000).toISOString() : null,
+      } as FsEntry;
+    });
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
