@@ -8,6 +8,7 @@ import { handleError } from "./util.js";
 import { resolveDeploymentId } from "./project.js";
 import { errorEnvelope } from "../ui/render.js";
 import type { Deployment } from "../types.js";
+import { isJsonMode } from "../cli-env.js";
 
 // ── Resource type detection ───────────────────────────────────────────────────
 
@@ -94,6 +95,16 @@ function printMachineLogs(payload: unknown, json: boolean): void {
     return;
   }
   console.log(JSON.stringify(payload, null, 2));
+}
+
+async function printDeploymentLogsJson(
+  client: MiosaClient,
+  deploymentId: string,
+): Promise<void> {
+  const payload = await client.apiGet<unknown>(
+    `/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`,
+  );
+  printMachineLogs(payload, true);
 }
 
 async function streamSse(
@@ -236,7 +247,7 @@ Examples:
             const payload = await client.apiGet<unknown>(
               `/api/v1/computers/${encodeURIComponent(opts.machine)}/logs`,
             );
-            printMachineLogs(payload, opts.json ?? false);
+            printMachineLogs(payload, isJsonMode(opts));
             return;
           }
 
@@ -245,7 +256,7 @@ Examples:
             const payload = await client.apiGet<unknown>(
               `/api/v1/sandboxes/${encodeURIComponent(opts.sandbox)}/logs`,
             );
-            printMachineLogs(payload, opts.json ?? false);
+            printMachineLogs(payload, isJsonMode(opts));
             return;
           }
 
@@ -255,26 +266,34 @@ Examples:
 
             switch (hint.kind) {
               case "computer": {
-                console.log(
-                  chalk.dim(`Fetching computer logs for ${hint.id}...`),
-                );
+                if (!isJsonMode(opts)) {
+                  console.log(
+                    chalk.dim(`Fetching computer logs for ${hint.id}...`),
+                  );
+                }
                 const payload = await client.apiGet<unknown>(
                   `/api/v1/computers/${encodeURIComponent(hint.id)}/logs`,
                 );
-                printMachineLogs(payload, opts.json ?? false);
+                printMachineLogs(payload, isJsonMode(opts));
                 return;
               }
               case "sandbox": {
-                console.log(
-                  chalk.dim(`Fetching sandbox logs for ${hint.id}...`),
-                );
+                if (!isJsonMode(opts)) {
+                  console.log(
+                    chalk.dim(`Fetching sandbox logs for ${hint.id}...`),
+                  );
+                }
                 const payload = await client.apiGet<unknown>(
                   `/api/v1/sandboxes/${encodeURIComponent(hint.id)}/logs`,
                 );
-                printMachineLogs(payload, opts.json ?? false);
+                printMachineLogs(payload, isJsonMode(opts));
                 return;
               }
               case "deployment": {
+                if (isJsonMode(opts)) {
+                  await printDeploymentLogsJson(client, hint.id);
+                  return;
+                }
                 console.log(
                   chalk.dim(`Streaming deployment logs for ${hint.id}...`),
                 );
@@ -289,6 +308,10 @@ Examples:
 
           // ── No ID — fall back to .miosa.json linked deployment ────────────
           const deploymentId = await resolveAppId(client, undefined);
+          if (isJsonMode(opts)) {
+            await printDeploymentLogsJson(client, deploymentId);
+            return;
+          }
           console.log(chalk.dim(`Streaming logs for ${deploymentId}...`));
           const res = await client.streamDeploymentLogs(deploymentId);
           await streamSse(res);
