@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { handleError, parseHostPath } from "./util.js";
+import { handleError, isJsonMode, parseHostPath } from "./util.js";
 import { ProgressBar } from "../ui/progress.js";
 import { spin } from "../ui/spinner.js";
 import { UserError } from "../errors.js";
@@ -18,10 +18,12 @@ export function register(program: Command): void {
       "Copy files between local and host (host:/path syntax for remote)",
     )
     .option("-r, --recursive", "Copy directories recursively")
-    .action(async (src: string, dst: string, opts: { recursive?: boolean }) => {
+    .option("--json", "Output as JSON")
+    .action(async (src: string, dst: string, opts: { recursive?: boolean; json?: boolean }) => {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
+        const json = isJsonMode(opts);
 
         const srcIsRemote = src.includes(":");
         const dstIsRemote = dst.includes(":");
@@ -45,43 +47,46 @@ export function register(program: Command): void {
         if (!srcIsRemote && dstIsRemote) {
           // Upload: local → host
           const { host: hostName, path: remotePath } = parseHostPath(dst);
-          const spinner = spin(`Resolving host ${hostName}...`);
+          const spinner = json ? null : spin(`Resolving host ${hostName}...`);
           try {
             const host = await client.getHost(hostName);
-            spinner.stop();
+            spinner?.stop();
             await uploadPath(
               client,
               host.id,
               src,
               remotePath,
               opts.recursive ?? false,
+              json,
             );
           } catch (err) {
-            spinner.stop();
+            spinner?.stop();
             await uploadPathToSandbox(
               client,
               hostName,
               src,
               remotePath,
               opts.recursive ?? false,
+              json,
               err,
             );
           }
         } else {
           // Download: host → local
           const { host: hostName, path: remotePath } = parseHostPath(src);
-          const spinner = spin(`Resolving host ${hostName}...`);
+          const spinner = json ? null : spin(`Resolving host ${hostName}...`);
           try {
             const host = await client.getHost(hostName);
-            spinner.stop();
-            await downloadFile(client, host.id, remotePath, dst);
+            spinner?.stop();
+            await downloadFile(client, host.id, remotePath, dst, json);
           } catch (err) {
-            spinner.stop();
+            spinner?.stop();
             await downloadPathFromSandbox(
               client,
               hostName,
               remotePath,
               dst,
+              json,
               err,
             );
           }
@@ -98,6 +103,7 @@ async function uploadPath(
   localPath: string,
   remotePath: string,
   recursive: boolean,
+  json: boolean,
 ): Promise<void> {
   const stat = fs.statSync(localPath);
 
@@ -112,7 +118,7 @@ async function uploadPath(
     for (const entry of entries) {
       const entryLocal = path.join(localPath, entry);
       const entryRemote = remotePath.replace(/\/$/, "") + "/" + entry;
-      await uploadPath(client, hostId, entryLocal, entryRemote, recursive);
+      await uploadPath(client, hostId, entryLocal, entryRemote, recursive, json);
     }
     return;
   }
@@ -123,8 +129,8 @@ async function uploadPath(
     : remotePath;
 
   const data = fs.readFileSync(localPath);
-  const bar = new ProgressBar(`Uploading ${filename}`);
-  bar.update(0, data.length);
+  const bar = json ? null : new ProgressBar(`Uploading ${filename}`);
+  bar?.update(0, data.length);
 
   await client.uploadFile(
     hostId as Parameters<typeof client.uploadFile>[0],
@@ -133,9 +139,13 @@ async function uploadPath(
     filename,
   );
 
-  bar.update(data.length, data.length);
-  bar.done();
-  console.log(chalk.green(`Uploaded ${localPath} → ${remotePath}`));
+  bar?.update(data.length, data.length);
+  bar?.done();
+  if (json) {
+    console.log(JSON.stringify({ ok: true, data: { source: localPath, target: remotePath } }, null, 2));
+  } else {
+    console.log(chalk.green(`Uploaded ${localPath} → ${remotePath}`));
+  }
 }
 
 async function uploadPathToSandbox(
@@ -144,6 +154,7 @@ async function uploadPathToSandbox(
   localPath: string,
   remotePath: string,
   recursive: boolean,
+  json: boolean,
   hostError: unknown,
 ): Promise<void> {
   await assertSandboxExists(client, sandboxId, hostError);
@@ -169,7 +180,17 @@ async function uploadPathToSandbox(
     } finally {
       fs.rmSync(archivePath, { force: true });
     }
-    console.log(chalk.green(`Uploaded ${sourceDir} → ${sandboxId}:${remotePath}`));
+    if (json) {
+      console.log(
+        JSON.stringify(
+          { ok: true, data: { sandbox_id: sandboxId, source: sourceDir, target: remotePath, type: "directory" } },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(chalk.green(`Uploaded ${sourceDir} → ${sandboxId}:${remotePath}`));
+    }
     return;
   }
 
@@ -177,7 +198,17 @@ async function uploadPathToSandbox(
     ? `${remotePath}${path.basename(localPath)}`
     : remotePath;
   await writeSandboxFile(client, sandboxId, finalRemotePath, localPath);
-  console.log(chalk.green(`Uploaded ${localPath} → ${sandboxId}:${finalRemotePath}`));
+  if (json) {
+    console.log(
+      JSON.stringify(
+        { ok: true, data: { sandbox_id: sandboxId, source: localPath, target: finalRemotePath, type: "file" } },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.log(chalk.green(`Uploaded ${localPath} → ${sandboxId}:${finalRemotePath}`));
+  }
 }
 
 async function downloadPathFromSandbox(
@@ -185,6 +216,7 @@ async function downloadPathFromSandbox(
   sandboxId: string,
   remotePath: string,
   localDst: string,
+  json: boolean,
   hostError: unknown,
 ): Promise<void> {
   await assertSandboxExists(client, sandboxId, hostError);
@@ -216,7 +248,17 @@ async function downloadPathFromSandbox(
         () => ({}),
       );
     }
-    console.log(chalk.green(`Downloaded ${sandboxId}:${remotePath} → ${localDir}`));
+    if (json) {
+      console.log(
+        JSON.stringify(
+          { ok: true, data: { sandbox_id: sandboxId, source: remotePath, target: localDir, type: "directory" } },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(chalk.green(`Downloaded ${sandboxId}:${remotePath} → ${localDir}`));
+    }
     return;
   }
 
@@ -227,7 +269,17 @@ async function downloadPathFromSandbox(
       : localDst;
   fs.mkdirSync(path.dirname(path.resolve(localPath)), { recursive: true });
   fs.writeFileSync(localPath, bytes);
-  console.log(chalk.green(`Downloaded ${sandboxId}:${remotePath} → ${localPath}`));
+  if (json) {
+    console.log(
+      JSON.stringify(
+        { ok: true, data: { sandbox_id: sandboxId, source: remotePath, target: localPath, type: "file" } },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.log(chalk.green(`Downloaded ${sandboxId}:${remotePath} → ${localPath}`));
+  }
 }
 
 async function assertSandboxExists(
@@ -358,6 +410,7 @@ async function downloadFile(
   hostId: string,
   remotePath: string,
   localDst: string,
+  json: boolean,
 ): Promise<void> {
   const filename = path.basename(remotePath);
   let localPath = localDst;
@@ -376,7 +429,7 @@ async function downloadFile(
     10,
   );
 
-  const bar = new ProgressBar(`Downloading ${filename}`);
+  const bar = json ? null : new ProgressBar(`Downloading ${filename}`);
   const out = fs.createWriteStream(localPath);
   let received = 0;
 
@@ -385,7 +438,7 @@ async function downloadFile(
     out.write(buf);
     received += buf.length;
     if (contentLength > 0) {
-      bar.update(received, contentLength);
+      bar?.update(received, contentLength);
     }
   }
 
@@ -393,6 +446,10 @@ async function downloadFile(
     out.end((err?: Error | null) => (err ? reject(err) : resolve()));
   });
 
-  bar.done();
-  console.log(chalk.green(`Downloaded ${remotePath} → ${localPath}`));
+  bar?.done();
+  if (json) {
+    console.log(JSON.stringify({ ok: true, data: { source: remotePath, target: localPath } }, null, 2));
+  } else {
+    console.log(chalk.green(`Downloaded ${remotePath} → ${localPath}`));
+  }
 }
