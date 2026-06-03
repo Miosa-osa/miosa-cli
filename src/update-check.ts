@@ -100,7 +100,7 @@ export function scheduleUpdateCheck(currentVersion: string): void {
 function printNotice(current: string, latest: string): void {
   console.error(
     chalk.yellow(
-      `Update available: ${current} → ${latest}. Run \`npm update -g @miosa/cli\` to update.`,
+      `Update available: ${current} → ${latest}. Run \`miosa update\` to update.`,
     ),
   );
 }

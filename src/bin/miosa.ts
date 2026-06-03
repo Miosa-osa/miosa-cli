@@ -97,6 +97,7 @@ Examples:
   miosa up --computer --os ubuntu               Create a desktop computer
   miosa up --sandbox --image python-3.12        Create a sandbox
   miosa deploy                                  Deploy a GitHub repo (60s)
+  miosa update                                  Update @miosa/cli to latest
   miosa status                                  Show auth and account info
 
 Documentation: https://miosa.ai/docs/cli/
@@ -168,6 +169,7 @@ const commandModules = [
   "../commands/status.js",
   "../commands/new.js",
   "../commands/up.js",
+  "../commands/update.js",
   "../commands/deploy.js",
   "../commands/apps.js",
   "../commands/logs.js",
