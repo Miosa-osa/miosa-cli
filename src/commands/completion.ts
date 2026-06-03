@@ -57,6 +57,7 @@ const COMMANDS = [
   "tenant",
   "tunnel",
   "up",
+  "update",
   "version",
   "watch",
   "webhooks",

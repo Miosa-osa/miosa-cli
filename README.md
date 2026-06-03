@@ -6,6 +6,13 @@ The official MIOSA command-line interface. Deploy apps and manage OpenComputers 
 npm install -g @miosa/cli
 ```
 
+Keep it current from the CLI:
+
+```bash
+miosa update
+miosa update --check --json
+```
+
 ## Deploy — 60 seconds to first deploy
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
