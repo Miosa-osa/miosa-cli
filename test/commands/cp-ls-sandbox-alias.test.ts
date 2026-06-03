@@ -48,6 +48,16 @@ describe("top-level sandbox cp/ls aliases", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
+        path: "/api/v1/sandboxes/sbx_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_123", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
         path: "/api/v1/sandboxes/sbx_123/files",
         method: "POST",
         body: JSON.stringify({
@@ -71,6 +81,67 @@ describe("top-level sandbox cp/ls aliases", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("prints valid JSON only for top-level sandbox cp --json", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-cp-json-test-"));
+    const file = path.join(dir, "file.txt");
+    fs.writeFileSync(file, "hello");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_123", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/files",
+        method: "POST",
+        body: JSON.stringify({
+          path: "/workspace/file.txt",
+          content: Buffer.from("hello").toString("base64"),
+        }),
+      })
+      .reply(200, JSON.stringify({ data: { ok: true } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "cp",
+      file,
+      "sbx_123:/workspace/file.txt",
+      "--json",
+    ]);
+
+    expect(process.stdout.write).not.toHaveBeenCalled();
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0] ?? "{}")).toMatchObject({
+      ok: true,
+      data: {
+        sandbox_id: "sbx_123",
+        target: "/workspace/file.txt",
+        type: "file",
+      },
+    });
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("lists sandbox-id:/path with top-level miosa ls", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -79,22 +150,25 @@ describe("top-level sandbox cp/ls aliases", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/files?path=%2Fworkspace",
+        path: "/api/v1/sandboxes/sbx_123",
         method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_123", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
       })
       .reply(
         200,
         JSON.stringify({
           data: {
-            entries: [
-              {
-                name: "package.json",
-                path: "/workspace/package.json",
-                type: "file",
-                size: 42,
-                modified_at: null,
-              },
-            ],
+            stdout:
+              "package.json\tf\t42\t-rw-r--r--\t1780500000\n",
           },
         }),
         { headers: { "content-type": "application/json" } },
