@@ -1,6 +1,6 @@
 {
   "name": "@miosa/cli",
-  "version": "1.0.42",
+  "version": "1.0.43",
   "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {

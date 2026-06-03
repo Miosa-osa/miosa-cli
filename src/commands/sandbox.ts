@@ -302,7 +302,11 @@ export function register(program: Command): void {
         collectOption,
         [],
       )
-      .option("--always-on", "Disable auto-destroy on idle"),
+      .option("--always-on", "Disable auto-destroy on idle")
+      .option(
+        "--auto-start",
+        "Seed and start the template app after the sandbox reaches running",
+      ),
   )
     .option("--json", "Output as JSON")
     .action(
@@ -327,6 +331,7 @@ export function register(program: Command): void {
           allowedCidr?: string[];
           deniedCidr?: string[];
           alwaysOn?: boolean;
+          autoStart?: boolean;
         },
       ) =>
         runAction(async () => {
@@ -370,6 +375,7 @@ export function register(program: Command): void {
             };
           }
           if (opts.alwaysOn) body["always_on"] = true;
+          if (opts.autoStart) body["auto_start"] = true;
 
           const raw = unwrap(
             await client().apiPost<unknown>(apiPath("/sandboxes"), body),
@@ -385,9 +391,14 @@ export function register(program: Command): void {
                 opts.probePath ?? "/",
                 Math.max(opts.timeout ?? 120, 30),
               );
-              sb["preview"] = preview;
-              sb["preview_url"] = preview.url;
-              sb["ready"] = preview.ready;
+              const latest = unwrap(
+                await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}`)),
+              );
+              Object.assign(sb, latest, {
+                preview,
+                preview_url: preview.url,
+                ready: preview.ready,
+              });
             } else {
               const preview = await previewSandbox(id, opts.publishPort, {
                 wait: false,
