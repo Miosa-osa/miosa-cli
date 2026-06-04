@@ -36,6 +36,24 @@ interface Check {
   section: "Identity" | "Network" | "Toolchain" | "Project";
 }
 
+interface McpJsonCheck {
+  found: boolean;
+  configured: boolean;
+  commands: McpCommandCandidate[];
+}
+
+interface McpCommandCandidate {
+  command: string;
+  args?: string[];
+  source: string;
+}
+
+interface McpInstallCheck {
+  installed: boolean;
+  detail: string;
+  source?: string;
+}
+
 async function getCommandVersion(
   cmd: string,
   args: string[],
@@ -66,10 +84,145 @@ async function measureLatency(url: string): Promise<number | null> {
   }
 }
 
-async function checkMcpJson(): Promise<{
-  found: boolean;
-  configured: boolean;
-}> {
+function isMissingCommandError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "ENOENT";
+}
+
+function executableExists(command: string): boolean {
+  if (!command.includes(path.sep) && !command.includes("/") && !command.includes("\\")) {
+    return false;
+  }
+  return fs.existsSync(command);
+}
+
+function parseVersion(output: string): string | null {
+  const trimmed = output.trim();
+  if (!trimmed) return null;
+  const match = /(?:miosa-mcp\s+)?v?(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/i.exec(trimmed);
+  return match?.[1] ?? trimmed.split(/\s+/)[0] ?? null;
+}
+
+function isMcpInstalledFailure(stderr: string, stdout: string): boolean {
+  const text = `${stderr}\n${stdout}`;
+  if (/MIOSA_API_KEY environment variable is not set/i.test(text)) return true;
+  if (/Set it in your .*mcp\.json env block/i.test(text)) return true;
+  if (/No module named ['"]?miosa_mcp/i.test(text)) return false;
+  if (/ModuleNotFoundError/i.test(text) && /miosa_mcp/i.test(text)) return false;
+  return true;
+}
+
+function collectMcpCommands(value: unknown): McpCommandCandidate[] {
+  const found: McpCommandCandidate[] = [];
+
+  const walk = (node: unknown, source: string): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, source);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+
+    const record = node as Record<string, unknown>;
+    const command = typeof record["command"] === "string" ? record["command"] : null;
+    const args = Array.isArray(record["args"])
+      ? record["args"].filter((arg): arg is string => typeof arg === "string")
+      : [];
+    const serialized = JSON.stringify(record);
+
+    if (command && /miosa-mcp/i.test(command)) {
+      found.push({ command, args: ["--version"], source });
+    } else if (command && /miosa_mcp/i.test(serialized)) {
+      found.push({ command, args: [...args, "--version"], source });
+    }
+
+    for (const child of Object.values(record)) walk(child, source);
+  };
+
+  walk(value, "mcp.json");
+  return found;
+}
+
+function windowsPythonScriptCandidates(env: NodeJS.ProcessEnv): McpCommandCandidate[] {
+  const candidates: McpCommandCandidate[] = [];
+  const roots = [
+    env["LOCALAPPDATA"] ? path.join(env["LOCALAPPDATA"], "Programs", "Python") : null,
+    env["APPDATA"] ? path.join(env["APPDATA"], "Python") : null,
+  ].filter((root): root is string => Boolean(root));
+
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^Python\d+/i.test(entry.name)) continue;
+      const exe = path.join(root, entry.name, "Scripts", "miosa-mcp.exe");
+      if (fs.existsSync(exe)) {
+        candidates.push({ command: exe, args: ["--version"], source: "python-scripts" });
+      }
+    }
+  }
+
+  return candidates;
+}
+
+export async function detectMcpInstall(options: {
+  mcpCommands?: McpCommandCandidate[];
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  includeDefaultCandidates?: boolean;
+} = {}): Promise<McpInstallCheck> {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const includeDefaultCandidates = options.includeDefaultCandidates ?? true;
+  const candidates: McpCommandCandidate[] = [
+    ...(options.mcpCommands ?? []),
+    ...(includeDefaultCandidates
+      ? [{ command: "miosa-mcp", args: ["--version"], source: "PATH" }]
+      : []),
+    ...(platform === "win32" ? windowsPythonScriptCandidates(env) : []),
+  ];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    const key = `${candidate.command}\0${(candidate.args ?? []).join("\0")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    try {
+      const { stdout, stderr } = await execFileAsync(candidate.command, candidate.args ?? ["--version"], {
+        timeout: 3000,
+        env,
+      });
+      const version = parseVersion(`${stdout}\n${stderr}`);
+      return {
+        installed: true,
+        detail: version ? `v${version}` : `installed (${candidate.source})`,
+        source: candidate.source,
+      };
+    } catch (err) {
+      if (isMissingCommandError(err) && !executableExists(candidate.command)) {
+        continue;
+      }
+
+      const stdout = String((err as { stdout?: unknown }).stdout ?? "");
+      const stderr = String((err as { stderr?: unknown }).stderr ?? "");
+      if (!isMcpInstalledFailure(stderr, stdout) && !executableExists(candidate.command)) {
+        continue;
+      }
+
+      const reason = stderr.trim().split(/\r?\n/)[0] || stdout.trim().split(/\r?\n/)[0];
+      return {
+        installed: true,
+        detail: reason
+          ? `installed (${candidate.source}; version unavailable: ${reason})`
+          : `installed (${candidate.source}; version unavailable)`,
+        source: candidate.source,
+      };
+    }
+  }
+
+  return { installed: false, detail: "not installed" };
+}
+
+async function checkMcpJson(): Promise<McpJsonCheck> {
   const candidates = [
     path.join(os.homedir(), ".claude", "mcp.json"),
     path.join(os.homedir(), ".claude.json"),
@@ -84,12 +237,19 @@ async function checkMcpJson(): Promise<{
       // Check if miosa or miosa-mcp appears anywhere in the config
       const text = JSON.stringify(parsed);
       const configured = /miosa/i.test(text);
-      return { found: true, configured };
+      return {
+        found: true,
+        configured,
+        commands: collectMcpCommands(parsed).map((cmd) => ({
+          ...cmd,
+          source: candidate,
+        })),
+      };
     } catch {
-      return { found: true, configured: false };
+      return { found: true, configured: false, commands: [] };
     }
   }
-  return { found: false, configured: false };
+  return { found: false, configured: false, commands: [] };
 }
 
 export function register(program: Command): void {
@@ -216,26 +376,25 @@ export function register(program: Command): void {
           section: "Toolchain",
         });
 
+        const mcpJson = await checkMcpJson();
+
         // ── miosa-mcp ────────────────────────────────────────────────────────
-        const mcpVersion = await getCommandVersion(
-          "miosa-mcp",
-          ["--version"],
-          /(\S+)/,
-        );
-        const mcpInstalled = mcpVersion !== null;
+        const mcpInstall = await detectMcpInstall({
+          mcpCommands: mcpJson.commands,
+        });
+        const mcpInstalled = mcpInstall.installed;
         checks.push({
           name: "miosa-mcp",
           ok: mcpInstalled,
-          detail: mcpInstalled ? `v${mcpVersion}` : "not installed",
+          detail: mcpInstall.detail,
           fix: mcpInstalled
             ? undefined
-            : "pip install miosa-mcp  (MCP server for AI agent integration)",
+            : "pip install miosa-mcp and ensure Python's Scripts directory is on PATH",
           warn: !mcpInstalled,
           section: "Toolchain",
         });
 
         // ── .claude/mcp.json ─────────────────────────────────────────────────
-        const mcpJson = await checkMcpJson();
         if (mcpJson.found) {
           checks.push({
             name: ".claude/mcp.json",
