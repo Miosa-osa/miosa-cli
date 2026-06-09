@@ -1,5 +1,7 @@
 import type { Command } from "commander";
+import { readFileSync } from "node:fs";
 import chalk from "chalk";
+import { parse as parseYaml } from "yaml";
 import { MiosaClient } from "../client.js";
 import { loadConfig } from "../config.js";
 import { renderTable } from "../ui/table.js";
@@ -12,7 +14,11 @@ export type ApiClient = Pick<
   "apiGet" | "apiPost" | "apiPut" | "apiPatch" | "apiDelete"
 >;
 export type JsonOptions = { json?: boolean };
-export type DataOptions = JsonOptions & { data?: string };
+export type DataOptions = JsonOptions & {
+  data?: string;
+  input?: string;
+  file?: string;
+};
 
 export function client(): ApiClient {
   return new MiosaClient(loadConfig());
@@ -26,18 +32,33 @@ export function enc(value: string): string {
   return encodeURIComponent(value);
 }
 
-export function parseData(data: string | undefined): ApiObject | undefined {
-  if (!data) return undefined;
+export function parseData(
+  data: string | undefined,
+  input?: string,
+  file?: string,
+): ApiObject | undefined {
+  const provided = [data, input, file].filter((value) => value !== undefined);
+  if (provided.length === 0) return undefined;
+  if (provided.length > 1) {
+    throw new Error("Use only one of --data, --input, or --file");
+  }
+
+  const raw = file ? readFileSync(file, "utf8") : (input ?? data ?? "");
+  const source = file ? `--file ${file}` : input ? "--input" : "--data";
   let parsed: unknown;
   try {
-    parsed = JSON.parse(data);
+    parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `Invalid JSON for --data: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    try {
+      parsed = parseYaml(raw);
+    } catch {
+      throw new Error(
+        `Invalid JSON/YAML for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
   if (!isObject(parsed)) {
-    throw new Error("--data must be a JSON object");
+    throw new Error(`${source} must parse to an object`);
   }
   return parsed;
 }
@@ -68,7 +89,7 @@ export async function postAndPrint(
   opts: DataOptions,
   defaultBody?: ApiObject,
 ): Promise<void> {
-  const body = parseData(opts.data) ?? defaultBody;
+  const body = parseData(opts.data, opts.input, opts.file) ?? defaultBody;
   const value = unwrap(await client().apiPost<unknown>(apiPath(path), body));
   printValue(value, opts);
 }
@@ -78,7 +99,7 @@ export async function putAndPrint(
   opts: DataOptions,
   defaultBody?: ApiObject,
 ): Promise<void> {
-  const body = parseData(opts.data) ?? defaultBody;
+  const body = parseData(opts.data, opts.input, opts.file) ?? defaultBody;
   const value = unwrap(await client().apiPut<unknown>(apiPath(path), body));
   printValue(value, opts);
 }
@@ -88,7 +109,7 @@ export async function patchAndPrint(
   opts: DataOptions,
   defaultBody?: ApiObject,
 ): Promise<void> {
-  const body = parseData(opts.data) ?? defaultBody;
+  const body = parseData(opts.data, opts.input, opts.file) ?? defaultBody;
   const value = unwrap(await client().apiPatch<unknown>(apiPath(path), body));
   printValue(value, opts);
 }
@@ -106,7 +127,10 @@ export async function deleteAndPrint(
 }
 
 export function addDataOption(command: Command): Command {
-  return command.option("--data <json>", "JSON object request body");
+  return command
+    .option("--data <json>", "JSON object request body")
+    .option("-i, --input <json-or-yaml>", "JSON/YAML object request body")
+    .option("-f, --file <path>", "Read JSON/YAML object request body from file");
 }
 
 export function printValue(value: unknown, opts: JsonOptions): void {

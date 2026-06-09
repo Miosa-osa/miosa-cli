@@ -17,6 +17,7 @@ import {
   printElapsed,
   formatDuration,
 } from "../ui/render.js";
+import { formatBytes } from "../ui/progress.js";
 import {
   detectFramework,
   FRAMEWORK_LABELS,
@@ -121,6 +122,21 @@ function parsePositiveInteger(value: string): number {
     throw new Error(`Invalid positive integer: ${value}`);
   }
   return parsed;
+}
+
+function deploymentProduct(
+  deployment: Pick<Deployment, "deployment_product" | "metadata">,
+): string {
+  const metadataProduct = deployment.metadata?.["deployment_product"];
+  if (typeof deployment.deployment_product === "string") {
+    return deployment.deployment_product;
+  }
+  if (typeof metadataProduct === "string") return metadataProduct;
+  return "miosa_deploy";
+}
+
+function productLabel(product: string): string {
+  return product === "docker_deploy" ? "Docker Deploy" : "MIOSA Deploy";
 }
 
 // ── Deployment ID resolution ──────────────────────────────────────────────────
@@ -229,6 +245,93 @@ function fmtDeployState(state: Deployment["state"]): string {
   }
 }
 
+function unwrapMetrics(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && "data" in raw) {
+    const data = (raw as Record<string, unknown>)["data"];
+    if (data && typeof data === "object") return data as Record<string, unknown>;
+  }
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
+}
+
+function metricCurrent(raw: unknown): Record<string, unknown> {
+  const root = unwrapMetrics(raw);
+  const current = root["current"];
+  return current && typeof current === "object"
+    ? (current as Record<string, unknown>)
+    : {};
+}
+
+function renderDeploymentMetrics(raw: unknown): void {
+  const root = unwrapMetrics(raw);
+  const current = metricCurrent(raw);
+  const instances =
+    current["runtime_instances"] && typeof current["runtime_instances"] === "object"
+      ? (current["runtime_instances"] as Record<string, unknown>)
+      : {};
+  const usage =
+    current["usage"] && typeof current["usage"] === "object"
+      ? (current["usage"] as Record<string, unknown>)
+      : {};
+
+  printBanner({ subtitle: "Deployment metrics" });
+  console.log(
+    kvPanel([
+      { label: "deployment_id", value: String(root["deployment_id"] ?? root["resource_id"] ?? "-") },
+      { label: "window", value: String(root["window"] ?? "1h") },
+      { label: "state", value: formatMetricState(current["state"]) },
+      {
+        label: "runtime_instances",
+        value: `${formatMetricValue(instances["active"])} active / ${formatMetricValue(instances["total"])} total`,
+      },
+      { label: "healthy", value: formatMetricValue(instances["healthy"]) },
+      { label: "unhealthy", value: formatMetricValue(instances["unhealthy"]) },
+      { label: "errors", value: formatMetricValue(instances["error"]) },
+      { label: "restarts", value: formatMetricValue(instances["restarts"]) },
+      { label: "cpu_limit", value: formatMillicores(current["cpu_limit_millicores"]) },
+      { label: "memory_limit", value: formatMb(current["memory_limit_mb"]) },
+      { label: "runtime", value: formatSeconds(usage["runtime_sec"]) },
+      { label: "cost_cents", value: formatMetricValue(usage["cost_cents"]) },
+      { label: "last_health_check", value: formatMetricValue(current["last_health_check_at"]) },
+      { label: "last_heartbeat", value: formatMetricValue(current["last_heartbeat_at"]) },
+    ]),
+  );
+}
+
+function formatMetricState(value: unknown): string {
+  const state = String(value ?? "unknown");
+  if (["running", "active", "healthy", "ready"].includes(state)) {
+    return chalk.green(state);
+  }
+  if (["provisioning", "starting", "building", "pending"].includes(state)) {
+    return chalk.yellow(state);
+  }
+  if (["failed", "error", "unhealthy"].includes(state)) {
+    return chalk.red(state);
+  }
+  return state;
+}
+
+function formatMetricValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  return String(value);
+}
+
+function formatMb(value: unknown): string {
+  if (typeof value !== "number") return formatMetricValue(value);
+  return formatBytes(value * 1024 * 1024);
+}
+
+function formatMillicores(value: unknown): string {
+  if (typeof value !== "number") return formatMetricValue(value);
+  return `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 2)} vCPU`;
+}
+
+function formatSeconds(value: unknown): string {
+  if (typeof value !== "number") return formatMetricValue(value);
+  return formatDuration(value * 1000);
+}
+
 // ── register ──────────────────────────────────────────────────────────────────
 
 export function register(program: Command): void {
@@ -236,11 +339,16 @@ export function register(program: Command): void {
     .command("deploy")
     .alias("launch")
     .description("Deploy a GitHub repo to MIOSA Deploy")
+    .option(
+      "--docker-deploy",
+      "Create the deployment on this workspace's dedicated Docker Deploy runtime",
+    )
     .addHelpText(
       "after",
       `
 Examples:
   miosa deploy                       Deploy current directory (auto-detects framework)
+  miosa deploy --docker-deploy       Deploy current directory to Docker Deploy
   miosa deploy list                  List all deployments
   miosa deploy logs                  Tail build logs for this project
   miosa deploy redeploy              Trigger a new build
@@ -250,7 +358,7 @@ Examples:
   miosa deploy destroy               Tear down this deployment
 `,
     )
-    .action(async () => {
+    .action(async (opts: { dockerDeploy?: boolean }) => {
       // Default action: interactive deploy flow
       try {
         const cwd = process.cwd();
@@ -376,6 +484,9 @@ Examples:
           let deployment: Deployment;
 
           try {
+            const metadata = opts.dockerDeploy
+              ? { deployment_product: "docker_deploy" }
+              : undefined;
             const result = await client.createDeployment({
               name: answers.name,
               repo_url: repoUrl,
@@ -383,11 +494,12 @@ Examples:
               build_command: answers.buildCommand || undefined,
               run_command: answers.runCommand || undefined,
               auto_deploy: true,
+              metadata,
             });
             deployment = result.data;
             webhookSecret = result.webhook_secret;
             createSpinner.succeed(
-              `Deployment "${deployment.name}" created (slug: ${deployment.slug})`,
+              `${productLabel(deploymentProduct(deployment))} deployment "${deployment.name}" created (slug: ${deployment.slug})`,
             );
           } catch (err) {
             createSpinner.fail("Failed to create deployment");
@@ -467,6 +579,14 @@ Examples:
             console.log(chalk.green("  Deployed"));
             console.log();
             console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
+            console.log(
+              `  ${chalk.bold("Type:")}   ${productLabel(deploymentProduct(dep))}`,
+            );
+            if (dep.docker_deploy_host_id) {
+              console.log(
+                `  ${chalk.bold("Host:")}   ${chalk.dim(dep.docker_deploy_host_id)}`,
+              );
+            }
             console.log();
             console.log(chalk.dim("  Next steps:"));
             console.log(
@@ -563,6 +683,11 @@ Examples:
           renderTable(deployments, [
             { header: "ID", key: (d) => d.id.slice(0, 8), width: 10 },
             { header: "NAME", key: "name", width: 24 },
+            {
+              header: "TYPE",
+              key: (d) => productLabel(deploymentProduct(d)),
+              width: 14,
+            },
             { header: "SLUG", key: "slug", width: 24 },
             { header: "BRANCH", key: "branch", width: 12 },
             {
@@ -639,7 +764,14 @@ Examples:
           kvPanel([
             { label: "id", value: chalk.dim(dep.id) },
             { label: "name", value: chalk.bold(dep.name) },
+            { label: "type", value: productLabel(deploymentProduct(dep)) },
             { label: "state", value: colorizeState(dep.state) },
+            {
+              label: "docker_deploy_host_id",
+              value: dep.docker_deploy_host_id
+                ? chalk.dim(dep.docker_deploy_host_id)
+                : chalk.dim("—"),
+            },
             {
               label: "current_build_id",
               value: dep.current_build_id
@@ -673,6 +805,42 @@ Examples:
         handleError(err);
       }
     });
+
+  // ── deploy metrics ──────────────────────────────────────────────────────────
+
+  deploy
+    .command("metrics [id]")
+    .description("Show deployment runtime instance, usage, and health metrics")
+    .option("--window <window>", "Metrics window: 1h, 24h, or 7d", "1h")
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string | undefined,
+        opts: { window: string; json?: boolean },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(id, cwd);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Fetching deployment metrics...");
+          const metrics = await client.apiGet<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(deploymentId)}/metrics?window=${encodeURIComponent(opts.window)}`,
+          );
+          spinner?.stop();
+
+          if (json) {
+            console.log(JSON.stringify(metrics, null, 2));
+            return;
+          }
+
+          renderDeploymentMetrics(metrics);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 
   // ── deploy logs ─────────────────────────────────────────────────────────────
 

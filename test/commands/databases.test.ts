@@ -235,6 +235,58 @@ describe("miosa databases wait", () => {
   });
 });
 
+describe("miosa databases metrics", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetches database metrics as raw JSON", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/metrics?window=1h`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          resource_type: "database",
+          database_id: DB_ID,
+          window: "1h",
+          current: {
+            state: "running",
+            engine: "postgresql",
+            engine_version: "15",
+            memory_mb: 2048,
+          },
+          series: { cpu_percent: [], memory_mb: [] },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "databases",
+      "metrics",
+      DB_ID,
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["resource_type"]).toBe("database");
+    expect(parsed["current"]).toEqual(
+      expect.objectContaining({ state: "running", engine: "postgresql" }),
+    );
+  });
+});
+
 describe("miosa databases logs", () => {
   afterEach(() => {
     vi.restoreAllMocks();

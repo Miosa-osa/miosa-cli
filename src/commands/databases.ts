@@ -5,6 +5,8 @@ import { MiosaClient, parseSse } from "../client.js";
 import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
+import { formatBytes } from "../ui/progress.js";
+import { formatDuration } from "../ui/render.js";
 import { handleError, isJsonMode } from "./util.js";
 
 interface Database {
@@ -224,6 +226,72 @@ function normalizePostgresUrl(url: string): string {
     : url;
 }
 
+function unwrapMetrics(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && "data" in raw) {
+    const data = (raw as Record<string, unknown>)["data"];
+    if (data && typeof data === "object") return data as Record<string, unknown>;
+  }
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
+}
+
+function renderDatabaseMetrics(raw: unknown): void {
+  const root = unwrapMetrics(raw);
+  const current =
+    root["current"] && typeof root["current"] === "object"
+      ? (root["current"] as Record<string, unknown>)
+      : {};
+
+  console.log();
+  console.log(chalk.bold("Database metrics"));
+  console.log();
+  console.log(
+    `  ${chalk.bold("database_id")}   ${root["database_id"] ?? root["resource_id"] ?? "-"}`,
+  );
+  console.log(`  ${chalk.bold("window")}        ${root["window"] ?? "1h"}`);
+  console.log(`  ${chalk.bold("state")}         ${formatMetricState(current["state"])}`);
+  console.log(
+    `  ${chalk.bold("engine")}        ${[current["engine"], current["engine_version"]].filter(Boolean).join(" ") || chalk.dim("-")}`,
+  );
+  console.log(`  ${chalk.bold("cpu")}           ${formatMetricValue(current["cpu_count"])}`);
+  console.log(`  ${chalk.bold("memory")}        ${formatMb(current["memory_mb"])}`);
+  console.log(`  ${chalk.bold("storage")}       ${formatMb(current["storage_mb"])}`);
+  console.log(`  ${chalk.bold("port")}          ${formatMetricValue(current["port"])}`);
+  console.log(`  ${chalk.bold("uptime")}        ${formatSeconds(current["uptime_sec"])}`);
+  console.log(`  ${chalk.bold("node")}          ${formatMetricValue(current["node_id"])}`);
+  console.log(`  ${chalk.bold("ip")}            ${formatMetricValue(current["ip_address"])}`);
+  console.log();
+}
+
+function formatMetricState(value: unknown): string {
+  const state = String(value ?? "unknown");
+  if (["running", "available", "active", "healthy"].includes(state)) {
+    return chalk.green(state);
+  }
+  if (["creating", "provisioning", "starting", "restarting"].includes(state)) {
+    return chalk.yellow(state);
+  }
+  if (["failed", "error", "unhealthy"].includes(state)) {
+    return chalk.red(state);
+  }
+  return state;
+}
+
+function formatMetricValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  return String(value);
+}
+
+function formatMb(value: unknown): string {
+  if (typeof value !== "number") return formatMetricValue(value);
+  return formatBytes(value * 1024 * 1024);
+}
+
+function formatSeconds(value: unknown): string {
+  if (typeof value !== "number") return formatMetricValue(value);
+  return formatDuration(value * 1000);
+}
+
 export function register(program: Command): void {
   const databases = program
     .command("databases")
@@ -382,6 +450,39 @@ export function register(program: Command): void {
         handleError(err);
       }
     });
+
+  // metrics
+  databases
+    .command("metrics <id>")
+    .description("Show managed database resource, uptime, and endpoint metrics")
+    .option("--window <window>", "Metrics window: 1h, 24h, or 7d", "1h")
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string,
+        opts: { window: string; json?: boolean },
+      ) => {
+        try {
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Fetching database metrics...");
+          const metrics = await client.apiGet(
+            `/api/v1/databases/${encodeURIComponent(id)}/metrics?window=${encodeURIComponent(opts.window)}`,
+          );
+          spinner?.stop();
+
+          if (json) {
+            console.log(JSON.stringify(metrics, null, 2));
+            return;
+          }
+
+          renderDatabaseMetrics(metrics);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 
   const lifecycleAction =
     (action: "start" | "stop" | "restart") =>

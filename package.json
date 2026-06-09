@@ -1,6 +1,6 @@
 {
   "name": "@miosa/cli",
-  "version": "1.0.47",
+  "version": "1.0.48",
   "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
@@ -44,7 +44,8 @@
     "ora": "^8.1.1",
     "react": "^19.2.6",
     "undici": "^6.19.7",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.8",
