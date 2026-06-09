@@ -75,6 +75,9 @@ Examples:
   miosa login --stdin                           Pipe an API key: echo 'msk_...' | miosa login --stdin
   miosa whoami                                  Verify and show current auth state
   miosa whoami --cached                         Show stale local identity without an API call
+  miosa context save personal                   Save current auth/scope as a named context
+  miosa context use clinic-dev                  Switch account/workspace defaults
+  miosa command-overview                        Show a tree of all commands
   miosa config ls                               List all config keys
   miosa config set region us-nyc                Set a config value
   miosa doctor                                  Diagnose CLI, auth, and toolchain
@@ -150,8 +153,10 @@ const commandModules = [
   "../commands/logout.js",
   "../commands/whoami.js",
   "../commands/config.js",
+  "../commands/context.js",
   "../commands/doctor.js",
   "../commands/capabilities.js",
+  "../commands/command-overview.js",
   "../commands/hosts.js",
   "../commands/host.js",
   "../commands/computers.js",

@@ -6,6 +6,7 @@ import type { ApiKey, MiosaConfig } from "./types.js";
 const CONFIG_DIR = path.join(os.homedir(), ".miosa");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const AUTH_CACHE_FILE = path.join(CONFIG_DIR, "auth-cache.json");
+const CONTEXTS_FILE = path.join(CONFIG_DIR, "contexts.json");
 
 const DEFAULTS: MiosaConfig = {
   endpoint: "https://api.miosa.ai",
@@ -86,6 +87,10 @@ export function getConfigPath(): string {
 
 export function getConfigDir(): string {
   return CONFIG_DIR;
+}
+
+export function getContextsPath(): string {
+  return CONTEXTS_FILE;
 }
 
 export function configExists(): boolean {
@@ -172,4 +177,111 @@ export function getConfigValue(key: ConfigKey): string {
 export function setConfigValue(key: ConfigKey, value: string): void {
   const field = configKeyToField(key);
   saveConfig({ [field]: value === "" ? null : value });
+}
+
+// ── Named contexts ───────────────────────────────────────────────────────────
+// Contexts let users switch between personal/team/workspace defaults without
+// rewriting API keys and scope flags manually.
+
+export interface MiosaContext {
+  name: string;
+  endpoint: string;
+  api_key: ApiKey | null;
+  tenant: string | null;
+  workspace: string | null;
+  region: string | null;
+  default_host: string | null;
+  output: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MiosaContextStore {
+  active: string | null;
+  contexts: Record<string, MiosaContext>;
+}
+
+function emptyContextStore(): MiosaContextStore {
+  return { active: null, contexts: {} };
+}
+
+export function loadContextStore(): MiosaContextStore {
+  try {
+    if (!fs.existsSync(CONTEXTS_FILE)) return emptyContextStore();
+    const parsed = JSON.parse(fs.readFileSync(CONTEXTS_FILE, "utf8")) as Partial<MiosaContextStore>;
+    return {
+      active: typeof parsed.active === "string" ? parsed.active : null,
+      contexts:
+        parsed.contexts && typeof parsed.contexts === "object"
+          ? (parsed.contexts as Record<string, MiosaContext>)
+          : {},
+    };
+  } catch {
+    return emptyContextStore();
+  }
+}
+
+export function saveContextStore(store: MiosaContextStore): void {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(CONTEXTS_FILE, JSON.stringify(store, null, 2) + "\n", {
+    mode: 0o600,
+  });
+}
+
+export function contextFromConfig(name: string, config = loadConfig()): MiosaContext {
+  const now = new Date().toISOString();
+  return {
+    name,
+    endpoint: config.endpoint,
+    api_key: config.api_key,
+    tenant: config.tenant ?? null,
+    workspace: config.workspace ?? null,
+    region: config.region ?? null,
+    default_host: config.default_host ?? null,
+    output: config.output,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export function saveNamedContext(name: string, context = contextFromConfig(name)): MiosaContext {
+  const store = loadContextStore();
+  const existing = store.contexts[name];
+  const saved: MiosaContext = {
+    ...context,
+    name,
+    created_at: existing?.created_at ?? context.created_at,
+    updated_at: new Date().toISOString(),
+  };
+  store.contexts[name] = saved;
+  if (!store.active) store.active = name;
+  saveContextStore(store);
+  return saved;
+}
+
+export function deleteNamedContext(name: string): boolean {
+  const store = loadContextStore();
+  if (!store.contexts[name]) return false;
+  delete store.contexts[name];
+  if (store.active === name) store.active = null;
+  saveContextStore(store);
+  return true;
+}
+
+export function applyNamedContext(name: string): MiosaContext | null {
+  const store = loadContextStore();
+  const context = store.contexts[name];
+  if (!context) return null;
+  saveConfig({
+    endpoint: context.endpoint,
+    api_key: context.api_key,
+    tenant: context.tenant,
+    workspace: context.workspace,
+    region: context.region,
+    default_host: context.default_host,
+    output: context.output,
+  });
+  store.active = name;
+  saveContextStore(store);
+  return context;
 }

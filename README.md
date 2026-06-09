@@ -13,6 +13,35 @@ miosa update
 miosa update --check --json
 ```
 
+## Contexts and command discovery
+
+Save named contexts when you work across personal accounts, team accounts, or
+customer workspaces:
+
+```bash
+miosa login
+miosa context save personal
+miosa context set workspace workspace_123
+
+miosa login --api-key msk_u_team...
+miosa context save clinic-dev
+
+miosa context ls
+miosa context use clinic-dev
+```
+
+Agents and scripts should use JSON:
+
+```bash
+miosa context ls --json
+miosa context use clinic-dev --json
+miosa command-overview --json
+```
+
+`miosa command-overview` prints a tree of all command groups and nested
+subcommands. Use `miosa capabilities --json` for the higher-level agent workflow
+contract.
+
 ## Deploy — 60 seconds to first deploy
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.

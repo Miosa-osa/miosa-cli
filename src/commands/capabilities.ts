@@ -130,6 +130,22 @@ const manifest: CapabilitiesManifest = {
   },
   resources: [
     {
+      id: "cli_context",
+      label: "CLI Context",
+      purpose:
+        "Named account/tenant/workspace defaults for switching between personal, team, and customer scopes.",
+      status: "stable",
+      list: "miosa context ls --json",
+      create: "miosa context save <name> --json",
+      show: "miosa context show <name> --json",
+      delete: "miosa context rm <name> --json",
+      notes: [
+        "Use miosa context use <name> --json to switch active API key, endpoint, tenant, workspace, region, and default host.",
+        "Use miosa context set workspace <workspace-id> --json to pin the default workspace for later commands.",
+        "Global --tenant and --workspace flags still override the saved context for one command.",
+      ],
+    },
+    {
       id: "sandbox",
       label: "Sandbox Preview",
       purpose:
@@ -235,6 +251,44 @@ const manifest: CapabilitiesManifest = {
     },
   ],
   workflows: [
+    {
+      id: "context_scoped_workflow",
+      title: "Switch Account Or Workspace Context",
+      goal: "Make repeated CLI and agent runs target the correct tenant/workspace without passing scope flags every time.",
+      status: "stable",
+      steps: [
+        {
+          command: "miosa context ls --json",
+          purpose: "Inspect saved contexts and the active context.",
+          json: true,
+        },
+        {
+          command: "miosa context use <name> --json",
+          purpose: "Switch active endpoint, API key, tenant, workspace, region, and default host.",
+          json: true,
+        },
+        {
+          command: "miosa context set workspace <workspace-id> --json",
+          purpose: "Pin a default workspace on the active context.",
+          json: true,
+        },
+        {
+          command: "miosa command-overview --json",
+          purpose: "Discover available command groups and nested subcommands.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "context ls returns active context",
+        "context use returns ok true",
+        "whoami --json still verifies live",
+      ],
+      failure_signals: [
+        "Context not found",
+        "AUTH error after switching",
+        "workspace-scoped commands return unauthorized or not found",
+      ],
+    },
     {
       id: "auth_health",
       title: "Verify Auth And API Health",
