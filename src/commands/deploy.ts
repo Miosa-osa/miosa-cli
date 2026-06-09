@@ -123,6 +123,21 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
+function deploymentProduct(
+  deployment: Pick<Deployment, "deployment_product" | "metadata">,
+): string {
+  const metadataProduct = deployment.metadata?.["deployment_product"];
+  if (typeof deployment.deployment_product === "string") {
+    return deployment.deployment_product;
+  }
+  if (typeof metadataProduct === "string") return metadataProduct;
+  return "miosa_deploy";
+}
+
+function productLabel(product: string): string {
+  return product === "docker_deploy" ? "Docker Deploy" : "MIOSA Deploy";
+}
+
 // ── Deployment ID resolution ──────────────────────────────────────────────────
 
 function resolveDeploymentId(
@@ -236,11 +251,16 @@ export function register(program: Command): void {
     .command("deploy")
     .alias("launch")
     .description("Deploy a GitHub repo to MIOSA Deploy")
+    .option(
+      "--docker-deploy",
+      "Create the deployment on this workspace's dedicated Docker Deploy runtime",
+    )
     .addHelpText(
       "after",
       `
 Examples:
   miosa deploy                       Deploy current directory (auto-detects framework)
+  miosa deploy --docker-deploy       Deploy current directory to Docker Deploy
   miosa deploy list                  List all deployments
   miosa deploy logs                  Tail build logs for this project
   miosa deploy redeploy              Trigger a new build
@@ -250,7 +270,7 @@ Examples:
   miosa deploy destroy               Tear down this deployment
 `,
     )
-    .action(async () => {
+    .action(async (opts: { dockerDeploy?: boolean }) => {
       // Default action: interactive deploy flow
       try {
         const cwd = process.cwd();
@@ -376,6 +396,9 @@ Examples:
           let deployment: Deployment;
 
           try {
+            const metadata = opts.dockerDeploy
+              ? { deployment_product: "docker_deploy" }
+              : undefined;
             const result = await client.createDeployment({
               name: answers.name,
               repo_url: repoUrl,
@@ -383,11 +406,12 @@ Examples:
               build_command: answers.buildCommand || undefined,
               run_command: answers.runCommand || undefined,
               auto_deploy: true,
+              metadata,
             });
             deployment = result.data;
             webhookSecret = result.webhook_secret;
             createSpinner.succeed(
-              `Deployment "${deployment.name}" created (slug: ${deployment.slug})`,
+              `${productLabel(deploymentProduct(deployment))} deployment "${deployment.name}" created (slug: ${deployment.slug})`,
             );
           } catch (err) {
             createSpinner.fail("Failed to create deployment");
@@ -467,6 +491,14 @@ Examples:
             console.log(chalk.green("  Deployed"));
             console.log();
             console.log(`  ${chalk.bold("URL:")}    ${chalk.cyan(url ?? "—")}`);
+            console.log(
+              `  ${chalk.bold("Type:")}   ${productLabel(deploymentProduct(dep))}`,
+            );
+            if (dep.docker_deploy_host_id) {
+              console.log(
+                `  ${chalk.bold("Host:")}   ${chalk.dim(dep.docker_deploy_host_id)}`,
+              );
+            }
             console.log();
             console.log(chalk.dim("  Next steps:"));
             console.log(
@@ -563,6 +595,11 @@ Examples:
           renderTable(deployments, [
             { header: "ID", key: (d) => d.id.slice(0, 8), width: 10 },
             { header: "NAME", key: "name", width: 24 },
+            {
+              header: "TYPE",
+              key: (d) => productLabel(deploymentProduct(d)),
+              width: 14,
+            },
             { header: "SLUG", key: "slug", width: 24 },
             { header: "BRANCH", key: "branch", width: 12 },
             {
@@ -639,7 +676,14 @@ Examples:
           kvPanel([
             { label: "id", value: chalk.dim(dep.id) },
             { label: "name", value: chalk.bold(dep.name) },
+            { label: "type", value: productLabel(deploymentProduct(dep)) },
             { label: "state", value: colorizeState(dep.state) },
+            {
+              label: "docker_deploy_host_id",
+              value: dep.docker_deploy_host_id
+                ? chalk.dim(dep.docker_deploy_host_id)
+                : chalk.dim("—"),
+            },
             {
               label: "current_build_id",
               value: dep.current_build_id

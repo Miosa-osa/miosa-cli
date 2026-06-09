@@ -220,6 +220,11 @@ export interface Deployment {
   state: DeploymentState;
   auto_deploy: boolean;
   custom_domain_id: string | null;
+  deployment_product?: "miosa_deploy" | "docker_deploy" | string | null;
+  docker_deploy_host_id?: string | null;
+  external_workspace_id?: string | null;
+  external_user_id?: string | null;
+  external_project_id?: string | null;
   public_url?: string | null;
   auto_subdomain?: string | null;
   metadata: Record<string, unknown>;
