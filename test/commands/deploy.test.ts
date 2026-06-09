@@ -251,6 +251,67 @@ describe("miosa deploy list", () => {
   });
 });
 
+describe("miosa deploy metrics", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("fetches deployment metrics as raw JSON", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep-0000-0000-0000-000000000001/metrics?window=7d",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          resource_type: "deployment",
+          deployment_id: "dep-0000-0000-0000-000000000001",
+          window: "7d",
+          current: {
+            state: "running",
+            runtime_instances: { total: 1, active: 1, healthy: 1 },
+            usage: { runtime_sec: 60, cost_cents: 1 },
+          },
+          series: { runtime_instance_count: [] },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "metrics",
+      "dep-0000-0000-0000-000000000001",
+      "--window",
+      "7d",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["resource_type"]).toBe("deployment");
+    expect(parsed["current"]).toEqual(
+      expect.objectContaining({ state: "running" }),
+    );
+  });
+});
+
 // ── deploy redeploy ───────────────────────────────────────────────────────────
 
 describe("miosa deploy redeploy", () => {
@@ -539,6 +600,137 @@ describe("miosa deploy (main action) — error scenarios", () => {
 
     expect(errored.join(" ")).toContain("remote");
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+// ── deploy (main action) — Docker Deploy ─────────────────────────────────────
+
+describe("miosa deploy --docker-deploy", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("creates a deployment with docker_deploy metadata", async () => {
+    const { execSync } = await import("node:child_process");
+    vi.mocked(execSync).mockReset();
+    vi.mocked(execSync).mockImplementation((cmd) => {
+      const command = String(cmd);
+      if (command.includes("rev-parse --git-dir")) return Buffer.from(".git");
+      if (command.includes("remote get-url origin")) {
+        return "https://github.com/acme/app.git\n";
+      }
+      if (command.includes("rev-parse --abbrev-ref HEAD")) {
+        return "main\n";
+      }
+      return Buffer.from("");
+    });
+
+    const inquirer = await import("inquirer");
+    vi.mocked(inquirer.default.prompt).mockResolvedValueOnce({
+      name: "docker-app",
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      confirm: true,
+    });
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const dockerDeployment: Deployment = {
+      ...mockDeployment,
+      name: "docker-app",
+      slug: "docker-app",
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: "ddh_123",
+    };
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({
+        path: "/api/v1/deployments",
+        method: "POST",
+        body: JSON.stringify({
+          name: "docker-app",
+          repo_url: "https://github.com/acme/app",
+          branch: "main",
+          build_command: "npm run build",
+          run_command: "npm start",
+          auto_deploy: true,
+          metadata: { deployment_product: "docker_deploy" },
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: dockerDeployment,
+          webhook_secret: "whsec_test",
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+        method: "POST",
+      })
+      .reply(202, JSON.stringify({ data: mockBuild }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/logs`,
+        method: "GET",
+      })
+      .reply(200, buildSseBody(['data: {"type":"done"}']), {
+        headers: { "content-type": "text/event-stream" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: dockerDeployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: "/api/v1/platform/tenants/current",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: mockTenant }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("Docker Deploy");
+    expect(output).toContain("ddh_123");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 });
 

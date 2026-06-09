@@ -45,6 +45,7 @@ interface CapabilitiesManifest {
   };
   contract: {
     json_output: string;
+    resource_inputs: string;
     errors: {
       shape: {
         ok: false;
@@ -99,6 +100,8 @@ const manifest: CapabilitiesManifest = {
   contract: {
     json_output:
       "Prefer --json or MIOSA_JSON=1. Human spinners and tables are suppressed in agent-facing paths that support JSON.",
+    resource_inputs:
+      "Resource create/update commands that use the generic request-body path accept --data '<json>', --input '<json-or-yaml>', or --file ./resource.yml.",
     errors: {
       shape: {
         ok: false,
@@ -161,6 +164,8 @@ const manifest: CapabilitiesManifest = {
         "Use sandbox deploy for preview readiness.",
         "Use sandbox publish to promote to durable app hosting.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
+        "Use miosa sandbox ports <sandbox-id> --json before previewing to detect port conflicts.",
+        "Use miosa sandbox metrics <sandbox-id> --json for readiness, timeout, and resource diagnostics.",
       ],
     },
     {
@@ -190,6 +195,7 @@ const manifest: CapabilitiesManifest = {
       delete: "miosa apps destroy <app-id-or-slug> --force --json",
       notes: [
         "Default URL should work independently of custom-domain DNS state.",
+        "Use miosa deploy metrics <app-id> --json to inspect runtime instances, health timestamps, restarts, and usage.",
       ],
     },
     {
@@ -207,6 +213,7 @@ const manifest: CapabilitiesManifest = {
         "Use miosa databases wait <db-id> --ready --timeout 120 --json before attaching.",
         "Use start/stop/restart for explicit lifecycle recovery.",
         "Agents should smoke-test recommended/proxy connect URLs before marking app/database flows ready.",
+        "Use miosa databases metrics <db-id> --json for resource and uptime diagnostics.",
       ],
     },
     {
@@ -588,16 +595,44 @@ const manifest: CapabilitiesManifest = {
           purpose: "Filter sandbox logs by regex for automated diagnostics.",
           json: true,
         },
+        {
+          command: "miosa sandbox ports <sandbox-id> --json",
+          purpose:
+            "List backend-detected listening ports before exposing or diagnosing preview conflicts.",
+          json: true,
+        },
+        {
+          command: "miosa sandbox metrics <sandbox-id> --json",
+          purpose:
+            "Read sandbox state, readiness, timeout, boot, IP, and resource metrics.",
+          json: true,
+        },
+        {
+          command: "miosa deploy metrics <app-id> --json",
+          purpose:
+            "Read deployment runtime instance health, restarts, usage, and heartbeat data.",
+          json: true,
+        },
+        {
+          command: "miosa databases metrics <db-id> --json",
+          purpose:
+            "Read managed database state, engine, resource size, endpoint, and uptime data.",
+          json: true,
+        },
       ],
       success_signals: [
         "exec exit_code 0",
         "logs JSON parses",
         "logs.count reflects filtered line count",
+        "ports JSON parses and expected app port appears",
+        "metrics JSON parses and current.state matches resource state",
       ],
       failure_signals: [
         "unknown option from command flags",
         "empty logs during known failure",
         "regex syntax error",
+        "port occupied by platform/service instead of app process",
+        "metrics current state disagrees with show/status output",
       ],
     },
     {

@@ -825,16 +825,12 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(async () => {
-        const c = client();
-        const result = await execSandboxRaw(
-          c,
-          id,
-          "ss -ltnH 2>/dev/null || cat /proc/net/tcp /proc/net/tcp6 2>/dev/null",
+        const result = await client().apiGet<unknown>(
+          apiPath(`/sandboxes/${enc(id)}/ports`),
         );
-        const stdout = String(result["stdout"] ?? "");
-        const ports = parseListeningPorts(stdout);
+        const ports = sandboxPortsFromResponse(result);
         if (isJsonMode(opts)) {
-          console.log(JSON.stringify(ports, null, 2));
+          console.log(JSON.stringify(result, null, 2));
           return;
         }
         if (ports.length === 0) {
@@ -842,6 +838,11 @@ export function register(program: Command): void {
           return;
         }
         renderTable(ports, [
+          {
+            header: "PROTO",
+            key: (p) => p.protocol ?? "tcp",
+            width: 8,
+          },
           {
             header: "PORT",
             key: "port" as keyof PortBinding,
@@ -852,7 +853,38 @@ export function register(program: Command): void {
             key: "address" as keyof PortBinding,
             width: 24,
           },
+          {
+            header: "STATE",
+            key: (p) => p.state ?? "listen",
+            width: 10,
+          },
+          {
+            header: "PROCESS",
+            key: (p) =>
+              p.process?.name
+                ? `${p.process.name}${p.process.pid ? `:${p.process.pid}` : ""}`
+                : chalk.dim("-"),
+            width: 28,
+          },
         ]);
+      }),
+    );
+
+  sandbox
+    .command("metrics <sandbox-id>")
+    .description("Show Sandbox resource, uptime, timeout, and readiness metrics")
+    .option("--window <window>", "Metrics window: 1h, 24h, or 7d", "1h")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions & { window: string }) =>
+      runAction(async () => {
+        const result = await client().apiGet<unknown>(
+          apiPath(`/sandboxes/${enc(id)}/metrics?window=${enc(opts.window)}`),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        renderResourceMetrics("Sandbox metrics", result);
       }),
     );
 
@@ -3368,41 +3400,104 @@ async function execSandboxRaw(
 interface PortBinding {
   port: number;
   address: string;
+  protocol?: string;
+  state?: string;
+  process?: {
+    name?: string;
+    pid?: number;
+  } | null;
 }
 
-function parseListeningPorts(stdout: string): PortBinding[] {
-  const lines = stdout.split("\n").map((l) => l.trim());
-  const seen = new Set<number>();
-  const out: PortBinding[] = [];
-
-  // ss -ltnH columns: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port
-  const ssLine = /^LISTEN\s+\d+\s+\d+\s+(\S+):(\d+)\s+/;
-  // /proc/net/tcp: sl local_address rem_address st ... (hex)
-  const procLine =
-    /^\d+:\s+([0-9A-Fa-f]+):([0-9A-Fa-f]+)\s+\S+\s+([0-9A-Fa-f]+)/;
-
-  for (const line of lines) {
-    if (!line) continue;
-    const ss = ssLine.exec(line);
-    if (ss && ss[2]) {
-      const port = Number(ss[2]);
-      if (!seen.has(port)) {
-        seen.add(port);
-        out.push({ port, address: ss[1] ?? "*" });
-      }
-      continue;
-    }
-    const proc = procLine.exec(line);
-    if (proc && proc[3] === "0A" && proc[2]) {
-      const port = parseInt(proc[2], 16);
-      if (!Number.isNaN(port) && !seen.has(port)) {
-        seen.add(port);
-        out.push({ port, address: "*" });
-      }
-    }
+function sandboxPortsFromResponse(raw: unknown): PortBinding[] {
+  const root = unwrap(raw);
+  if (Array.isArray(root)) return root as PortBinding[];
+  if (root && typeof root === "object") {
+    const row = root as Record<string, unknown>;
+    if (Array.isArray(row["ports"])) return row["ports"] as PortBinding[];
+    if (Array.isArray(row["data"])) return row["data"] as PortBinding[];
   }
-  out.sort((a, b) => a.port - b.port);
-  return out;
+  return [];
+}
+
+function renderResourceMetrics(title: string, raw: unknown): void {
+  const root = unwrap(raw);
+  if (!root || typeof root !== "object") {
+    printValue(root, {});
+    return;
+  }
+
+  const row = root as Record<string, unknown>;
+  const current =
+    row["current"] && typeof row["current"] === "object"
+      ? (row["current"] as Record<string, unknown>)
+      : {};
+
+  printBanner({ subtitle: title });
+  console.log(
+    kvPanel([
+      { label: "resource_id", value: String(row["resource_id"] ?? row["sandbox_id"] ?? "-") },
+      { label: "window", value: String(row["window"] ?? "1h") },
+      { label: "state", value: formatState(current["state"]) },
+      { label: "ready", value: formatBool(current["ready"]) },
+      { label: "cpu", value: formatMaybe(current["cpu_count"]) },
+      { label: "memory", value: formatMb(current["memory_mb"]) },
+      { label: "disk", value: formatMb(current["disk_size_mb"]) },
+      { label: "uptime", value: formatSeconds(current["uptime_sec"]) },
+      {
+        label: "timeout_remaining",
+        value: formatSecondsOrAlwaysOn(current["timeout_remaining_sec"]),
+      },
+      { label: "node", value: formatMaybe(current["node_id"]) },
+      { label: "ip", value: formatMaybe(current["ip_address"]) },
+      { label: "boot", value: formatMs(current["boot_ms"]) },
+      { label: "envd_ready", value: formatMs(current["envd_ready_ms"]) },
+    ]),
+  );
+}
+
+function formatState(value: unknown): string {
+  const state = String(value ?? "unknown");
+  if (["running", "active", "healthy", "ready"].includes(state)) {
+    return chalk.green(state);
+  }
+  if (["provisioning", "starting", "building", "pending"].includes(state)) {
+    return chalk.yellow(state);
+  }
+  if (["failed", "error", "unhealthy"].includes(state)) {
+    return chalk.red(state);
+  }
+  return state;
+}
+
+function formatBool(value: unknown): string {
+  if (value === true) return chalk.green("true");
+  if (value === false) return chalk.red("false");
+  return chalk.dim("-");
+}
+
+function formatMaybe(value: unknown): string {
+  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  return String(value);
+}
+
+function formatMb(value: unknown): string {
+  if (typeof value !== "number") return formatMaybe(value);
+  return formatBytes(value * 1024 * 1024);
+}
+
+function formatMs(value: unknown): string {
+  if (typeof value !== "number") return formatMaybe(value);
+  return `${value}ms`;
+}
+
+function formatSeconds(value: unknown): string {
+  if (typeof value !== "number") return formatMaybe(value);
+  return formatDuration(value * 1000);
+}
+
+function formatSecondsOrAlwaysOn(value: unknown): string {
+  if (value === null || value === undefined) return chalk.dim("always-on/none");
+  return formatSeconds(value);
 }
 
 // Stream exec output: run in background to a log file, poll-read new bytes

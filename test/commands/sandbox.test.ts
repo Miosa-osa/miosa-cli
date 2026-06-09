@@ -372,6 +372,120 @@ describe("miosa sandbox env", () => {
   });
 });
 
+describe("miosa sandbox observability", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("lists backend-detected listening ports as JSON", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/ports",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          sandbox_id: "sbx_123",
+          count: 1,
+          ports: [
+            {
+              protocol: "tcp",
+              state: "listen",
+              address: "0.0.0.0",
+              port: 3000,
+              process: { name: "next-server", pid: 123 },
+            },
+          ],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "ports",
+      "sbx_123",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["count"]).toBe(1);
+    expect(parsed["ports"]).toEqual(
+      expect.arrayContaining([expect.objectContaining({ port: 3000 })]),
+    );
+  });
+
+  it("fetches sandbox metrics from the backend endpoint", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/metrics?window=24h",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          resource_type: "sandbox",
+          sandbox_id: "sbx_123",
+          window: "24h",
+          current: {
+            state: "running",
+            ready: true,
+            cpu_count: 2,
+            memory_mb: 2048,
+          },
+          series: { cpu_percent: [], memory_mb: [] },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "metrics",
+      "sbx_123",
+      "--window",
+      "24h",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["resource_type"]).toBe("sandbox");
+    expect(parsed["current"]).toEqual(
+      expect.objectContaining({ state: "running", ready: true }),
+    );
+  });
+});
+
 describe("miosa sandbox db", () => {
   beforeEach(() => {
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
