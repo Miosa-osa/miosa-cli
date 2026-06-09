@@ -338,7 +338,9 @@ export function register(program: Command): void {
   const deploy = program
     .command("deploy")
     .alias("launch")
-    .description("Deploy a GitHub repo; use --docker-deploy for the recommended production runtime")
+    .description(
+      "Deploy a GitHub repo; use --docker-deploy for the recommended production runtime",
+    )
     .option(
       "--docker-deploy",
       "Create the deployment on this workspace's dedicated Docker Deploy runtime",
