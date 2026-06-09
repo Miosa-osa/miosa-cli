@@ -19,6 +19,25 @@ interface ResourceHint {
   id: string;
 }
 
+interface LogLine {
+  line: string;
+  timestamp?: string;
+  stream?: string;
+  raw?: unknown;
+}
+
+interface LogFilterOptions {
+  lines?: number;
+  tail?: number;
+  startTime?: string;
+  contains?: string;
+  textIncludes?: string;
+  textNotIncludes?: string;
+  regex?: string;
+  regexIncludes?: string;
+  regexNotIncludes?: string;
+}
+
 /**
  * Auto-detect whether a resource ID belongs to a deployment, computer, or sandbox
  * by probing each API in order of likelihood. Falls back to deployment logs.
@@ -81,7 +100,38 @@ async function resolveAppId(
   }
 }
 
-function printMachineLogs(payload: unknown, json: boolean): void {
+function printMachineLogs(
+  payload: unknown,
+  json: boolean,
+  filters: LogFilterOptions = {},
+): void {
+  if (hasLogFilters(filters)) {
+    const logs = filterLogLines(extractLogLines(payload), filters);
+    if (json) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            count: logs.length,
+            logs: logs.map((entry) => ({
+              line: entry.line,
+              timestamp: entry.timestamp,
+              stream: entry.stream,
+            })),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    for (const entry of logs) {
+      const prefix = entry.timestamp ? `${chalk.dim(entry.timestamp)} ` : "";
+      console.log(`${prefix}${entry.line}`);
+    }
+    return;
+  }
+
   if (json) {
     console.log(JSON.stringify(payload, null, 2));
     return;
@@ -100,23 +150,25 @@ function printMachineLogs(payload: unknown, json: boolean): void {
 async function printDeploymentLogsJson(
   client: MiosaClient,
   deploymentId: string,
+  filters: LogFilterOptions = {},
 ): Promise<void> {
   const payload = await client.apiGet<unknown>(
     `/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`,
   );
-  printMachineLogs(payload, true);
+  printMachineLogs(payload, true, filters);
 }
 
 async function streamSse(
   res: Awaited<ReturnType<MiosaClient["streamDeploymentLogs"]>>,
+  filters: LogFilterOptions = {},
 ): Promise<void> {
   for await (const event of parseSse(res.body)) {
     switch (event.type) {
       case "stdout":
-        process.stdout.write(event.data);
+        writeFilteredLogChunk(process.stdout, event.data, filters);
         break;
       case "stderr":
-        process.stderr.write(chalk.red(event.data));
+        writeFilteredLogChunk(process.stderr, event.data, filters, true);
         break;
       case "error":
         console.error(chalk.red(event.message));
@@ -129,9 +181,9 @@ async function streamSse(
           if (typeof parsed["line"] === "string") {
             const line = parsed["line"];
             if (parsed["stream"] === "stderr") {
-              process.stderr.write(chalk.red(line) + "\n");
+              writeFilteredLogChunk(process.stderr, line + "\n", filters, true);
             } else {
-              process.stdout.write(line + "\n");
+              writeFilteredLogChunk(process.stdout, line + "\n", filters);
             }
           }
         } catch {
@@ -141,6 +193,120 @@ async function streamSse(
       default:
         break;
     }
+  }
+}
+
+function hasLogFilters(filters: LogFilterOptions): boolean {
+  return Boolean(
+    filters.lines != null ||
+      filters.tail != null ||
+      filters.startTime ||
+      filters.contains ||
+      filters.textIncludes ||
+      filters.textNotIncludes ||
+      filters.regex ||
+      filters.regexIncludes ||
+      filters.regexNotIncludes,
+  );
+}
+
+function extractLogLines(payload: unknown): LogLine[] {
+  if (payload == null) return [];
+  if (typeof payload === "string") {
+    return payload
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0)
+      .map((line) => ({ line }));
+  }
+  if (Array.isArray(payload)) {
+    return payload.flatMap((item) => extractLogLines(item));
+  }
+  if (typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    for (const key of ["data", "logs", "lines", "items", "events"]) {
+      if (Array.isArray(obj[key]) || typeof obj[key] === "string") {
+        return extractLogLines(obj[key]);
+      }
+    }
+
+    const lineValue =
+      obj["line"] ?? obj["log"] ?? obj["message"] ?? obj["text"] ?? obj["stdout"];
+    const stderrValue = obj["stderr"];
+    if (typeof lineValue === "string") {
+      return splitLogText(lineValue, {
+        timestamp: stringish(obj["timestamp"] ?? obj["ts"] ?? obj["time"] ?? obj["t"]),
+        stream: stringish(obj["stream"]),
+        raw: payload,
+      });
+    }
+    if (typeof stderrValue === "string") {
+      return splitLogText(stderrValue, {
+        timestamp: stringish(obj["timestamp"] ?? obj["ts"] ?? obj["time"] ?? obj["t"]),
+        stream: "stderr",
+        raw: payload,
+      });
+    }
+    return [{ line: JSON.stringify(payload), raw: payload }];
+  }
+  return [{ line: String(payload), raw: payload }];
+}
+
+function splitLogText(
+  text: string,
+  meta: Omit<LogLine, "line"> = {},
+): LogLine[] {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0)
+    .map((line) => ({ ...meta, line }));
+}
+
+function stringish(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  return String(value);
+}
+
+function filterLogLines(lines: LogLine[], filters: LogFilterOptions): LogLine[] {
+  const includes = filters.contains ?? filters.textIncludes;
+  const regexIncludes = filters.regex ?? filters.regexIncludes;
+  const includeRe = regexIncludes ? new RegExp(regexIncludes) : null;
+  const excludeRe = filters.regexNotIncludes
+    ? new RegExp(filters.regexNotIncludes)
+    : null;
+  const startMs = filters.startTime ? Date.parse(filters.startTime) : NaN;
+  let out = lines.filter((entry) => {
+    if (Number.isFinite(startMs) && entry.timestamp) {
+      const entryMs = Date.parse(entry.timestamp);
+      if (Number.isFinite(entryMs) && entryMs < startMs) return false;
+    }
+    if (includes && !entry.line.includes(includes)) return false;
+    if (filters.textNotIncludes && entry.line.includes(filters.textNotIncludes)) {
+      return false;
+    }
+    if (includeRe && !includeRe.test(entry.line)) return false;
+    if (excludeRe && excludeRe.test(entry.line)) return false;
+    return true;
+  });
+  const limit = filters.tail ?? filters.lines;
+  if (limit != null && limit >= 0) {
+    out = out.slice(-limit);
+  }
+  return out;
+}
+
+function writeFilteredLogChunk(
+  stream: NodeJS.WriteStream,
+  data: string,
+  filters: LogFilterOptions,
+  red = false,
+): void {
+  if (!hasLogFilters(filters)) {
+    stream.write(red ? chalk.red(data) : data);
+    return;
+  }
+  const lines = filterLogLines(splitLogText(data), filters);
+  for (const entry of lines) {
+    stream.write((red ? chalk.red(entry.line) : entry.line) + "\n");
   }
 }
 
@@ -154,6 +320,16 @@ export function register(program: Command): void {
     )
     .option("--machine <id>", "Explicitly fetch logs for a computer/machine")
     .option("--sandbox <id>", "Explicitly fetch logs for a sandbox")
+    .option("--deployment <id>", "Explicitly fetch logs for a deployment/app")
+    .option("-l, --lines <n>", "Limit one-shot output to the last N lines", parsePositiveInt)
+    .option("--tail <n>", "Alias for --lines", parsePositiveInt)
+    .option("--start-time <timestamp>", "Only include log lines at or after this timestamp")
+    .option("--contains <text>", "Only include log lines containing this text")
+    .option("--text-includes <text>", "Alias for --contains")
+    .option("--text-not-includes <text>", "Exclude log lines containing this text")
+    .option("--regex <pattern>", "Only include log lines matching this regex")
+    .option("--regex-includes <pattern>", "Alias for --regex")
+    .option("--regex-not-includes <pattern>", "Exclude log lines matching this regex")
     .option("--json", "Output raw JSON")
     .option("-f, --follow", "Open live TUI log tail (requires a TTY)")
     .addHelpText(
@@ -166,6 +342,10 @@ Examples:
   miosa logs <sandbox-id>             Stream sandbox logs (auto-detected)
   miosa logs --machine <id>           Explicit computer logs
   miosa logs --sandbox <id>           Explicit sandbox logs
+  miosa logs --deployment <id>        Explicit deployment logs
+  miosa logs <id> --lines 100         Print recent log lines
+  miosa logs <id> --contains error    Filter log lines by text
+  miosa logs <id> --regex "500|panic" Filter log lines by regex
   miosa logs <id> --follow            Live TUI tail (interactive)
   miosa logs <id> -f                  Same as --follow
 `,
@@ -176,16 +356,18 @@ Examples:
         opts: {
           machine?: string;
           sandbox?: string;
+          deployment?: string;
           json?: boolean;
           follow?: boolean;
-        },
+        } & LogFilterOptions,
       ) => {
         try {
           const config = loadConfig();
           const client = new MiosaClient(config);
+          const filters: LogFilterOptions = opts;
 
           // ── --follow: mount ink TUI ───────────────────────────────────────
-          if (opts.follow) {
+          if (opts.follow && !hasLogFilters(filters)) {
             if (!process.stdout.isTTY) {
               console.log();
               console.log(
@@ -242,12 +424,27 @@ Examples:
             return;
           }
 
+          if (opts.deployment) {
+            if (isJsonMode(opts)) {
+              await printDeploymentLogsJson(client, opts.deployment, filters);
+              return;
+            }
+            console.log(
+              chalk.dim(`Streaming deployment logs for ${opts.deployment}...`),
+            );
+            const res = await client.streamDeploymentLogs(
+              opts.deployment as Deployment["id"],
+            );
+            await streamSse(res, filters);
+            return;
+          }
+
           // ── Explicit computer flag ────────────────────────────────────────
           if (opts.machine) {
             const payload = await client.apiGet<unknown>(
               `/api/v1/computers/${encodeURIComponent(opts.machine)}/logs`,
             );
-            printMachineLogs(payload, isJsonMode(opts));
+            printMachineLogs(payload, isJsonMode(opts), filters);
             return;
           }
 
@@ -256,7 +453,7 @@ Examples:
             const payload = await client.apiGet<unknown>(
               `/api/v1/sandboxes/${encodeURIComponent(opts.sandbox)}/logs`,
             );
-            printMachineLogs(payload, isJsonMode(opts));
+            printMachineLogs(payload, isJsonMode(opts), filters);
             return;
           }
 
@@ -274,7 +471,7 @@ Examples:
                 const payload = await client.apiGet<unknown>(
                   `/api/v1/computers/${encodeURIComponent(hint.id)}/logs`,
                 );
-                printMachineLogs(payload, isJsonMode(opts));
+                printMachineLogs(payload, isJsonMode(opts), filters);
                 return;
               }
               case "sandbox": {
@@ -286,12 +483,12 @@ Examples:
                 const payload = await client.apiGet<unknown>(
                   `/api/v1/sandboxes/${encodeURIComponent(hint.id)}/logs`,
                 );
-                printMachineLogs(payload, isJsonMode(opts));
+                printMachineLogs(payload, isJsonMode(opts), filters);
                 return;
               }
               case "deployment": {
                 if (isJsonMode(opts)) {
-                  await printDeploymentLogsJson(client, hint.id);
+                  await printDeploymentLogsJson(client, hint.id, filters);
                   return;
                 }
                 console.log(
@@ -300,7 +497,7 @@ Examples:
                 const res = await client.streamDeploymentLogs(
                   hint.id as Deployment["id"],
                 );
-                await streamSse(res);
+                await streamSse(res, filters);
                 return;
               }
             }
@@ -309,15 +506,23 @@ Examples:
           // ── No ID — fall back to .miosa.json linked deployment ────────────
           const deploymentId = await resolveAppId(client, undefined);
           if (isJsonMode(opts)) {
-            await printDeploymentLogsJson(client, deploymentId);
+            await printDeploymentLogsJson(client, deploymentId, filters);
             return;
           }
           console.log(chalk.dim(`Streaming logs for ${deploymentId}...`));
           const res = await client.streamDeploymentLogs(deploymentId);
-          await streamSse(res);
+          await streamSse(res, filters);
         } catch (err) {
           handleError(err);
         }
       },
     );
+}
+
+function parsePositiveInt(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new UserError(`Invalid integer: ${value}`);
+  }
+  return parsed;
 }
