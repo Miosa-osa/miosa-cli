@@ -147,6 +147,26 @@ Discover the full agent contract with:
 miosa capabilities --json
 ```
 
+### Agent-safe exec and logs
+
+Use explicit command flags when a command contains shell flags, pipes, redirects,
+or `bash -c` style arguments:
+
+```bash
+miosa sandbox exec <sandbox-id> \
+  --cwd /workspace \
+  --cmd "npm install && npm run build" \
+  --shell-cmd "bash -lc" \
+  --json
+```
+
+Top-level logs can target a resource explicitly and filter recent output:
+
+```bash
+miosa logs --deployment <app-id> --lines 200 --contains error --json
+miosa logs --sandbox <sandbox-id> --regex "500|panic|failed" --json
+```
+
 ### Deploy sub-commands
 
 ```bash

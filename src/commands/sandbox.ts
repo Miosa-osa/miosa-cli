@@ -597,6 +597,15 @@ export function register(program: Command): void {
       .option("--cwd <path>", "Working directory inside the Sandbox")
       .option("--workdir <path>", "Alias for --cwd")
       .option(
+        "--cmd <command>",
+        "Explicit command string to run; avoids CLI parsing command flags",
+      )
+      .option("--command <command>", "Alias for --cmd")
+      .option(
+        "--shell-cmd <shell>",
+        "Run --cmd through this shell, e.g. 'bash -lc'",
+      )
+      .option(
         "--env <pair>",
         "Environment variable KEY=VALUE. Repeatable.",
         collectOption,
@@ -632,6 +641,9 @@ export function register(program: Command): void {
         opts: DataOptions & {
           cwd?: string;
           workdir?: string;
+          cmd?: string;
+          command?: string;
+          shellCmd?: string;
           env?: string[];
           background?: boolean;
           detached?: boolean;
@@ -650,7 +662,7 @@ export function register(program: Command): void {
             await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
             return;
           }
-          const cmd = joinCommandWords(words);
+          const cmd = resolveSandboxCommand(words, opts);
           const effectiveCommand = opts.background
             ? backgroundCommand(cmd)
             : cmd;
@@ -664,7 +676,7 @@ export function register(program: Command): void {
           }
           const env = parseEnvPairs(opts.env ?? []);
           if (opts.detached) {
-            const result = await createSandboxCommand(id, words.join(" "), {
+            const result = await createSandboxCommand(id, cmd, {
               cwd,
               env,
               user: opts.user,
@@ -702,6 +714,15 @@ export function register(program: Command): void {
       .option("--cwd <path>", "Working directory inside the Sandbox")
       .option("--workdir <path>", "Alias for --cwd")
       .option(
+        "--cmd <command>",
+        "Explicit command string to run; avoids CLI parsing command flags",
+      )
+      .option("--command <command>", "Alias for --cmd")
+      .option(
+        "--shell-cmd <shell>",
+        "Run --cmd through this shell, e.g. 'bash -lc'",
+      )
+      .option(
         "--env <pair>",
         "Environment variable KEY=VALUE. Repeatable.",
         collectOption,
@@ -737,6 +758,9 @@ export function register(program: Command): void {
         opts: DataOptions & {
           cwd?: string;
           workdir?: string;
+          cmd?: string;
+          command?: string;
+          shellCmd?: string;
           env?: string[];
           background?: boolean;
           detached?: boolean;
@@ -755,7 +779,7 @@ export function register(program: Command): void {
             await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
             return;
           }
-          const cmd = joinCommandWords(words);
+          const cmd = resolveSandboxCommand(words, opts);
           const effectiveCommand = opts.background
             ? backgroundCommand(cmd)
             : cmd;
@@ -769,7 +793,7 @@ export function register(program: Command): void {
           }
           const env = parseEnvPairs(opts.env ?? []);
           if (opts.detached) {
-            const result = await createSandboxCommand(id, words.join(" "), {
+            const result = await createSandboxCommand(id, cmd, {
               cwd,
               env,
               user: opts.user,
@@ -3801,6 +3825,18 @@ function backgroundCommand(command: string): string {
   if (!command.trim()) return command;
   const logPath = `/tmp/miosa-bg-${Date.now()}.log`;
   return `nohup sh -lc ${shellQuote(command)} > ${shellQuote(logPath)} 2>&1 & echo $!`;
+}
+
+function resolveSandboxCommand(
+  words: string[],
+  opts: { cmd?: string; command?: string; shellCmd?: string },
+): string {
+  const positional =
+    words.length === 1 ? (words[0] ?? "") : joinCommandWords(words);
+  const cmd = opts.cmd ?? opts.command ?? positional;
+  if (!opts.shellCmd) return cmd;
+  if (!cmd.trim()) return opts.shellCmd;
+  return `${opts.shellCmd} ${shellQuote(cmd)}`;
 }
 
 function collectOption(value: string, previous: string[]): string[] {

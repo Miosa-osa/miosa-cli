@@ -556,6 +556,51 @@ const manifest: CapabilitiesManifest = {
       ],
     },
     {
+      id: "operational_debugging",
+      title: "Inspect Logs And Exec Safely",
+      goal: "Give agents parser-safe command execution and filtered logs for app/debug loops.",
+      status: "stable",
+      steps: [
+        {
+          command:
+            'miosa sandbox exec <sandbox-id> --cwd /workspace --cmd "npm run build" --json',
+          purpose:
+            "Run a command string without requiring -- separator or argv reconstruction.",
+          json: true,
+        },
+        {
+          command:
+            'miosa sandbox exec <sandbox-id> --cwd /workspace --cmd "npm install && npm run build" --shell-cmd "bash -lc" --json',
+          purpose:
+            "Run shell expressions, pipes, redirects, and chained commands explicitly.",
+          json: true,
+        },
+        {
+          command:
+            'miosa logs --deployment <app-id> --lines 200 --contains error --json',
+          purpose:
+            "Fetch recent deployment logs filtered for a specific text signal.",
+          json: true,
+        },
+        {
+          command:
+            'miosa logs --sandbox <sandbox-id> --regex "500|panic|failed" --json',
+          purpose: "Filter sandbox logs by regex for automated diagnostics.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "exec exit_code 0",
+        "logs JSON parses",
+        "logs.count reflects filtered line count",
+      ],
+      failure_signals: [
+        "unknown option from command flags",
+        "empty logs during known failure",
+        "regex syntax error",
+      ],
+    },
+    {
       id: "safe_workspace_cleanup",
       title: "Safe Workspace Cleanup",
       goal: "Inventory and remove test resources without deleting unrelated customer resources.",

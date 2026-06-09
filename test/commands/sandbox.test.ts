@@ -108,6 +108,46 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("supports --cmd and --shell-cmd for parser-safe shell execution", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const expectedBody = JSON.stringify({
+      command: "bash -lc 'cd /workspace && npm install'",
+      cwd: "/workspace",
+      dir: "/workspace",
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "ok\n" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_123",
+      "--cwd",
+      "/workspace",
+      "--cmd",
+      "cd /workspace && npm install",
+      "--shell-cmd",
+      "bash -lc",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("creates a durable command for detached exec with workdir and env", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
