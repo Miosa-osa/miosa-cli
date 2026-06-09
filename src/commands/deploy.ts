@@ -338,7 +338,7 @@ export function register(program: Command): void {
   const deploy = program
     .command("deploy")
     .alias("launch")
-    .description("Deploy a GitHub repo to MIOSA Deploy")
+    .description("Deploy a GitHub repo; use --docker-deploy for the recommended production runtime")
     .option(
       "--docker-deploy",
       "Create the deployment on this workspace's dedicated Docker Deploy runtime",
@@ -347,8 +347,8 @@ export function register(program: Command): void {
       "after",
       `
 Examples:
+  miosa deploy --docker-deploy       Recommended: deploy current directory to Docker Deploy
   miosa deploy                       Deploy current directory (auto-detects framework)
-  miosa deploy --docker-deploy       Deploy current directory to Docker Deploy
   miosa deploy list                  List all deployments
   miosa deploy logs                  Tail build logs for this project
   miosa deploy redeploy              Trigger a new build

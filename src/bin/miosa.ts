@@ -99,6 +99,7 @@ Examples:
   miosa up                                      Smart launch (auto-detects context)
   miosa up --computer --os ubuntu               Create a desktop computer
   miosa up --sandbox --image python-3.12        Create a sandbox
+  miosa deploy --docker-deploy                  Recommended production deploy
   miosa deploy                                  Deploy a GitHub repo (60s)
   miosa update                                  Update @miosa/cli to latest
   miosa status                                  Show auth and account info

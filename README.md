@@ -46,10 +46,15 @@ contract.
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
 
+For production app hosting, MIOSA recommends Docker Deploy. It runs apps on the
+workspace Docker Deploy runtime, which is the preferred path for teams deploying
+many apps because it gives better runtime packing and lower resource overhead
+than one-off app runtimes.
+
 ```
 $ cd ~/my-project
 $ miosa login
-$ miosa deploy
+$ miosa deploy --docker-deploy
 
   Detected: Next.js 15 (confidence 95%)
   Repo:     https://github.com/me/my-project
@@ -101,6 +106,21 @@ miosa deploy
 
 # Or explicitly
 miosa deploy redeploy
+```
+
+For apps built inside a sandbox, promote the sandbox workspace through Docker Deploy:
+
+```bash
+miosa sandbox publish <sandbox-id> \
+  --path /workspace \
+  --slug my-app \
+  --build-command "npm run build" \
+  --run-command "npm run start" \
+  --port 3000 \
+  --docker-deploy \
+  --wait \
+  --timeout 900 \
+  --json
 ```
 
 ## Agentic sandbox app templates
@@ -249,6 +269,7 @@ Precedence: CLI flags > environment variables > config file > interactive prompt
 Deploy a GitHub repo. See the [Deploy section](#deploy--60-seconds-to-first-deploy) above for the full flow.
 
 ```bash
+miosa deploy --docker-deploy             # Recommended production deploy
 miosa deploy                             # First deploy or redeploy from .miosa.json
 miosa deploy list [--json]               # List all deployments
 miosa deploy logs [id]                   # Tail live build logs

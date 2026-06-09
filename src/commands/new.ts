@@ -95,7 +95,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     ],
     next: [
       "miosa sandbox deploy . --wait",
-      "miosa sandbox publish <sandbox-id> --slug my-app --wait",
+      "miosa sandbox publish <sandbox-id> --slug my-app --docker-deploy --wait",
     ],
   },
   "nextjs-postgres": {
@@ -171,7 +171,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     next: [
       "miosa databases create --engine postgres --wait",
       "miosa sandbox deploy . --template nextjs-postgres --wait",
-      "miosa sandbox publish <sandbox-id> --database existing:<db-id> --slug my-app --wait",
+      "miosa sandbox publish <sandbox-id> --database existing:<db-id> --slug my-app --docker-deploy --wait",
     ],
   },
   "vite-react": {

@@ -162,8 +162,8 @@ const manifest: CapabilitiesManifest = {
         "For app templates, prefer --template <id> --auto-start --publish-port <port> --wait --json.",
         "Next.js starter template: miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --json.",
         "Use sandbox deploy for preview readiness.",
-        "Use sandbox publish to promote to durable app hosting.",
-        "Use sandbox publish --docker-deploy to promote a sandbox-built app through the workspace Docker Deploy runtime.",
+        "Use sandbox publish --docker-deploy to promote a sandbox-built app through the recommended workspace Docker Deploy runtime.",
+        "Use sandbox publish without --docker-deploy only when you explicitly need the standard MIOSA Deploy runtime.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
         "Use miosa sandbox ports <sandbox-id> --json before previewing to detect port conflicts.",
         "Use miosa sandbox metrics <sandbox-id> --json for readiness, timeout, and resource diagnostics.",
@@ -191,10 +191,11 @@ const manifest: CapabilitiesManifest = {
         "Durable hosted app with default URL, releases, env vars, logs, rollback, and domains.",
       status: "beta",
       list: "miosa apps list --json",
-      create: "miosa deploy --json",
+      create: "miosa deploy --docker-deploy --json",
       show: "miosa apps show <app-id-or-slug> --json",
       delete: "miosa apps destroy <app-id-or-slug> --force --json",
       notes: [
+        "Prefer Docker Deploy for production apps: miosa deploy --docker-deploy --json.",
         "Default URL should work independently of custom-domain DNS state.",
         "Use miosa deploy metrics <app-id> --json to inspect runtime instances, health timestamps, restarts, and usage.",
       ],
@@ -391,17 +392,17 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
+            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --docker-deploy --wait --timeout 900 --json",
           purpose:
-            "Promote the working Next.js sandbox into durable app hosting.",
+            "Recommended: promote the working Next.js sandbox into the workspace Docker Deploy runtime.",
           json: true,
           wait: true,
         },
         {
           command:
-            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --docker-deploy --wait --timeout 900 --json",
+            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
           purpose:
-            "Promote the same sandbox-built app through the workspace Docker Deploy runtime.",
+            "Use standard MIOSA Deploy only when Docker Deploy is not desired for this app.",
           json: true,
           wait: true,
         },
@@ -513,8 +514,9 @@ const manifest: CapabilitiesManifest = {
       steps: [
         {
           command:
-            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --wait --json",
-          purpose: "Create or update durable app release from sandbox files.",
+            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --docker-deploy --wait --json",
+          purpose:
+            "Recommended: create or update a durable app release from sandbox files on Docker Deploy.",
           json: true,
           wait: true,
         },
