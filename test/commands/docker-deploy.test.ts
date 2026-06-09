@@ -45,6 +45,15 @@ const host = {
   updated_at: "2026-06-09T00:00:00Z",
 };
 
+const template = {
+  id: "compose-full-stack",
+  name: "Compose full stack",
+  description: "Web, API, worker, Postgres, and Redis",
+  category: "compose",
+  runtime: "docker-compose",
+  tags: ["compose", "postgres", "redis"],
+};
+
 describe("miosa docker-deploy", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -113,5 +122,59 @@ describe("miosa docker-deploy", () => {
     expect(output).toContain("Docker Deploy host");
     expect(output).toContain("Appliance:");
     expect(output).toContain("starting");
+  });
+
+  it("lists Docker Deploy templates", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/docker-deploy/templates",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: [template] }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "docker-deploy", "templates"]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("Docker Deploy template");
+    expect(output).toContain("compose-full-stack");
+  });
+
+  it("shows a Docker Deploy template", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/docker-deploy/templates/compose-full-stack",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ template }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "template",
+      "compose-full-stack",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("Compose full stack");
+    expect(output).toContain("docker-compose");
   });
 });

@@ -40,12 +40,32 @@ interface DockerDeployHost {
   updated_at?: string | null;
 }
 
+interface DockerDeployTemplate {
+  [key: string]: unknown;
+  id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  runtime?: string | null;
+  tags?: string[] | null;
+}
+
 function unwrapHosts(payload: unknown): DockerDeployHost[] {
   if (Array.isArray(payload)) return payload as DockerDeployHost[];
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
     if (Array.isArray(record["data"])) return record["data"] as DockerDeployHost[];
     if (Array.isArray(record["hosts"])) return record["hosts"] as DockerDeployHost[];
+  }
+  return [];
+}
+
+function unwrapTemplates(payload: unknown): DockerDeployTemplate[] {
+  if (Array.isArray(payload)) return payload as DockerDeployTemplate[];
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (Array.isArray(record["data"])) return record["data"] as DockerDeployTemplate[];
+    if (Array.isArray(record["templates"])) return record["templates"] as DockerDeployTemplate[];
   }
   return [];
 }
@@ -86,8 +106,21 @@ function printHost(host: DockerDeployHost): void {
   console.log(`  Size/region: ${host.size} / ${host.region}`);
   console.log(`  Portal:      ${host.portal_domain ?? "—"}`);
   console.log(`  Runtime:     ${host.runtime_base_url ?? "—"}`);
-  console.log(`  Agent:       ${host.agent_base_url ?? "—"}`);
   console.log(`  Updated:     ${host.updated_at ?? "—"}`);
+  console.log();
+}
+
+function printTemplate(template: DockerDeployTemplate): void {
+  console.log();
+  console.log(chalk.bold(template.name));
+  console.log();
+  console.log(`  ID:          ${template.id}`);
+  console.log(`  Category:    ${template.category ?? "—"}`);
+  console.log(`  Runtime:     ${template.runtime ?? "—"}`);
+  console.log(`  Tags:        ${(template.tags ?? []).join(", ") || "—"}`);
+  if (template.description) {
+    console.log(`  Description: ${template.description}`);
+  }
   console.log();
 }
 
@@ -129,6 +162,60 @@ export function register(program: Command): void {
           { header: "PORTAL", key: (h) => h.portal_domain ?? "—", width: 28 },
         ]);
         console.log();
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  root
+    .command("templates")
+    .description("List Docker Deploy starter templates")
+    .option("--json", "Output raw JSON")
+    .action(async (opts: { json?: boolean }) => {
+      try {
+        const client = createClient();
+        const raw = await client.apiGet<unknown>("/api/v1/docker-deploy/templates");
+        const templates = unwrapTemplates(raw);
+
+        if (isJsonMode(opts) || opts.json) {
+          printJson(templates);
+          return;
+        }
+
+        console.log();
+        console.log(`${chalk.bold(String(templates.length))} Docker Deploy template(s)`);
+        console.log();
+        renderTable(templates, [
+          { header: "ID", key: (t) => t.id, width: 24 },
+          { header: "NAME", key: (t) => t.name, width: 28 },
+          { header: "CATEGORY", key: (t) => t.category ?? "—", width: 16 },
+          { header: "RUNTIME", key: (t) => t.runtime ?? "—", width: 16 },
+        ]);
+        console.log();
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  root
+    .command("template")
+    .description("Show one Docker Deploy starter template")
+    .argument("<template-id>", "Docker Deploy template ID")
+    .option("--json", "Output raw JSON")
+    .action(async (templateId: string, opts: { json?: boolean }) => {
+      try {
+        const client = createClient();
+        const raw = await client.apiGet<unknown>(
+          `/api/v1/docker-deploy/templates/${encodeURIComponent(templateId)}`,
+        );
+        const template = objectOf<DockerDeployTemplate>(raw, ["template"]);
+
+        if (isJsonMode(opts) || opts.json) {
+          printJson(template);
+          return;
+        }
+
+        printTemplate(template);
       } catch (err) {
         handleError(err);
       }
