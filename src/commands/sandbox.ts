@@ -1117,6 +1117,14 @@ export function register(program: Command): void {
     .option("--run-command <cmd>", "Run command for dynamic/server deployments")
     .option("--domain <domain>", "Custom domain to attach")
     .option(
+      "--docker-deploy",
+      "Publish through the workspace Docker Deploy runtime",
+    )
+    .option(
+      "--deployment-type <type>",
+      "Deployment runtime type: miosa_deploy, docker_deploy, dynamic, static",
+    )
+    .option(
       "--database <mode>",
       "none, create:postgres, postgres, or existing:<db-id>",
     )
@@ -1144,6 +1152,8 @@ export function register(program: Command): void {
           buildCommand?: string;
           runCommand?: string;
           domain?: string;
+          dockerDeploy?: boolean;
+          deploymentType?: string;
           database?: string;
           port?: number;
           wait?: boolean;
@@ -1165,6 +1175,14 @@ export function register(program: Command): void {
           );
           if (result.release_id)
             console.log(`  ${chalk.bold("Release")}  ${result.release_id}`);
+          if (result.deployment_product)
+            console.log(
+              `  ${chalk.bold("Product")}  ${String(result.deployment_product)}`,
+            );
+          if (result.docker_deploy_host_id)
+            console.log(
+              `  ${chalk.bold("Docker")}   ${String(result.docker_deploy_host_id)}`,
+            );
           if (result.url)
             console.log(
               `  ${chalk.bold("URL")}      ${chalk.cyan(String(result.url))}`,
@@ -2547,6 +2565,8 @@ interface SandboxPublishOptions {
   buildCommand?: string;
   runCommand?: string;
   domain?: string;
+  dockerDeploy?: boolean;
+  deploymentType?: string;
   database?: string;
   port?: number;
   wait?: boolean;
@@ -2563,6 +2583,8 @@ interface SandboxPublishResult {
   version_id: string | null;
   url: string | null;
   state: string | null;
+  deployment_product: string | null;
+  docker_deploy_host_id: string | null;
   ready: boolean;
   probe?: ProbeResult | null;
   data: unknown;
@@ -2980,6 +3002,10 @@ async function publishSandbox(
   if (opts.runCommand) body["run_command"] = opts.runCommand;
   if (opts.domain) body["domain"] = opts.domain;
   if (opts.port != null) body["port"] = opts.port;
+  const deploymentType = opts.dockerDeploy
+    ? "docker_deploy"
+    : opts.deploymentType;
+  if (deploymentType) body["deployment_type"] = deploymentType;
 
   const database = parsePublishDatabase(opts.database);
   if (database !== undefined) body["database"] = database;
@@ -3013,12 +3039,32 @@ async function publishSandbox(
     extractUrl(deployment) ??
     stringField(data, "url") ??
     null;
+  let deploymentProduct =
+    stringField(response, "deployment_product") ??
+    stringField(data, "deployment_product") ??
+    stringField(deployment, "deployment_product") ??
+    stringField(asRecord(deployment?.["metadata"]), "deployment_product") ??
+    null;
+  let dockerDeployHostId =
+    stringField(response, "docker_deploy_host_id") ??
+    stringField(data, "docker_deploy_host_id") ??
+    stringField(deployment, "docker_deploy_host_id") ??
+    stringField(asRecord(deployment?.["metadata"]), "docker_deploy_host_id") ??
+    null;
 
   if (opts.wait && deploymentId) {
     deployStep(opts, "Waiting for durable deployment");
     const waited = await waitForDeploymentReady(c, deploymentId, opts.timeout);
     state = stringField(waited, "state") ?? state;
     url = extractUrl(waited) ?? url;
+    deploymentProduct =
+      stringField(waited, "deployment_product") ??
+      stringField(asRecord(waited["metadata"]), "deployment_product") ??
+      deploymentProduct;
+    dockerDeployHostId =
+      stringField(waited, "docker_deploy_host_id") ??
+      stringField(asRecord(waited["metadata"]), "docker_deploy_host_id") ??
+      dockerDeployHostId;
 
     response["state"] = state;
     if (url) response["url"] = url;
@@ -3047,6 +3093,8 @@ async function publishSandbox(
     version_id: versionId,
     url,
     state,
+    deployment_product: deploymentProduct,
+    docker_deploy_host_id: dockerDeployHostId,
     ready,
     probe,
     data: raw,

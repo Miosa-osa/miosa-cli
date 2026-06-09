@@ -274,6 +274,75 @@ describe("miosa sandbox exec", () => {
     expect(parsed.data.deployment.active_version_id).toBe("ver_123");
     expect(parsed.data.app_consistency_pending).toBe(false);
   });
+
+  it("publishes sandbox workspaces through Docker Deploy", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/publish",
+        method: "POST",
+        body: JSON.stringify({
+          output_path: "/workspace",
+          path: "/workspace",
+          environment: "production",
+          metadata: { environment: "production" },
+          name: "docker-site",
+          run_command: "npm start",
+          port: 3000,
+          deployment_type: "docker_deploy",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          deployment_id: "dep_123",
+          version_id: "ver_123",
+          release_id: "rel_123",
+          url: "https://docker-site.example.com",
+          state: "building",
+          deployment_product: "docker_deploy",
+          data: {
+            deployment: {
+              id: "dep_123",
+              state: "building",
+              docker_deploy_host_id: "ddh_123",
+              metadata: { deployment_product: "docker_deploy" },
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "publish",
+      "sbx_123",
+      "--name",
+      "docker-site",
+      "--run-command",
+      "npm start",
+      "--port",
+      "3000",
+      "--docker-deploy",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n")) as Record<string, unknown>;
+    expect(parsed["deployment_product"]).toBe("docker_deploy");
+    expect(parsed["docker_deploy_host_id"]).toBe("ddh_123");
+  });
 });
 
 describe("miosa sandbox env", () => {

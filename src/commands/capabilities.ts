@@ -163,6 +163,7 @@ const manifest: CapabilitiesManifest = {
         "Next.js starter template: miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --json.",
         "Use sandbox deploy for preview readiness.",
         "Use sandbox publish to promote to durable app hosting.",
+        "Use sandbox publish --docker-deploy to promote a sandbox-built app through the workspace Docker Deploy runtime.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
         "Use miosa sandbox ports <sandbox-id> --json before previewing to detect port conflicts.",
         "Use miosa sandbox metrics <sandbox-id> --json for readiness, timeout, and resource diagnostics.",
@@ -396,6 +397,14 @@ const manifest: CapabilitiesManifest = {
           json: true,
           wait: true,
         },
+        {
+          command:
+            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --docker-deploy --wait --timeout 900 --json",
+          purpose:
+            "Promote the same sandbox-built app through the workspace Docker Deploy runtime.",
+          json: true,
+          wait: true,
+        },
       ],
       success_signals: [
         "sandbox state running",
@@ -403,6 +412,7 @@ const manifest: CapabilitiesManifest = {
         "preview.status 200",
         "preview.url returns Next.js HTML",
         "scaffold status ready in sandbox metadata",
+        "docker deploy response includes deployment_product docker_deploy when --docker-deploy is used",
       ],
       failure_signals: [
         "workspace missing package.json",
