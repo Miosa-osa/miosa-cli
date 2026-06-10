@@ -274,10 +274,15 @@ export function planApp(
     });
     steps.push({
       id: "production_probe",
-      command: "curl -fsS <production-url>",
+      command:
+        recommendedDeploy === "docker_deploy"
+          ? `miosa docker-deploy doctor <deployment-id> --probe-path ${quote(probePath)} --json`
+          : "curl -fsS <production-url>",
       purpose:
-        "Probe the returned production URL. Do not mark complete from control-plane state alone.",
-      json: false,
+        recommendedDeploy === "docker_deploy"
+          ? "Verify deployment_product, Docker Deploy host health, appliance route metadata, and the public URL in one agent-readable check."
+          : "Probe the returned production URL. Do not mark complete from control-plane state alone.",
+      json: recommendedDeploy === "docker_deploy",
     });
   }
 
@@ -609,8 +614,18 @@ function edgeCasesFor(
       code: "DOCKER_DEPLOY_HOST_NOT_READY",
       meaning: "Workspace Docker Deploy host must be active before app publish can finish.",
       recovery: [
-        "miosa docker-deploy hosts --json",
+        "miosa docker-deploy ensure --wait --timeout 600 --json",
         "miosa docker-deploy templates --json",
+      ],
+    });
+    cases.push({
+      code: "DOCKER_DEPLOY_ROUTE_UNHEALTHY",
+      meaning:
+        "The deployment can be marked running while the appliance route or public app port is unhealthy.",
+      recovery: [
+        "miosa docker-deploy doctor <deployment-id> --json",
+        "miosa deploy show <deployment-id> --json",
+        "miosa sandbox publish <sandbox-id> --docker-deploy --wait --timeout 900 --json",
       ],
     });
   }

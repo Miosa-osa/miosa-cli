@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { request } from "undici";
+import type { Deployment } from "../types.js";
 import { renderTable } from "../ui/table.js";
 import {
   createClient,
@@ -48,6 +50,21 @@ interface DockerDeployTemplate {
   category?: string | null;
   runtime?: string | null;
   tags?: string[] | null;
+}
+
+interface DockerDeployProbe {
+  ok: boolean;
+  status?: number;
+  url?: string;
+  error?: string;
+  body_kind?: "empty" | "miosa_gateway_json" | "html" | "json" | "text";
+}
+
+interface DockerDeployCheck {
+  id: string;
+  ok: boolean;
+  message: string;
+  recovery?: string[];
 }
 
 function unwrapHosts(payload: unknown): DockerDeployHost[] {
@@ -106,6 +123,7 @@ function printHost(host: DockerDeployHost): void {
   console.log(`  Size/region: ${host.size} / ${host.region}`);
   console.log(`  Portal:      ${host.portal_domain ?? "—"}`);
   console.log(`  Runtime:     ${host.runtime_base_url ?? "—"}`);
+  console.log(`  Agent:       ${host.agent_base_url ?? "—"}`);
   console.log(`  Updated:     ${host.updated_at ?? "—"}`);
   console.log();
 }
@@ -122,6 +140,134 @@ function printTemplate(template: DockerDeployTemplate): void {
     console.log(`  Description: ${template.description}`);
   }
   console.log();
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringField(value: unknown, key: string): string | null {
+  const raw = asRecord(value)[key];
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function numberField(value: unknown, key: string): number | null {
+  const raw = asRecord(value)[key];
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) return Number(raw);
+  return null;
+}
+
+function deploymentProduct(deployment: Deployment): string {
+  const metadata = asRecord(deployment.metadata);
+  return (
+    deployment.deployment_product ??
+    stringField(metadata, "deployment_product") ??
+    "miosa_deploy"
+  );
+}
+
+function deploymentHostId(deployment: Deployment): string | null {
+  const metadata = asRecord(deployment.metadata);
+  return (
+    deployment.docker_deploy_host_id ??
+    stringField(metadata, "docker_deploy_host_id") ??
+    stringField(asRecord(metadata["docker_deploy"]), "host_id")
+  );
+}
+
+function deploymentRuntime(deployment: Deployment): {
+  ip: string | null;
+  port: number | null;
+} {
+  const runtime = asRecord(asRecord(deployment.metadata)["runtime"]);
+  return {
+    ip: stringField(runtime, "ip"),
+    port: numberField(runtime, "port"),
+  };
+}
+
+function deploymentPublicUrl(deployment: Deployment): string | null {
+  return deployment.public_url ?? deployment.auto_subdomain ?? null;
+}
+
+function classifyBody(contentType: string | null, body: string): DockerDeployProbe["body_kind"] {
+  const trimmed = body.trim();
+  if (!trimmed) return "empty";
+  if (contentType?.includes("text/html") || /^<!doctype html/i.test(trimmed)) return "html";
+  if (contentType?.includes("application/json") || /^[{[]/.test(trimmed)) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      const record = asRecord(parsed);
+      if (record["ok"] === true && typeof record["run_id"] === "string") {
+        return "miosa_gateway_json";
+      }
+    } catch {
+      // Fall through to generic JSON classification.
+    }
+    return "json";
+  }
+  return "text";
+}
+
+async function probeUrl(
+  baseUrl: string | null,
+  probePath: string,
+  timeoutMs: number,
+): Promise<DockerDeployProbe> {
+  if (!baseUrl) return { ok: false, error: "deployment has no public_url" };
+  const url = new URL(probePath || "/", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await request(url, {
+      method: "GET",
+      signal: controller.signal,
+      headersTimeout: timeoutMs,
+      bodyTimeout: timeoutMs,
+    });
+    const body = await response.body.text();
+    const contentType = response.headers["content-type"];
+    const bodyKind = classifyBody(
+      Array.isArray(contentType) ? contentType.join(",") : contentType ?? null,
+      body,
+    );
+    return {
+      ok: response.statusCode >= 200 && response.statusCode < 400 && bodyKind !== "miosa_gateway_json",
+      status: response.statusCode,
+      url: url.toString(),
+      body_kind: bodyKind,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      url: url.toString(),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitForHost(
+  host: DockerDeployHost,
+  timeoutSec: number,
+): Promise<DockerDeployHost> {
+  const client = createClient();
+  const deadline = Date.now() + timeoutSec * 1000;
+  let current = host;
+
+  while (!hostReady(current) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const raw = await client.apiGet<unknown>(
+      `/api/v1/docker-deploy/hosts/${encodeURIComponent(host.id)}`,
+    );
+    current = objectOf<DockerDeployHost>(raw, ["host"]);
+  }
+
+  return current;
 }
 
 export function register(program: Command): void {
@@ -226,15 +372,24 @@ export function register(program: Command): void {
     .description("Provision or return the workspace Docker Deploy host")
     .option("--workspace <id>", "Workspace ID")
     .option("--external-workspace <id>", "External workspace/customer ID")
+    .option("--wait", "Wait until the appliance is active and healthy")
+    .option("--timeout <seconds>", "Wait timeout in seconds", parsePositiveInt, 600)
     .option("--json", "Output raw JSON")
-    .action(async (opts: { workspace?: string; externalWorkspace?: string; json?: boolean }) => {
+    .action(async (opts: {
+      workspace?: string;
+      externalWorkspace?: string;
+      wait?: boolean;
+      timeout: number;
+      json?: boolean;
+    }) => {
       try {
         const client = createClient();
         const raw = await client.apiPost<unknown>("/api/v1/docker-deploy/hosts/ensure", {
           ...(opts.workspace ? { workspace_id: opts.workspace } : {}),
           ...(opts.externalWorkspace ? { external_workspace_id: opts.externalWorkspace } : {}),
         });
-        const host = objectOf<DockerDeployHost>(raw, ["host"]);
+        let host = objectOf<DockerDeployHost>(raw, ["host"]);
+        if (opts.wait) host = await waitForHost(host, opts.timeout);
 
         if (isJsonMode(opts) || opts.json) {
           printJson(host);
@@ -280,4 +435,141 @@ export function register(program: Command): void {
         handleError(err);
       }
     });
+
+  root
+    .command("doctor")
+    .description("Verify a Docker Deploy deployment, host, route, and public URL")
+    .argument("<deployment-id>", "Deployment/app ID to verify")
+    .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
+    .option("--timeout <seconds>", "Public probe timeout in seconds", parsePositiveInt, 20)
+    .option("--no-probe", "Skip the public HTTP probe")
+    .option("--json", "Output raw JSON")
+    .action(async (
+      deploymentId: string,
+      opts: { probePath: string; timeout: number; probe?: boolean; json?: boolean },
+    ) => {
+      try {
+        const client = createClient();
+        const deployment = objectOf<Record<string, unknown>>(
+          await client.apiGet<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(deploymentId)}`,
+          ),
+          ["deployment"],
+        ) as unknown as Deployment;
+        const product = deploymentProduct(deployment);
+        const hostId = deploymentHostId(deployment);
+        const runtime = deploymentRuntime(deployment);
+        const publicUrl = deploymentPublicUrl(deployment);
+        let host: DockerDeployHost | null = null;
+
+        if (hostId) {
+          host = objectOf<DockerDeployHost>(
+            await client.apiGet<unknown>(
+              `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
+            ),
+            ["host"],
+          );
+        }
+
+        const probe =
+          opts.probe === false
+            ? null
+            : await probeUrl(publicUrl, opts.probePath, opts.timeout * 1000);
+
+        const checks: DockerDeployCheck[] = [
+          {
+            id: "deployment_product",
+            ok: product === "docker_deploy",
+            message:
+              product === "docker_deploy"
+                ? "Deployment is marked docker_deploy."
+                : `Deployment product is ${product}; expected docker_deploy.`,
+            recovery: ["Publish with --docker-deploy or inspect deployment metadata."],
+          },
+          {
+            id: "host_linked",
+            ok: Boolean(hostId),
+            message: hostId
+              ? `Deployment links to Docker Deploy host ${hostId}.`
+              : "Deployment has no Docker Deploy host id.",
+            recovery: ["Run miosa docker-deploy ensure --wait --json."],
+          },
+          {
+            id: "host_ready",
+            ok: Boolean(host && hostReady(host)),
+            message: host
+              ? `Host status=${host.status}, appliance=${host.appliance_status ?? "unknown"}.`
+              : "Docker Deploy host could not be loaded.",
+            recovery: hostId
+              ? [`miosa docker-deploy show ${hostId} --json`, `miosa docker-deploy ensure --wait --json`]
+              : ["miosa docker-deploy ensure --wait --json"],
+          },
+          {
+            id: "appliance_route",
+            ok: Boolean(runtime.ip && runtime.port),
+            message: runtime.ip && runtime.port
+              ? `Route points to ${runtime.ip}:${runtime.port}.`
+              : "Deployment runtime route is missing ip/port metadata.",
+            recovery: ["Re-publish with miosa sandbox publish --docker-deploy --wait --json."],
+          },
+        ];
+
+        if (probe) {
+          checks.push({
+            id: "public_probe",
+            ok: probe.ok,
+            message: probe.ok
+              ? `Public URL returned HTTP ${probe.status}.`
+              : `Public URL did not return a healthy app response: ${probe.error ?? `HTTP ${probe.status}, body=${probe.body_kind}`}.`,
+            recovery: [
+              "Check miosa deploy show <deployment-id> --json.",
+              "Check miosa docker-deploy show <host-id> --json.",
+              "Re-run miosa sandbox publish <sandbox-id> --docker-deploy --wait --json if the app container is gone.",
+            ],
+          });
+        }
+
+        const result = {
+          ok: checks.every((check) => check.ok),
+          deployment_id: deployment.id ?? deploymentId,
+          deployment_product: product,
+          docker_deploy_host_id: hostId,
+          host_ready: Boolean(host && hostReady(host)),
+          route: runtime,
+          public_url: publicUrl,
+          public_probe: probe,
+          checks,
+        };
+
+        if (isJsonMode(opts) || opts.json) {
+          printJson(result);
+          return;
+        }
+
+        console.log();
+        console.log(chalk.bold("Docker Deploy doctor"));
+        console.log();
+        console.log(`  Deployment: ${result.deployment_id}`);
+        console.log(`  Product:    ${result.deployment_product}`);
+        console.log(`  Host:       ${result.docker_deploy_host_id ?? "—"}`);
+        console.log(`  Route:      ${runtime.ip && runtime.port ? `${runtime.ip}:${runtime.port}` : "—"}`);
+        console.log(`  URL:        ${result.public_url ?? "—"}`);
+        console.log();
+        for (const check of checks) {
+          console.log(`  ${check.ok ? chalk.green("✓") : chalk.red("✗")} ${check.id}: ${check.message}`);
+        }
+        console.log();
+        if (!result.ok) process.exitCode = 1;
+      } catch (err) {
+        handleError(err);
+      }
+    });
+}
+
+function parsePositiveInt(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive integer: ${value}`);
+  }
+  return parsed;
 }

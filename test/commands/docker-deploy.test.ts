@@ -45,6 +45,12 @@ const host = {
   updated_at: "2026-06-09T00:00:00Z",
 };
 
+const readyHost = {
+  ...host,
+  status: "active",
+  appliance_status: "healthy",
+};
+
 const template = {
   id: "compose-full-stack",
   name: "Compose full stack",
@@ -124,6 +130,51 @@ describe("miosa docker-deploy", () => {
     expect(output).toContain("starting");
   });
 
+  it("waits for an ensured Docker Deploy host to become healthy", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts/ensure",
+        method: "POST",
+        body: JSON.stringify({ workspace_id: "ws_123" }),
+      })
+      .reply(201, JSON.stringify({ host, queued: true }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/docker-deploy/hosts/${host.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ host: readyHost }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "ensure",
+      "--workspace",
+      "ws_123",
+      "--wait",
+      "--timeout",
+      "10",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as typeof host;
+    expect(parsed.status).toBe("active");
+    expect(parsed.appliance_status).toBe("healthy");
+  });
+
   it("lists Docker Deploy templates", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -176,5 +227,89 @@ describe("miosa docker-deploy", () => {
     const output = logged.join("\n");
     expect(output).toContain("Compose full stack");
     expect(output).toContain("docker-compose");
+  });
+
+  it("doctors a Docker Deploy deployment route and public URL", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const deployment = {
+      id: "dep_123",
+      name: "docker-site",
+      slug: "docker-site",
+      state: "running",
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: readyHost.id,
+      public_url: "https://docker-site.example.com",
+      metadata: {
+        deployment_product: "docker_deploy",
+        runtime: {
+          ip: "172.16.74.246",
+          port: 23906,
+        },
+        docker_deploy: {
+          host_id: readyHost.id,
+          status: "running",
+        },
+      },
+    };
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: deployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/docker-deploy/hosts/${readyHost.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ host: readyHost }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://docker-site.example.com")
+      .intercept({ path: "/health", method: "GET" })
+      .reply(200, "<!doctype html><title>ok</title>", {
+        headers: { "content-type": "text/html" },
+      });
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "doctor",
+      "dep_123",
+      "--probe-path",
+      "/health",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      deployment_product: string;
+      host_ready: boolean;
+      route: { ip: string; port: number };
+      public_probe: { ok: boolean; status: number; body_kind: string };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.deployment_product).toBe("docker_deploy");
+    expect(parsed.host_ready).toBe(true);
+    expect(parsed.route).toEqual({ ip: "172.16.74.246", port: 23906 });
+    expect(parsed.public_probe).toMatchObject({
+      ok: true,
+      status: 200,
+      body_kind: "html",
+    });
   });
 });
