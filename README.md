@@ -56,7 +56,7 @@ $ miosa deploy
 
   Deployed
 
-  URL:    https://my-project-x7k2.me.miosa.app
+  URL:    https://my-project-x7k2.my-workspace.miosa.app
 
   Next steps:
     miosa deploy logs                          — tail logs
@@ -116,6 +116,53 @@ Discover the full agent contract with:
 
 ```bash
 miosa capabilities --json
+```
+
+### App manifest
+
+Agents can commit `miosa.app.yml`, `miosa.app.yaml`, or `miosa.app.json` to make
+publishing repeatable.
+
+```yaml
+name: clinic-intake
+type: dynamic
+build: npm run build
+run: npm start
+port: 3000
+readiness:
+  path: /
+resources:
+  database:
+    auto: true
+    engine: postgresql
+    size: xs
+  storage:
+    auto: true
+domain: intake.apps.cliniciq.com
+```
+
+Resource values use the backend compose protocol:
+
+```text
+auto: true       -> provision and wire a new resource
+select: <id>     -> attach an existing resource
+false/omitted    -> do not attach that resource
+```
+
+Deployment URLs come from the backend response. The CLI should not guess a
+domain from the tenant slug.
+
+```text
+default managed URL:       https://<slug>.<tenant-slug>.miosa.app
+tenant deployment domain:  https://<slug>.apps.customer.com
+custom deployment domain:  https://app.customer.com
+```
+
+Sandbox previews are separate:
+
+```text
+default preview URL:       https://<port>-<sandbox-slug>.sandbox.miosa.app
+tenant preview domain:     https://<port>-<sandbox-slug>.sandbox.customer.com
 ```
 
 ### Deploy sub-commands

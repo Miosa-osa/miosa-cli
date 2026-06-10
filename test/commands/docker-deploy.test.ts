@@ -58,6 +58,7 @@ describe("miosa docker-deploy", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env["MIOSA_JSON"];
+    process.exitCode = undefined;
   });
 
   it("lists Docker Deploy hosts by workspace", async () => {
@@ -176,5 +177,188 @@ describe("miosa docker-deploy", () => {
     const output = logged.join("\n");
     expect(output).toContain("Compose full stack");
     expect(output).toContain("docker-compose");
+  });
+
+  it("doctors a Docker Deploy deployment", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "dep_123",
+            tenant_id: "ten_123",
+            owner_id: "usr_123",
+            name: "Clinic Intake",
+            slug: "clinic-intake",
+            repo_url: "",
+            repo_provider: "github",
+            branch: "main",
+            build_command: null,
+            run_command: "npm start",
+            runtime_image: null,
+            current_build_id: null,
+            state: "running",
+            auto_deploy: true,
+            custom_domain_id: null,
+            deployment_product: "docker_deploy",
+            docker_deploy_host_id: "ddh_123",
+            public_url: "https://clinic-intake.osa.miosa.app",
+            metadata: {
+              deployment_product: "docker_deploy",
+              runtime: { ip: "172.16.74.246", port: 23906 },
+              docker_deploy: {
+                app_id: "miosa-clinic-intake",
+                container_id: "container_123",
+                status: "running",
+                url: "http://127.0.0.1:23906",
+              },
+            },
+            created_at: "2026-06-10T00:00:00Z",
+            updated_at: "2026-06-10T00:00:00Z",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts/ddh_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { ...host, id: "ddh_123", status: "active", appliance_status: "healthy" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://clinic-intake.osa.miosa.app")
+      .intercept({
+        path: "/health",
+        method: "GET",
+      })
+      .reply(200, "ok");
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "doctor",
+      "dep_123",
+      "--probe-path",
+      "/health",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("Docker Deploy doctor");
+    expect(output).toContain("deployment_product");
+    expect(output).toContain("docker_deploy_app");
+    expect(output).toContain("public_url_probe");
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("fails doctor when route points at a non-Docker runtime port", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "dep_123",
+            tenant_id: "ten_123",
+            owner_id: "usr_123",
+            name: "Clinic Intake",
+            slug: "clinic-intake",
+            repo_url: "",
+            repo_provider: "github",
+            branch: "main",
+            build_command: null,
+            run_command: "npm start",
+            runtime_image: null,
+            current_build_id: null,
+            state: "running",
+            auto_deploy: true,
+            custom_domain_id: null,
+            deployment_product: "docker_deploy",
+            docker_deploy_host_id: "ddh_123",
+            public_url: "https://clinic-intake.osa.miosa.app",
+            metadata: {
+              deployment_product: "docker_deploy",
+              runtime: { ip: "172.16.74.246", port: 8080 },
+              docker_deploy: {
+                app_id: "miosa-clinic-intake",
+                container_id: "container_123",
+                status: "running",
+                url: "http://127.0.0.1:23906",
+              },
+            },
+            created_at: "2026-06-10T00:00:00Z",
+            updated_at: "2026-06-10T00:00:00Z",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts/ddh_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { ...host, id: "ddh_123", status: "active", appliance_status: "healthy" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://clinic-intake.osa.miosa.app")
+      .intercept({
+        path: "/health",
+        method: "GET",
+      })
+      .reply(200, "ok");
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "doctor",
+      "dep_123",
+      "--probe-path",
+      "/health",
+      "--json",
+    ]);
+
+    const result = JSON.parse(logged.join("\n"));
+    expect(result.ok).toBe(false);
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "runtime_route",
+          ok: false,
+          message: "Deployment route port 8080 does not match Docker container host port 23906.",
+        }),
+      ]),
+    );
+    expect(process.exitCode).toBe(1);
   });
 });

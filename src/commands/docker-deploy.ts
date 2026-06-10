@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import type { Deployment } from "../types.js";
 import { renderTable } from "../ui/table.js";
 import {
   createClient,
@@ -50,6 +51,22 @@ interface DockerDeployTemplate {
   tags?: string[] | null;
 }
 
+interface DoctorCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+interface DoctorProbe {
+  url: string;
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+type DeploymentRecord = Deployment & Record<string, unknown>;
+
 function unwrapHosts(payload: unknown): DockerDeployHost[] {
   if (Array.isArray(payload)) return payload as DockerDeployHost[];
   if (payload && typeof payload === "object") {
@@ -90,6 +107,79 @@ function hostReady(host: DockerDeployHost): boolean {
   return host.status === "active" && host.appliance_status === "healthy";
 }
 
+function deploymentProduct(deployment: Deployment): unknown {
+  return deployment.deployment_product ?? deployment.metadata?.["deployment_product"];
+}
+
+function dockerDeployHostId(deployment: Deployment): string | null {
+  const metadataHost = deployment.metadata?.["docker_deploy_host_id"];
+  return deployment.docker_deploy_host_id ?? (typeof metadataHost === "string" ? metadataHost : null);
+}
+
+function runtimeRoute(deployment: Deployment): Record<string, unknown> | null {
+  const runtime = deployment.metadata?.["runtime"];
+  if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) return null;
+  const record = runtime as Record<string, unknown>;
+  return typeof record["ip"] === "string" && typeof record["port"] === "number" ? record : null;
+}
+
+function dockerDeployApp(deployment: Deployment): Record<string, unknown> | null {
+  const app = deployment.metadata?.["docker_deploy"];
+  if (!app || typeof app !== "object" || Array.isArray(app)) return null;
+  return app as Record<string, unknown>;
+}
+
+function dockerDeployAppPort(app: Record<string, unknown> | null): number | null {
+  const url = app?.["url"];
+  if (typeof url !== "string") return null;
+
+  try {
+    const parsed = new URL(url);
+    const port = Number.parseInt(parsed.port, 10);
+    return Number.isInteger(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function addCheck(
+  checks: DoctorCheck[],
+  name: string,
+  ok: boolean,
+  message: string,
+  details?: Record<string, unknown>,
+): void {
+  checks.push({ name, ok, message, ...(details ? { details } : {}) });
+}
+
+function checkIcon(ok: boolean): string {
+  return ok ? chalk.green("ok") : chalk.red("fail");
+}
+
+function probeUrl(publicUrl: string, probePath: string): string {
+  const url = new URL(publicUrl);
+  url.pathname = probePath.startsWith("/") ? probePath : `/${probePath}`;
+  return url.toString();
+}
+
+async function probePublicUrl(publicUrl: string, probePath: string, timeoutMs: number): Promise<DoctorProbe> {
+  const url = probeUrl(publicUrl, probePath);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { method: "GET", signal: controller.signal });
+    return { url, ok: response.ok, status: response.status };
+  } catch (error) {
+    return {
+      url,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function printHost(host: DockerDeployHost): void {
   console.log();
   console.log(chalk.bold("Docker Deploy host"));
@@ -106,6 +196,7 @@ function printHost(host: DockerDeployHost): void {
   console.log(`  Size/region: ${host.size} / ${host.region}`);
   console.log(`  Portal:      ${host.portal_domain ?? "—"}`);
   console.log(`  Runtime:     ${host.runtime_base_url ?? "—"}`);
+  console.log(`  Agent:       ${host.agent_base_url ?? "—"}`);
   console.log(`  Updated:     ${host.updated_at ?? "—"}`);
   console.log();
 }
@@ -276,6 +367,151 @@ export function register(program: Command): void {
         }
 
         printHost(host);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  root
+    .command("doctor")
+    .description("Verify a Docker Deploy deployment before reporting it live")
+    .argument("<deployment-id>", "Deployment ID")
+    .option("--probe-path <path>", "Public URL path to probe", "/")
+    .option("--timeout <ms>", "Public URL probe timeout in milliseconds", "10000")
+    .option("--json", "Output raw JSON")
+    .action(async (deploymentId: string, opts: { probePath?: string; timeout?: string; json?: boolean }) => {
+      try {
+        const client = createClient();
+        const checks: DoctorCheck[] = [];
+        const deployment = objectOf<DeploymentRecord>(
+          await client.apiGet<unknown>(`/api/v1/deployments/${encodeURIComponent(deploymentId)}`),
+        );
+        const product = deploymentProduct(deployment);
+        const hostId = dockerDeployHostId(deployment);
+
+        addCheck(
+          checks,
+          "deployment_product",
+          product === "docker_deploy",
+          product === "docker_deploy"
+            ? "Deployment is marked for Docker Deploy."
+            : `Expected deployment_product=docker_deploy, got ${String(product ?? "missing")}.`,
+          { deployment_product: product ?? null },
+        );
+
+        addCheck(
+          checks,
+          "docker_deploy_host_id",
+          Boolean(hostId),
+          hostId ? "Deployment has a Docker Deploy host id." : "Deployment has no docker_deploy_host_id.",
+          { docker_deploy_host_id: hostId },
+        );
+
+        let host: DockerDeployHost | null = null;
+        if (hostId) {
+          host = objectOf<DockerDeployHost>(
+            await client.apiGet<unknown>(`/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`),
+            ["host"],
+          );
+          addCheck(
+            checks,
+            "docker_deploy_host_health",
+            hostReady(host),
+            hostReady(host)
+              ? "Docker Deploy host is active and healthy."
+              : `Docker Deploy host status=${host.status} appliance=${host.appliance_status}.`,
+            { status: host.status, appliance_status: host.appliance_status },
+          );
+        }
+
+        const app = dockerDeployApp(deployment);
+        const appPort = dockerDeployAppPort(app);
+        const appRunning = app?.["status"] === "running" && appPort !== null;
+        addCheck(
+          checks,
+          "docker_deploy_app",
+          appRunning,
+          appRunning
+            ? "Docker Deploy app metadata points at a running container."
+            : "Deployment is missing running Docker Deploy app metadata.",
+          app
+            ? {
+                app_id: app["app_id"],
+                container_id: app["container_id"],
+                status: app["status"],
+                url: app["url"],
+                expected_port: appPort,
+              }
+            : undefined,
+        );
+
+        const runtime = runtimeRoute(deployment);
+        const routeMatchesContainerPort =
+          Boolean(runtime) && (appPort === null || runtime?.["port"] === appPort);
+        addCheck(
+          checks,
+          "runtime_route",
+          Boolean(runtime) && routeMatchesContainerPort,
+          runtime && routeMatchesContainerPort
+            ? "Deployment route points at the Docker container host port."
+            : runtime && appPort !== null
+              ? `Deployment route port ${String(runtime["port"])} does not match Docker container host port ${appPort}.`
+            : "Deployment is missing appliance runtime route metadata.",
+          runtime
+            ? {
+                ...runtime,
+                expected_port: appPort,
+                docker_deploy_url: app?.["url"],
+              }
+            : undefined,
+        );
+
+        let probe: DoctorProbe | null = null;
+        if (deployment.public_url) {
+          probe = await probePublicUrl(
+            deployment.public_url,
+            opts.probePath ?? "/",
+            Number.parseInt(opts.timeout ?? "10000", 10),
+          );
+          addCheck(
+            checks,
+            "public_url_probe",
+            probe.ok,
+            probe.status
+              ? `Public URL returned HTTP ${probe.status}.`
+              : probe.error ?? "Public URL probe failed.",
+            { url: probe.url, ...(probe.status ? { status: probe.status } : {}) },
+          );
+        }
+
+        const result = {
+          ok: checks.every((check) => check.ok),
+          deployment_id: deployment.id,
+          deployment_product: product,
+          docker_deploy_host_id: hostId,
+          public_url: deployment.public_url ?? null,
+          host,
+          checks,
+          probe,
+        };
+
+        if (isJsonMode(opts) || opts.json) {
+          printJson(result);
+        } else {
+          console.log();
+          console.log(chalk.bold("Docker Deploy doctor"));
+          console.log();
+          console.log(`  Deployment: ${deployment.id}`);
+          console.log(`  URL:        ${deployment.public_url ?? "—"}`);
+          console.log(`  Host:       ${hostId ?? "—"}`);
+          console.log();
+          for (const check of checks) {
+            console.log(`  ${checkIcon(check.ok)} ${check.name}: ${check.message}`);
+          }
+          console.log();
+        }
+
+        if (!result.ok) process.exitCode = 1;
       } catch (err) {
         handleError(err);
       }
