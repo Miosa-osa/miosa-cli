@@ -1059,6 +1059,10 @@ export function register(program: Command): void {
     .option("--environment <name>", "Target environment label", "production")
     .option("--build-command <cmd>", "Build command to run before publishing")
     .option("--run-command <cmd>", "Run command for dynamic/server deployments")
+    .option(
+      "--docker-deploy",
+      "Publish onto the workspace Docker Deploy runtime instead of standard app hosting",
+    )
     .option("--domain <domain>", "Custom domain to attach")
     .option(
       "--database <mode>",
@@ -1087,6 +1091,7 @@ export function register(program: Command): void {
           environment: string;
           buildCommand?: string;
           runCommand?: string;
+          dockerDeploy?: boolean;
           domain?: string;
           database?: string;
           port?: number;
@@ -2490,6 +2495,7 @@ interface SandboxPublishOptions {
   environment: string;
   buildCommand?: string;
   runCommand?: string;
+  dockerDeploy?: boolean;
   domain?: string;
   database?: string;
   port?: number;
@@ -2900,8 +2906,11 @@ async function publishSandbox(
     output_path: opts.path,
     path: opts.path,
     environment: opts.environment,
-    metadata: { environment: opts.environment },
+    metadata: opts.dockerDeploy
+      ? { environment: opts.environment, deployment_product: "docker_deploy" }
+      : { environment: opts.environment },
   };
+  if (opts.dockerDeploy) body["deployment_type"] = "docker-deploy";
   if (opts.app) body["deployment_id"] = opts.app;
   // Bug 9: avoid creating a duplicate deployment on retry. When publishing by
   // name (no explicit app id), reuse an existing non-terminal deployment with
