@@ -88,8 +88,14 @@ describe("miosa app", () => {
     expect(payload.data.steps.find((step) => step.id === "publish")?.command).toContain(
       "--timeout 900",
     );
+    expect(
+      payload.data.steps.find((step) => step.id === "production_probe")?.command,
+    ).toContain("miosa docker-deploy doctor <deployment-id>");
     expect(payload.data.edge_cases.map((edge) => edge.code)).toContain(
       "PORT_NOT_LISTENING",
+    );
+    expect(payload.data.edge_cases.map((edge) => edge.code)).toContain(
+      "DOCKER_DEPLOY_ROUTE_UNHEALTHY",
     );
   });
 });

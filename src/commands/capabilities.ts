@@ -211,6 +211,21 @@ const manifest: CapabilitiesManifest = {
       ],
     },
     {
+      id: "docker_deploy",
+      label: "Docker Deploy",
+      purpose:
+        "Recommended production runtime for sandbox-built apps; runs app containers on a workspace appliance host.",
+      status: "beta",
+      list: "miosa docker-deploy hosts --json",
+      create: "miosa docker-deploy ensure --wait --timeout 600 --json",
+      show: "miosa docker-deploy show <host-id> --json",
+      notes: [
+        "Use miosa docker-deploy templates --json before choosing a starter/template path.",
+        "After publish, run miosa docker-deploy doctor <deployment-id> --json to verify deployment_product, host readiness, route metadata, and public HTTP.",
+        "A deployment is not proven healthy until the public probe passes; control-plane state alone is not enough.",
+      ],
+    },
+    {
       id: "database",
       label: "Managed Database",
       purpose:
@@ -307,7 +322,7 @@ const manifest: CapabilitiesManifest = {
       {
         id: "debug-deploy-runtime",
         use_when: "Production URL returns 502, stale placeholder, or control-plane state disagrees with public HTTP.",
-        command: "miosa logs --deployment <app-id> --lines 200 --json",
+        command: "miosa docker-deploy doctor <deployment-id> --json",
       },
       {
         id: "database-backed-app",
@@ -487,6 +502,13 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
+            "miosa docker-deploy doctor <deployment-id> --probe-path / --json",
+          purpose:
+            "Verify Docker Deploy product metadata, appliance host health, appliance route, and the public production URL.",
+          json: true,
+        },
+        {
+          command:
             "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
           purpose:
             "Use standard MIOSA Deploy only when Docker Deploy is not desired for this app.",
@@ -501,6 +523,7 @@ const manifest: CapabilitiesManifest = {
         "preview.url returns Next.js HTML",
         "scaffold status ready in sandbox metadata",
         "docker deploy response includes deployment_product docker_deploy when --docker-deploy is used",
+        "docker deploy doctor ok true",
       ],
       failure_signals: [
         "workspace missing package.json",
@@ -606,6 +629,12 @@ const manifest: CapabilitiesManifest = {
             "Recommended: create or update a durable app release from sandbox files on Docker Deploy.",
           json: true,
           wait: true,
+        },
+        {
+          command: "miosa docker-deploy doctor <deployment-id> --json",
+          purpose:
+            "Verify the deployment stayed on the Docker Deploy appliance path and the public URL returns the app.",
+          json: true,
         },
         {
           command: "miosa releases list <app-id-or-slug> --json",

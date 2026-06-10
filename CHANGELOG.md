@@ -2,6 +2,13 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.0.53] - 2026-06-10
+
+### Added
+- `miosa docker-deploy ensure --wait` waits for the workspace appliance host to become active and healthy.
+- `miosa docker-deploy doctor <deployment-id>` verifies Docker Deploy metadata, host readiness, appliance route, and public URL health.
+- `miosa app plan --goal docker-deploy --json` now includes the doctor command as the post-publish proof step.
+
 ## [1.0.1] - 2026-05-22
 
 ### Added
