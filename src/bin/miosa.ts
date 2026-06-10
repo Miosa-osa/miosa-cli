@@ -82,6 +82,8 @@ Examples:
   miosa config set region us-nyc                Set a config value
   miosa doctor                                  Diagnose CLI, auth, and toolchain
   miosa capabilities --json                    Print agent-readable workflows and command recipes
+  miosa app inspect . --json                   Detect framework, commands, ports, env, and risks
+  miosa app plan . --goal deploy --json        Generate the exact agent-safe deploy sequence
   miosa computers list                          List all Computers
   miosa computers vnc <id>                      Open a Computer's VNC viewer
   miosa sandbox list                            List all Sandboxes
@@ -157,6 +159,7 @@ const commandModules = [
   "../commands/context.js",
   "../commands/doctor.js",
   "../commands/capabilities.js",
+  "../commands/app.js",
   "../commands/command-overview.js",
   "../commands/hosts.js",
   "../commands/host.js",

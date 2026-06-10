@@ -289,11 +289,14 @@ describe("miosa sandbox exec", () => {
           output_path: "/workspace",
           path: "/workspace",
           environment: "production",
-          metadata: { environment: "production" },
+          metadata: {
+            environment: "production",
+            deployment_product: "docker_deploy",
+          },
           name: "docker-site",
           run_command: "npm start",
           port: 3000,
-          deployment_type: "docker_deploy",
+          deployment_type: "docker-deploy",
         }),
       })
       .reply(
