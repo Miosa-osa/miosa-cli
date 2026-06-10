@@ -65,6 +65,16 @@ interface CapabilitiesManifest {
   };
   resources: ResourceCapability[];
   workflows: Workflow[];
+  advisor: {
+    inspect: CommandRecipe;
+    plan: CommandRecipe;
+    token_budget: string[];
+    playbooks: Array<{
+      id: string;
+      use_when: string;
+      command: string;
+    }>;
+  };
   probing: {
     docker_in_sandbox: CommandRecipe[];
     live_smoke: CommandRecipe[];
@@ -259,7 +269,84 @@ const manifest: CapabilitiesManifest = {
       ],
     },
   ],
+  advisor: {
+    inspect: {
+      command: "miosa app inspect ./app --json",
+      purpose:
+        "Detect framework, package manager, commands, port, env requirements, database needs, Dockerfile, risks, and recommended deploy mode.",
+      json: true,
+    },
+    plan: {
+      command: "miosa app plan ./app --goal deploy --json",
+      purpose:
+        "Return the exact agent-safe command sequence for previewing and publishing the app.",
+      json: true,
+      wait: false,
+    },
+    token_budget: [
+      "Use app inspect/plan before loading docs or asking the user what framework the app uses.",
+      "Default to compact JSON; only request logs with --lines/--tail and only request full output when diagnosing.",
+      "Treat edge_cases in app plan as the recovery playbook instead of pasting long runbooks into the prompt.",
+    ],
+    playbooks: [
+      {
+        id: "nextjs-docker-deploy",
+        use_when: "Next.js, server-rendered app, API routes, or DATABASE_URL/env needs.",
+        command: "miosa app plan ./app --goal docker-deploy --json",
+      },
+      {
+        id: "static-preview-publish",
+        use_when: "Static HTML or frontend build output such as dist/.",
+        command: "miosa app plan ./app --goal deploy --json",
+      },
+      {
+        id: "debug-preview-not-ready",
+        use_when: "Preview URL is missing, TLS pending, or public URL returns gateway JSON/wrong body.",
+        command: "miosa sandbox doctor <sandbox-id> --port <port> --json",
+      },
+      {
+        id: "debug-deploy-runtime",
+        use_when: "Production URL returns 502, stale placeholder, or control-plane state disagrees with public HTTP.",
+        command: "miosa logs --deployment <app-id> --lines 200 --json",
+      },
+      {
+        id: "database-backed-app",
+        use_when: "App needs DATABASE_URL, Prisma, Drizzle, pg, Postgres, or persistence.",
+        command: "miosa app plan ./app --goal docker-deploy --json",
+      },
+    ],
+  },
   workflows: [
+    {
+      id: "agent_app_decision",
+      title: "Inspect And Plan An App Before Acting",
+      goal: "Give agents the minimal correct app context and exact command sequence before creating resources.",
+      status: "stable",
+      steps: [
+        {
+          command: "miosa app inspect ./app --json",
+          purpose:
+            "Detect framework, package manager, commands, port, env/database needs, Dockerfile, risks, and recommendation.",
+          json: true,
+        },
+        {
+          command: "miosa app plan ./app --goal deploy --json",
+          purpose:
+            "Generate the preview/publish sequence and known recovery actions for the detected app.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "inspect returns ok true",
+        "plan returns steps with JSON-safe MIOSA commands",
+        "edge_cases include recovery commands",
+      ],
+      failure_signals: [
+        "unknown framework without manifest overrides",
+        "missing port/start command",
+        "DATABASE_URL required but no database flow selected",
+      ],
+    },
     {
       id: "context_scoped_workflow",
       title: "Switch Account Or Workspace Context",
