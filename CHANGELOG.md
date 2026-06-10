@@ -2,6 +2,11 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.0.54] - 2026-06-10
+
+### Changed
+- Publish workflow now uses npm Trusted Publishing provenance instead of an empty `NPM_TOKEN` secret.
+
 ## [1.0.53] - 2026-06-10
 
 ### Added
