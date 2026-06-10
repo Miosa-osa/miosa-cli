@@ -2978,7 +2978,9 @@ async function publishSandbox(
     output_path: opts.path,
     path: opts.path,
     environment: opts.environment,
-    metadata: { environment: opts.environment },
+    metadata: opts.dockerDeploy
+      ? { environment: opts.environment, deployment_product: "docker_deploy" }
+      : { environment: opts.environment },
   };
   if (opts.app) body["deployment_id"] = opts.app;
   // Bug 9: avoid creating a duplicate deployment on retry. When publishing by
@@ -3003,7 +3005,7 @@ async function publishSandbox(
   if (opts.domain) body["domain"] = opts.domain;
   if (opts.port != null) body["port"] = opts.port;
   const deploymentType = opts.dockerDeploy
-    ? "docker_deploy"
+    ? "docker-deploy"
     : opts.deploymentType;
   if (deploymentType) body["deployment_type"] = deploymentType;
 
