@@ -51,6 +51,11 @@ import {
   ServerError,
   UserError,
 } from "../errors.js";
+import { EXIT_USER_ERROR } from "../types.js";
+
+const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
+const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
+const EXPIRING_SANDBOX_THRESHOLD_SEC = 5 * 60;
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -362,7 +367,9 @@ export function register(program: Command): void {
           if (opts.cpu != null) body["cpu_count"] = opts.cpu;
           if (opts.memory != null) body["memory_mb"] = opts.memory;
           if (opts.disk != null) body["disk_size_mb"] = opts.disk;
-          if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+          const timeoutSec =
+            opts.timeout ?? DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC;
+          body["timeout_sec"] = timeoutSec;
           if (opts.source) body["source"] = opts.source;
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
@@ -395,7 +402,10 @@ export function register(program: Command): void {
                 id,
                 opts.publishPort,
                 opts.probePath ?? "/",
-                Math.max(opts.timeout ?? 120, 30),
+                Math.max(
+                  Math.min(opts.timeout ?? DEFAULT_CREATE_WAIT_TIMEOUT_SEC, DEFAULT_CREATE_WAIT_TIMEOUT_SEC),
+                  30,
+                ),
               );
               const latest = unwrap(
                 await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}`)),
@@ -418,7 +428,10 @@ export function register(program: Command): void {
             const latest = await waitForSandboxRunning(
               client(),
               id,
-              Math.max(opts.timeout ?? 120, 30),
+              Math.max(
+                Math.min(timeoutSec, DEFAULT_CREATE_WAIT_TIMEOUT_SEC),
+                30,
+              ),
             );
             Object.assign(sb, latest, { ready: true });
           }
@@ -491,7 +504,7 @@ export function register(program: Command): void {
     .description("Resume a paused Sandbox")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
-      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/resume`, opts, {})),
+      runAction(() => resumeSandboxAndPrint(id, opts)),
     );
 
   // fork — clone from snapshot in one call (mirrors `box fork`)
@@ -587,7 +600,7 @@ export function register(program: Command): void {
             body["dir"] = opts.cwd;
           }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
-          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+          await postSandboxExecAndPrint(id, opts, body);
         }),
     );
 
@@ -665,7 +678,7 @@ export function register(program: Command): void {
         runAction(async () => {
           opts.follow = opts.follow || opts.stream;
           if (opts.data) {
-            await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
+            await postSandboxExecAndPrint(id, opts, {});
             return;
           }
           const cmd = resolveSandboxCommand(words, opts);
@@ -704,7 +717,7 @@ export function register(program: Command): void {
           }
           if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
-          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+          await postSandboxExecAndPrint(id, opts, body);
         }),
     );
 
@@ -782,7 +795,7 @@ export function register(program: Command): void {
         runAction(async () => {
           opts.follow = opts.follow || opts.stream;
           if (opts.data) {
-            await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, {});
+            await postSandboxExecAndPrint(id, opts, {});
             return;
           }
           const cmd = resolveSandboxCommand(words, opts);
@@ -821,7 +834,7 @@ export function register(program: Command): void {
           }
           if (Object.keys(env).length > 0) body["env"] = env;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
-          await postAndPrint(`/sandboxes/${enc(id)}/exec`, opts, body);
+          await postSandboxExecAndPrint(id, opts, body);
         }),
     );
 
@@ -3623,13 +3636,167 @@ async function waitForSandboxRunning(
     ).toLowerCase();
     if (state === "running" || state === "active") return sandbox;
     if (state === "error" || state === "failed") {
-      throw new UserError(`Sandbox ${sandboxId} entered ${state} state.`);
+      throw sandboxStateError(sandboxId, sandbox, state);
+    }
+    if (state === "destroyed") {
+      throw sandboxStateError(sandboxId, sandbox, state);
     }
     await sleep(1500);
   }
   throw new UserError(
     `Sandbox ${sandboxId} did not become running within ${timeoutSec}s.`,
   );
+}
+
+async function resumeSandboxAndPrint(
+  sandboxId: string,
+  opts: JsonOptions,
+): Promise<void> {
+  try {
+    await postAndPrint(`/sandboxes/${enc(sandboxId)}/resume`, opts, {});
+  } catch (err) {
+    if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_PAUSED") {
+      throw await enrichSandboxLifecycleError(sandboxId, err);
+    }
+    throw err;
+  }
+}
+
+async function postSandboxExecAndPrint(
+  sandboxId: string,
+  opts: JsonOptions,
+  body: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const value = unwrap(
+      await client().apiPost<unknown>(
+        apiPath(`/sandboxes/${enc(sandboxId)}/exec`),
+        body,
+      ),
+    );
+    printValue(value, opts);
+  } catch (err) {
+    if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_RUNNING") {
+      throw await enrichSandboxLifecycleError(sandboxId, err);
+    }
+    throw err;
+  }
+}
+
+async function enrichSandboxLifecycleError(
+  sandboxId: string,
+  err: ApiResponseError,
+): Promise<ApiResponseError> {
+  let sandbox: Record<string, unknown> | null = null;
+  try {
+    sandbox = unwrap(
+      await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}`)),
+    ) as Record<string, unknown>;
+  } catch {
+    // Preserve the original API error when the follow-up lookup is unavailable.
+  }
+
+  if (!sandbox) return err;
+
+  const state = String(sandbox["state"] ?? sandbox["status"] ?? "unknown");
+  const details = sandboxLifecycleDetails(sandbox);
+  const message =
+    state === "destroyed"
+      ? `Sandbox ${sandboxId} is destroyed, not paused. It cannot be resumed.`
+      : `${err.message}. Current sandbox state: ${state}.`;
+
+  return new ApiResponseError(
+    err.code,
+    message,
+    EXIT_USER_ERROR,
+    false,
+    sandboxRecoveryHint(sandboxId, sandbox),
+    details,
+    err.requestId,
+  );
+}
+
+function sandboxStateError(
+  sandboxId: string,
+  sandbox: Record<string, unknown>,
+  state: string,
+): UserError {
+  const reason = sandboxLastErrorReason(sandbox);
+  const message =
+    state === "destroyed"
+      ? `Sandbox ${sandboxId} is destroyed, not paused. It cannot be resumed.`
+      : `Sandbox ${sandboxId} entered ${state} state${reason ? `: ${reason}` : ""}.`;
+
+  return new UserError(message, sandboxRecoveryHint(sandboxId, sandbox));
+}
+
+function sandboxRecoveryHint(
+  sandboxId: string,
+  sandbox: Record<string, unknown>,
+): string {
+  const state = String(sandbox["state"] ?? sandbox["status"] ?? "unknown");
+  const name = String(sandbox["name"] ?? "new-sandbox");
+  const template = String(sandbox["template_id"] ?? "nextjs");
+  const timeoutRemainingSec = timeoutRemainingSeconds(sandbox);
+
+  if (state === "running" && timeoutRemainingSec != null && timeoutRemainingSec <= EXPIRING_SANDBOX_THRESHOLD_SEC) {
+    return `Sandbox expires soon. Extend it with: miosa sandbox extend ${sandboxId} --timeout 1h`;
+  }
+
+  if (state === "paused") {
+    return `Resume it with: miosa sandbox resume ${sandboxId}`;
+  }
+
+  if (state === "destroyed") {
+    return `Create a replacement with: miosa sandbox create --template ${template} --name ${shellQuote(name)} --timeout 1h --wait --json`;
+  }
+
+  if (state === "error" || state === "failed") {
+    return `Inspect recovery with: miosa sandbox recover ${sandboxId}`;
+  }
+
+  return `Inspect it with: miosa sandbox show ${sandboxId} --json`;
+}
+
+function sandboxLifecycleDetails(
+  sandbox: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    sandbox_id: sandbox["id"],
+    name: sandbox["name"],
+    state: sandbox["state"] ?? sandbox["status"],
+    timeout_sec: sandbox["timeout_sec"],
+    timeout_remaining_ms: sandbox["timeout_remaining_ms"],
+    destroyed_at: sandbox["destroyed_at"],
+    last_error: sandboxLastError(sandbox),
+  };
+}
+
+function sandboxLastErrorReason(sandbox: Record<string, unknown>): string | null {
+  const lastError = sandboxLastError(sandbox);
+  if (!lastError) return null;
+  const reason = lastError["reason"];
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+function sandboxLastError(
+  sandbox: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const metadata = sandbox["metadata"];
+  if (!metadata || typeof metadata !== "object") return null;
+  const lastError = (metadata as Record<string, unknown>)["last_error"];
+  return lastError && typeof lastError === "object"
+    ? (lastError as Record<string, unknown>)
+    : null;
+}
+
+function timeoutRemainingSeconds(
+  sandbox: Record<string, unknown>,
+): number | null {
+  const ms = sandbox["timeout_remaining_ms"];
+  if (typeof ms === "number") return Math.ceil(ms / 1000);
+  const sec = sandbox["timeout_remaining_sec"];
+  return typeof sec === "number" ? sec : null;
 }
 
 function createDeployArchive(sourceDir: string): string {
