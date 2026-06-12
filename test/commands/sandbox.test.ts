@@ -151,6 +151,84 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("explains destroyed sandbox exec failures with a replacement command", async () => {
+    const oldJsonMode = process.env["MIOSA_JSON"];
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_destroyed/exec",
+        method: "POST",
+      })
+      .reply(
+        409,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_NOT_RUNNING",
+            message: "sandbox must be in running state to exec",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_destroyed",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "sbx_destroyed",
+            name: "bennett-os-auth-db",
+            template_id: "nextjs",
+            state: "destroyed",
+            timeout_sec: 900,
+            timeout_remaining_ms: 0,
+            destroyed_at: "2026-06-12T19:00:00Z",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_destroyed",
+      "--json",
+      "--",
+      "pwd",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.error.code).toBe("SANDBOX_NOT_RUNNING");
+    expect(parsed.error.message).toContain("destroyed, not paused");
+    expect(parsed.error.hint).toContain(
+      "miosa sandbox create --template nextjs --name 'bennett-os-auth-db' --timeout 1h",
+    );
+    expect(process.exit).toHaveBeenCalledWith(1);
+
+    if (oldJsonMode === undefined) {
+      delete process.env["MIOSA_JSON"];
+    } else {
+      process.env["MIOSA_JSON"] = oldJsonMode;
+    }
+  });
+
   it("creates a durable command for detached exec with workdir and env", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -195,6 +273,95 @@ describe("miosa sandbox exec", () => {
 
     expect(console.log).toHaveBeenCalledWith("cmd_123");
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("uses a one-hour default timeout and surfaces boot last_error during create --wait", async () => {
+    const oldJsonMode = process.env["MIOSA_JSON"];
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "bennett-os-auth-db",
+          timeout_sec: 3600,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_error",
+            name: "bennett-os-auth-db",
+            template_id: "nextjs",
+            state: "provisioning",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_error",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "sbx_error",
+            name: "bennett-os-auth-db",
+            template_id: "nextjs",
+            state: "error",
+            metadata: {
+              last_error: {
+                reason:
+                  '{:workspace_prepare_failed, {401, "{\\"error\\":\\"unauthorized\\"}\\n"}}',
+              },
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "bennett-os-auth-db",
+      "--wait",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.error.code).toBe("USER");
+    expect(parsed.error.message).toContain("workspace_prepare_failed");
+    expect(parsed.error.message).toContain("unauthorized");
+    expect(parsed.error.hint).toContain("miosa sandbox recover sbx_error");
+    expect(process.exit).toHaveBeenCalledWith(1);
+
+    if (oldJsonMode === undefined) {
+      delete process.env["MIOSA_JSON"];
+    } else {
+      process.env["MIOSA_JSON"] = oldJsonMode;
+    }
   });
 
   it("updates nested deployment state after publish --wait", async () => {
