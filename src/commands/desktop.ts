@@ -31,8 +31,8 @@ async function fetchScreenshot(id: string): Promise<Buffer> {
   const config = loadConfig();
   if (!config.api_key) {
     throw new AuthError(
-      "You are not logged in. Run: miosa auth login",
-      "Run `miosa auth login` to authenticate.",
+      "You are not logged in. Run: miosa login",
+      "Run `miosa login` to authenticate.",
     );
   }
   const endpoint = (config.endpoint || "https://api.miosa.ai").replace(

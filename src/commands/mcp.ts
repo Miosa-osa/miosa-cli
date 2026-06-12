@@ -3396,12 +3396,12 @@ async function dispatchTool(
 
     // ── Billing ───────────────────────────────────────────────────────────
     if (name === "billing_usage") {
-      const result = await client.apiGet<unknown>("/api/v1/billing/usage");
+      const result = await client.apiGet<unknown>("/api/v1/billing/overview");
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 
     if (name === "billing_plan") {
-      const result = await client.apiGet<unknown>("/api/v1/billing/plan");
+      const result = await client.apiGet<unknown>("/api/v1/billing/overview");
       return ok(JSON.stringify(unwrapData(result), null, 2));
     }
 

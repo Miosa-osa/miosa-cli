@@ -70,9 +70,9 @@ interface AgentSessionRow {
 interface TenantRow {
   name?: string;
   slug?: string;
-  plan?: string;
+  plan?: string | null;
   email?: string;
-  credit_balance?: number;
+  credit_balance?: number | null;
 }
 
 // ── Fetch helpers ────────────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ export function register(program: Command): void {
       try {
         // Parallel fetch — all requests fire simultaneously
         const [tenant, computers, sandboxes, deployments] = await Promise.all([
-          safeGetOne<TenantRow>(client, "/api/v1/platform/tenants/current"),
+          client.getTenant().catch(() => null),
           safeGet<ComputerRow>(client, "/api/v1/computers"),
           safeGet<SandboxRow>(client, "/api/v1/sandboxes"),
           safeGet<DeploymentRow>(client, "/api/v1/deployments"),

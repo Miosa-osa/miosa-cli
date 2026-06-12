@@ -7,6 +7,7 @@ import {
   postAndPrint,
   runAction,
   type JsonOptions,
+  unwrap,
 } from "./enterprise-util.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
@@ -150,6 +151,72 @@ export function register(program: Command): void {
         }
       });
     });
+
+  apiKeys
+    .command("create-scoped")
+    .description("Create a short-lived scoped API key for one external user")
+    .requiredOption("--external-user-id <id>", "External end-user identifier")
+    .requiredOption(
+      "--scopes <scopes>",
+      'Comma-separated scopes, e.g. "sandboxes:read,sandboxes:exec"',
+    )
+    .option("--expires-at <iso>", "Optional ISO-8601 expiry timestamp")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        opts: JsonOptions & {
+          externalUserId: string;
+          scopes: string;
+          expiresAt?: string;
+        },
+      ) => {
+        await runAction(async () => {
+          const body: Record<string, unknown> = {
+            external_user_id: opts.externalUserId,
+            scopes: opts.scopes
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean),
+          };
+          if ((body["scopes"] as string[]).length === 0) {
+            throw new Error("--scopes must include at least one scope");
+          }
+          if (opts.expiresAt) body["expires_at"] = opts.expiresAt;
+
+          const spinner = spin("Creating scoped API key...");
+          const raw = await client().apiPost<unknown>(
+            "/api/v1/api-keys/scoped",
+            body,
+          );
+          spinner.stop();
+          const key = unwrap<ApiKey & { expires_at?: string }>(raw);
+
+          if (opts.json) {
+            console.log(JSON.stringify(key, null, 2));
+            return;
+          }
+
+          const plaintext = key.token ?? key.key;
+          if (plaintext) {
+            console.log(
+              chalk.green(
+                "Scoped API key created. Store this token — it won't be shown again:\n",
+              ),
+            );
+            console.log(`  ${chalk.bold(plaintext)}\n`);
+          }
+          console.log(`${chalk.bold("id".padEnd(10))} ${key.id ?? ""}`);
+          console.log(
+            `${chalk.bold("scopes".padEnd(10))} ${formatScopes(key.scopes)}`,
+          );
+          if (key.expires_at) {
+            console.log(
+              `${chalk.bold("expires".padEnd(10))} ${key.expires_at}`,
+            );
+          }
+        });
+      },
+    );
 
   apiKeys
     .command("delete <id>")

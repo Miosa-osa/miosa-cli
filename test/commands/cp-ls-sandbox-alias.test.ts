@@ -142,6 +142,67 @@ describe("top-level sandbox cp/ls aliases", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("falls back to chunked exec upload for top-level sandbox cp when file transport is unavailable", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-cp-fallback-"));
+    const file = path.join(dir, "file.txt");
+    fs.writeFileSync(file, "hello");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_123", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/files",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox file transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    for (let i = 0; i < 3; i += 1) {
+      mock
+        .get("https://api.miosa.ai")
+        .intercept({
+          path: "/api/v1/sandboxes/sbx_123/exec",
+          method: "POST",
+        })
+        .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "" } }), {
+          headers: { "content-type": "application/json" },
+        });
+    }
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "cp",
+      file,
+      "sbx_123:/workspace/file.txt",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("lists sandbox-id:/path with top-level miosa ls", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();

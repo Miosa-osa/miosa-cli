@@ -19,11 +19,32 @@ export interface MiosaAppManifest {
   port?: number;
   output?: string;
   output_path?: string;
+  domain?: string;
+  resources?: {
+    database?: ResourceIntent;
+    storage?: ResourceIntent;
+    volume?: ResourceIntent;
+    domain?: string;
+  };
   readiness?: {
     path?: string;
     port?: number;
   };
 }
+
+export type ResourceIntent =
+  | false
+  | true
+  | {
+      auto?: boolean;
+      select?: string;
+      engine?: string;
+      size?: string;
+      storage_mb?: number;
+      region?: string;
+      env_name?: string;
+      [key: string]: unknown;
+    };
 
 export interface LoadedAppManifest {
   path: string;
@@ -83,9 +104,23 @@ export function manifestOutputPath(
   return stringValue(manifest?.output_path ?? manifest?.output);
 }
 
+export function manifestDomain(
+  manifest?: MiosaAppManifest | null,
+): string | undefined {
+  return stringValue(manifest?.domain ?? manifest?.resources?.domain);
+}
+
+export function manifestResources(
+  manifest?: MiosaAppManifest | null,
+): MiosaAppManifest["resources"] | undefined {
+  return manifest?.resources;
+}
+
 function parseSimpleYaml(content: string): Record<string, unknown> {
   const root: Record<string, unknown> = {};
-  let section: Record<string, unknown> | null = null;
+  const stack: Array<{ indent: number; object: Record<string, unknown> }> = [
+    { indent: -1, object: root },
+  ];
 
   for (const rawLine of content.split(/\r?\n/)) {
     const withoutComment = rawLine.replace(/\s+#.*$/, "");
@@ -98,16 +133,18 @@ function parseSimpleYaml(content: string): Record<string, unknown> {
     const key = trimmed.slice(0, idx).trim();
     const rawValue = trimmed.slice(idx + 1).trim();
 
-    if (indent === 0) {
-      if (rawValue === "") {
-        section = {};
-        root[key] = section;
-      } else {
-        section = null;
-        root[key] = parseScalar(rawValue);
-      }
-    } else if (section) {
-      section[key] = parseScalar(rawValue);
+    while (stack.length > 1 && indent <= stack[stack.length - 1]!.indent) {
+      stack.pop();
+    }
+
+    const parent = stack[stack.length - 1]!.object;
+
+    if (rawValue === "") {
+      const child: Record<string, unknown> = {};
+      parent[key] = child;
+      stack.push({ indent, object: child });
+    } else {
+      parent[key] = parseScalar(rawValue);
     }
   }
 
@@ -129,6 +166,10 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
     row["readiness"] && typeof row["readiness"] === "object"
       ? (row["readiness"] as Record<string, unknown>)
       : {};
+  const resources =
+    row["resources"] && typeof row["resources"] === "object"
+      ? normalizeResources(row["resources"] as Record<string, unknown>)
+      : undefined;
 
   return {
     template: stringValue(row["template"] ?? row["template_id"]),
@@ -145,6 +186,8 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
     port: numberValue(row["port"] ?? readiness["port"]),
     output: stringValue(row["output"]),
     output_path: stringValue(row["output_path"]),
+    domain: stringValue(row["domain"]),
+    resources,
     readiness: {
       path: stringValue(
         readiness["path"] ?? row["probe_path"] ?? row["health_check_path"],
@@ -152,6 +195,23 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
       port: numberValue(readiness["port"]),
     },
   };
+}
+
+function normalizeResources(
+  value: Record<string, unknown>,
+): MiosaAppManifest["resources"] {
+  return {
+    database: resourceValue(value["database"]),
+    storage: resourceValue(value["storage"]),
+    volume: resourceValue(value["volume"]),
+    domain: stringValue(value["domain"]),
+  };
+}
+
+function resourceValue(value: unknown): ResourceIntent | undefined {
+  if (value === true || value === false) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as ResourceIntent;
 }
 
 function stringValue(value: unknown): string | undefined {

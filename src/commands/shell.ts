@@ -695,7 +695,7 @@ export function register(program: Command): void {
           const config = loadConfig();
           if (!config.api_key) {
             process.stderr.write(
-              chalk.red("You are not logged in. Run: miosa auth login\n"),
+              chalk.red("You are not logged in. Run: miosa login\n"),
             );
             process.exit(3);
           }

@@ -36,8 +36,8 @@ export class MiosaClient {
   constructor(config: MiosaConfig) {
     if (!config.api_key) {
       throw new AuthError(
-        "You are not logged in. Run: miosa auth login",
-        "Install with `brew install Miosa-osa/tap/miosa`, then run `miosa auth login`.",
+        "You are not logged in. Run: miosa login",
+        "Install with `brew install Miosa-osa/tap/miosa`, then run `miosa login`.",
       );
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
@@ -378,12 +378,42 @@ export class MiosaClient {
     );
 
     const tenant = response.data ?? (response as Tenant);
+    const billingOverview = await this.getBillingOverview().catch(() => null);
+    const billingCreditBalance =
+      billingOverview?.available_balance_cents ??
+      (billingOverview
+        ? (billingOverview.usage_budget_cents ?? 0) +
+          (billingOverview.topup_balance_cents ?? 0) -
+          (billingOverview.billing_period_usage_cents ?? 0)
+        : null);
 
     return {
       ...tenant,
       plan: tenant.plan ?? (tenant as { plan_name?: string }).plan_name ?? null,
-      credit_balance: tenant.credit_balance ?? 0,
+      credit_balance: tenant.credit_balance ?? billingCreditBalance ?? 0,
     };
+  }
+
+  private async getBillingOverview(): Promise<{
+    available_balance_cents?: number | null;
+    usage_budget_cents?: number | null;
+    topup_balance_cents?: number | null;
+    billing_period_usage_cents?: number | null;
+  }> {
+    const response = await this.get<{
+      data?: {
+        available_balance_cents?: number | null;
+        usage_budget_cents?: number | null;
+        topup_balance_cents?: number | null;
+        billing_period_usage_cents?: number | null;
+      };
+      available_balance_cents?: number | null;
+      usage_budget_cents?: number | null;
+      topup_balance_cents?: number | null;
+      billing_period_usage_cents?: number | null;
+    }>("/api/v1/billing/overview");
+
+    return response.data ?? response;
   }
 
   // --- Hosts ---

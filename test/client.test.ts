@@ -198,7 +198,7 @@ describe("MiosaClient", () => {
       expect(result.credit_balance).toBe(5000);
     });
 
-    it("should normalize tenant data from the unwrapped platform response", async () => {
+    it("should hydrate tenant credits from billing overview when tenant response omits legacy balance", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();
       setGlobalDispatcher(mock);
@@ -217,12 +217,64 @@ describe("MiosaClient", () => {
         .reply(200, JSON.stringify(tenant), {
           headers: { "content-type": "application/json" },
         });
+      pool
+        .intercept({ path: "/api/v1/billing/overview", method: "GET" })
+        .reply(
+          200,
+          JSON.stringify({
+            data: {
+              usage_budget_cents: 4900,
+              topup_balance_cents: 2700,
+              billing_period_usage_cents: 1250,
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
 
       const client = new MiosaClient(makeConfig());
       const result = await client.getTenant();
       expect(result.name).toBe("Acme Corp");
       expect(result.plan).toBe("Platform");
-      expect(result.credit_balance).toBe(0);
+      expect(result.credit_balance).toBe(6350);
+    });
+
+    it("prefers explicit available balance from billing overview", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      const tenant = {
+        id: "t_123",
+        name: "Acme Corp",
+        slug: "acme",
+        plan_name: "Platform",
+        inserted_at: "2024-01-01T00:00:00Z",
+      };
+
+      const pool = mock.get("https://api.miosa.ai");
+      pool
+        .intercept({ path: "/api/v1/platform/tenants/current", method: "GET" })
+        .reply(200, JSON.stringify({ data: tenant }), {
+          headers: { "content-type": "application/json" },
+        });
+      pool
+        .intercept({ path: "/api/v1/billing/overview", method: "GET" })
+        .reply(
+          200,
+          JSON.stringify({
+            data: {
+              available_balance_cents: 500,
+              usage_budget_cents: 4900,
+              topup_balance_cents: 2700,
+              billing_period_usage_cents: 1250,
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+
+      const client = new MiosaClient(makeConfig());
+      const result = await client.getTenant();
+      expect(result.credit_balance).toBe(500);
     });
 
     it("should list hosts and return array", async () => {

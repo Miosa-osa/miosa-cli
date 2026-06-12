@@ -44,7 +44,13 @@ import {
   printElapsed,
 } from "../ui/render.js";
 import { formatBytes } from "../ui/progress.js";
-import { UserError } from "../errors.js";
+import {
+  ApiResponseError,
+  MiosaError,
+  NetworkError,
+  ServerError,
+  UserError,
+} from "../errors.js";
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -931,7 +937,7 @@ export function register(program: Command): void {
     .option("--probe-path <path>", "HTTP path to probe")
     .option("--json", "Output as JSON")
     .action(
-      (
+      async (
         localDir = ".",
         opts: {
           sandbox?: string;
@@ -950,29 +956,32 @@ export function register(program: Command): void {
           probePath?: string;
           json?: boolean;
         },
-      ) =>
-        runAction(async () => {
-          const result = await deploySandbox(localDir, opts);
-          if (isJsonMode(opts)) {
-            console.log(JSON.stringify(result, null, 2));
-            return;
-          }
+      ) => {
+          try {
+            const result = await deploySandbox(localDir, opts);
+            if (isJsonMode(opts)) {
+              console.log(JSON.stringify(result, null, 2));
+              return;
+            }
 
-          console.log();
-          console.log(`  ${chalk.bold("Sandbox")}  ${result.sandbox_id}`);
-          console.log(`  ${chalk.bold("Port")}     ${result.port}`);
-          console.log(
-            `  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`,
-          );
-          console.log(
-            `  ${chalk.bold("Ready")}    ${
-              result.preview_ready
-                ? chalk.green("yes")
-                : chalk.yellow("not verified")
-            }`,
-          );
-          console.log();
-        }),
+            console.log();
+            console.log(`  ${chalk.bold("Sandbox")}  ${result.sandbox_id}`);
+            console.log(`  ${chalk.bold("Port")}     ${result.port}`);
+            console.log(
+              `  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`,
+            );
+            console.log(
+              `  ${chalk.bold("Ready")}    ${
+                result.preview_ready
+                  ? chalk.green("yes")
+                  : chalk.yellow("not verified")
+              }`,
+            );
+            console.log();
+          } catch (err) {
+            handleSandboxDeployError(err, opts);
+          }
+        },
     );
 
   sandbox
@@ -1115,11 +1124,11 @@ export function register(program: Command): void {
     .option("--environment <name>", "Target environment label", "production")
     .option("--build-command <cmd>", "Build command to run before publishing")
     .option("--run-command <cmd>", "Run command for dynamic/server deployments")
-    .option("--domain <domain>", "Custom domain to attach")
     .option(
       "--docker-deploy",
-      "Publish through the workspace Docker Deploy runtime",
+      "Publish onto the workspace Docker Deploy runtime instead of standard app hosting",
     )
+    .option("--domain <domain>", "Custom domain to attach")
     .option(
       "--deployment-type <type>",
       "Deployment runtime type: miosa_deploy, docker_deploy, dynamic, static",
@@ -1151,8 +1160,8 @@ export function register(program: Command): void {
           environment: string;
           buildCommand?: string;
           runCommand?: string;
-          domain?: string;
           dockerDeploy?: boolean;
+          domain?: string;
           deploymentType?: string;
           database?: string;
           port?: number;
@@ -1333,6 +1342,7 @@ export function register(program: Command): void {
 
   service
     .command("start <sandbox-id> <name>")
+    .alias("up")
     .requiredOption("--cmd <command>", "Command to start")
     .option(
       "--cwd <path>",
@@ -1604,6 +1614,29 @@ export function register(program: Command): void {
         }),
     );
 
+  sandbox
+    .command("recover <name-or-id>")
+    .description(
+      "Inspect a failed or partial sandbox deploy and print recovery commands",
+    )
+    .option("--port <port>", "App port to diagnose", parseIntegerOption)
+    .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        idOrName: string,
+        opts: { port?: number; probePath: string; json?: boolean },
+      ) =>
+        runAction(async () => {
+          const report = await recoverSandboxDeploy(idOrName, opts);
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          renderRecoverReport(report);
+        }),
+    );
+
   // write-file — POST /sandboxes/:id/files with base64 content.
   // If <content-or-file> is an existing local path, reads the file bytes;
   // otherwise treats the argument as literal UTF-8 text.
@@ -1624,10 +1657,11 @@ export function register(program: Command): void {
           const contentBytes: Buffer = fs.existsSync(contentArg)
             ? fs.readFileSync(contentArg)
             : Buffer.from(contentArg, "utf8");
-          const base64 = contentBytes.toString("base64");
-          const result = await fetchApiRaw(
-            apiPath(`/sandboxes/${enc(id)}/files`),
-            { path: remotePath, content: base64 },
+          const result = await writeBytesToSandbox(
+            client(),
+            id,
+            remotePath,
+            contentBytes,
           );
           if (!isJsonMode(opts)) {
             console.log(chalk.green(`Written to ${remotePath}`));
@@ -1706,12 +1740,12 @@ export function register(program: Command): void {
             console.error(chalk.red(`File not found: ${localPath}`));
             process.exit(1);
           }
-          const data = fs.readFileSync(localPath);
-          const base64 = data.toString("base64");
           const c = client();
-          const result = await c.apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/files`),
-            { path: remotePath, content: base64 },
+          const result = await writeBytesToSandbox(
+            c,
+            id,
+            remotePath,
+            fs.readFileSync(localPath),
           );
           if (isJsonMode(opts)) {
             printValue(result, opts);
@@ -2556,6 +2590,17 @@ interface SandboxDeployResult {
   process_pid?: string | null;
 }
 
+class SandboxDeployPartialError extends Error {
+  constructor(
+    public readonly causeError: unknown,
+    public readonly sandboxId: string,
+    public readonly recoveryCommand: string,
+  ) {
+    super(causeError instanceof Error ? causeError.message : String(causeError));
+    this.name = "SandboxDeployPartialError";
+  }
+}
+
 interface SandboxPublishOptions {
   path: string;
   app?: string;
@@ -2564,8 +2609,8 @@ interface SandboxPublishOptions {
   environment: string;
   buildCommand?: string;
   runCommand?: string;
-  domain?: string;
   dockerDeploy?: boolean;
+  domain?: string;
   deploymentType?: string;
   database?: string;
   port?: number;
@@ -2776,6 +2821,21 @@ async function createSandboxCommand(
   };
 }
 
+function warnOnTemplatePortMismatch(
+  template: string | null,
+  port: number,
+  opts: JsonOptions,
+): void {
+  if (isJsonMode(opts)) return;
+  if ((template === "nextjs" || template === "next-js") && port !== 3000) {
+    console.error(
+      chalk.yellow(
+        "Next.js sandbox templates default to port 3000. Use --port 3000 unless you intentionally changed the app readiness port.",
+      ),
+    );
+  }
+}
+
 function serviceLogPath(name: string): string {
   return `/tmp/miosa-services/${name}.log`;
 }
@@ -2817,6 +2877,11 @@ async function deploySandbox(
     manifestPort(appManifest) ??
     detection?.port ??
     5173;
+  warnOnTemplatePortMismatch(
+    opts.template ?? appManifest?.template ?? null,
+    port,
+    opts,
+  );
   const probePath = opts.probePath ?? manifestProbePath(appManifest) ?? "/";
   let remoteWorkdir = normalizeRemoteWorkdir(
     appManifest?.workdir ?? "/workspace",
@@ -2825,111 +2890,123 @@ async function deploySandbox(
     opts.start ??
     manifestStartCommand(appManifest) ??
     defaultStartCommand(detection?.framework ?? appManifest?.framework, port);
-  const sandboxId =
-    opts.sandbox ??
-    (deployStep(opts, "Creating sandbox"),
-    await createSandboxForDeploy(
-      c,
-      opts.template ?? appManifest?.template ?? "miosa-sandbox",
-      opts.name,
-      {
-        source: opts.source,
-        revision: opts.revision,
-        depth: opts.depth,
-      },
-    ));
+  let sandboxId = opts.sandbox ?? null;
 
-  deployStep(opts, "Waiting for sandbox");
-  await waitForSandboxRunning(c, sandboxId, Math.min(opts.timeout, 120));
+  try {
+    if (!sandboxId) {
+      deployStep(opts, "Creating sandbox");
+      sandboxId = await createSandboxForDeploy(
+        c,
+        opts.template ?? appManifest?.template ?? "miosa-sandbox",
+        opts.name,
+        {
+          source: opts.source,
+          revision: opts.revision,
+          depth: opts.depth,
+        },
+      );
+    }
 
-  if (sourceBacked) {
-    deployStep(opts, "Waiting for source import");
-    appManifest = await readRemoteAppManifest(c, sandboxId, opts.timeout);
-    remoteWorkdir = normalizeRemoteWorkdir(
-      appManifest?.workdir ?? "/workspace",
-    );
-  } else {
-    deployStep(opts, "Uploading files");
-    const archivePath = createDeployArchive(sourceDir);
-    const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
-    try {
-      await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
-      deployStep(opts, "Extracting workspace");
+    deployStep(opts, "Waiting for sandbox");
+    await waitForSandboxRunning(c, sandboxId, Math.min(opts.timeout, 120));
+
+    if (sourceBacked) {
+      deployStep(opts, "Waiting for source import");
+      appManifest = await readRemoteAppManifest(c, sandboxId, opts.timeout);
+      remoteWorkdir = normalizeRemoteWorkdir(
+        appManifest?.workdir ?? "/workspace",
+      );
+    } else {
+      deployStep(opts, "Uploading files");
+      const archivePath = createDeployArchive(sourceDir);
+      const remoteArchive = `/tmp/miosa-deploy-${Date.now()}.tgz`;
+      try {
+        await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
+        deployStep(opts, "Extracting workspace");
+        await execSandbox(
+          c,
+          sandboxId,
+          `mkdir -p ${shellQuote(remoteWorkdir)} && tar -xzf ${shellQuote(remoteArchive)} -C ${shellQuote(remoteWorkdir)}`,
+          "/",
+        );
+      } finally {
+        fs.rmSync(archivePath, { force: true });
+      }
+    }
+    const resolvedPort =
+      opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? port;
+    const resolvedProbePath =
+      opts.probePath ?? manifestProbePath(appManifest) ?? probePath;
+    const resolvedStart =
+      opts.start ?? manifestStartCommand(appManifest) ?? start;
+    const installCommand =
+      opts.install === false
+        ? null
+        : (opts.installCommand ??
+          (appManifest?.install === false ? null : appManifest?.install) ??
+          (sourceBacked ? "npm install" : defaultInstallCommand(sourceDir)));
+
+    if (installCommand) {
+      deployStep(opts, `Installing dependencies: ${installCommand}`);
       await execSandbox(
         c,
         sandboxId,
-        `mkdir -p ${shellQuote(remoteWorkdir)} && tar -xzf ${shellQuote(remoteArchive)} -C ${shellQuote(remoteWorkdir)}`,
-        "/",
+        installCommand,
+        remoteWorkdir,
+        opts.timeout,
       );
-    } finally {
-      fs.rmSync(archivePath, { force: true });
     }
-  }
 
-  const resolvedPort =
-    opts.port ?? opts.publishPort ?? manifestPort(appManifest) ?? port;
-  const resolvedProbePath =
-    opts.probePath ?? manifestProbePath(appManifest) ?? probePath;
-  const resolvedStart =
-    opts.start ?? manifestStartCommand(appManifest) ?? start;
-  const installCommand =
-    opts.install === false
-      ? null
-      : (opts.installCommand ??
-        (appManifest?.install === false ? null : appManifest?.install) ??
-        (sourceBacked ? "npm install" : defaultInstallCommand(sourceDir)));
-
-  if (installCommand) {
-    deployStep(opts, `Installing dependencies: ${installCommand}`);
+    deployStep(opts, `Starting app on port ${resolvedPort}`);
     await execSandbox(
       c,
       sandboxId,
-      installCommand,
+      `fuser -k ${resolvedPort}/tcp >/dev/null 2>&1 || true; nohup sh -lc ${shellQuote(resolvedStart)} > ${shellQuote(`/tmp/miosa-app-${resolvedPort}.log`)} 2>&1 & echo $!`,
       remoteWorkdir,
-      opts.timeout,
     );
+
+    deployStep(opts, "Checking internal app readiness");
+    const internal = await waitForInternalHttp(
+      c,
+      sandboxId,
+      resolvedPort,
+      resolvedProbePath,
+      Math.min(opts.timeout, 60),
+    );
+    deployStep(opts, "Creating public preview route");
+    const exposed = await c.apiPost<unknown>(
+      apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
+      { port: resolvedPort, title: "app preview" },
+    );
+    const previewUrl = extractUrl(unwrap(exposed));
+    if (!previewUrl) {
+      throw new UserError("Sandbox expose did not return a preview URL.");
+    }
+
+    if (opts.wait) deployStep(opts, "Checking public preview readiness");
+    const edge = opts.wait
+      ? await waitForPublicPreview(previewUrl, resolvedProbePath, opts.timeout)
+      : { ok: false, status: null };
+
+    return {
+      sandbox_id: sandboxId,
+      port: resolvedPort,
+      preview_url: previewUrl,
+      preview_ready: edge.ok,
+      internal_status: internal.status,
+      edge_status: edge.status,
+      latency_ms: edge.latency_ms ?? null,
+    };
+  } catch (err) {
+    if (sandboxId) {
+      throw new SandboxDeployPartialError(
+        err,
+        sandboxId,
+        recoveryCommandForSandboxDeploy(sandboxId, opts, localDir),
+      );
+    }
+    throw err;
   }
-
-  deployStep(opts, `Starting app on port ${resolvedPort}`);
-  await execSandbox(
-    c,
-    sandboxId,
-    `fuser -k ${resolvedPort}/tcp >/dev/null 2>&1 || true; nohup sh -lc ${shellQuote(resolvedStart)} > ${shellQuote(`/tmp/miosa-app-${resolvedPort}.log`)} 2>&1 & echo $!`,
-    remoteWorkdir,
-  );
-
-  deployStep(opts, "Checking internal app readiness");
-  const internal = await waitForInternalHttp(
-    c,
-    sandboxId,
-    resolvedPort,
-    resolvedProbePath,
-    Math.min(opts.timeout, 60),
-  );
-  deployStep(opts, "Creating public preview route");
-  const exposed = await c.apiPost<unknown>(
-    apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
-    { port: resolvedPort, title: "app preview" },
-  );
-  const previewUrl = extractUrl(unwrap(exposed));
-  if (!previewUrl) {
-    throw new UserError("Sandbox expose did not return a preview URL.");
-  }
-
-  if (opts.wait) deployStep(opts, "Checking public preview readiness");
-  const edge = opts.wait
-    ? await waitForPublicPreview(previewUrl, resolvedProbePath, opts.timeout)
-    : { ok: false, status: null };
-
-  return {
-    sandbox_id: sandboxId,
-    port: resolvedPort,
-    preview_url: previewUrl,
-    preview_ready: edge.ok,
-    internal_status: internal.status,
-    edge_status: edge.status,
-    latency_ms: edge.latency_ms ?? null,
-  };
 }
 
 const NON_TERMINAL_DEPLOY_STATES = new Set([
@@ -2982,6 +3059,7 @@ async function publishSandbox(
       ? { environment: opts.environment, deployment_product: "docker_deploy" }
       : { environment: opts.environment },
   };
+  if (opts.dockerDeploy) body["deployment_type"] = "docker-deploy";
   if (opts.app) body["deployment_id"] = opts.app;
   // Bug 9: avoid creating a duplicate deployment on retry. When publishing by
   // name (no explicit app id), reuse an existing non-terminal deployment with
@@ -3230,6 +3308,254 @@ function renderDoctorReport(report: Record<string, unknown>): void {
   }
 }
 
+interface SandboxRecoveryReport {
+  query: string;
+  sandbox: Record<string, unknown> | null;
+  sandbox_id: string | null;
+  matched_by: "id" | "name" | null;
+  exec_ok: boolean;
+  app_port: number | null;
+  preview_ready: boolean | null;
+  preview_url: string | null;
+  doctor?: Record<string, unknown> | null;
+  recommendations: string[];
+  commands: Record<string, string>;
+}
+
+async function recoverSandboxDeploy(
+  idOrName: string,
+  opts: { port?: number; probePath: string },
+): Promise<SandboxRecoveryReport> {
+  const c = client();
+  const resolved = await resolveSandboxForRecovery(c, idOrName);
+  if (!resolved.sandbox) {
+    return {
+      query: idOrName,
+      sandbox: null,
+      sandbox_id: null,
+      matched_by: null,
+      exec_ok: false,
+      app_port: opts.port ?? null,
+      preview_ready: null,
+      preview_url: null,
+      doctor: null,
+      recommendations: [
+        "No matching sandbox was found. Run `miosa sandbox list --json` and retry with a sandbox ID.",
+      ],
+      commands: {
+        list: "miosa sandbox list --json",
+      },
+    };
+  }
+
+  const sandbox = resolved.sandbox;
+  const sandboxId = str(sandbox["id"]);
+  const name = stringOrNull(sandbox["name"]);
+  const template = stringOrNull(sandbox["template_id"]);
+  const port = opts.port ?? suggestedRecoveryPort(template);
+
+  const execOk = await checkSandboxExec(c, sandboxId);
+  const doctor =
+    port != null ? await safeDoctorSandbox(sandboxId, port, opts.probePath) : null;
+
+  const previewUrl = stringOrNull(doctor?.["preview_url"]);
+  const previewReady =
+    doctor && typeof doctor["preview_ready"] === "boolean"
+      ? Boolean(doctor["preview_ready"])
+      : null;
+
+  const recommendations = buildRecoveryRecommendations({
+    sandbox,
+    execOk,
+    port,
+    previewReady,
+    template,
+  });
+
+  return {
+    query: idOrName,
+    sandbox,
+    sandbox_id: sandboxId,
+    matched_by: resolved.matchedBy,
+    exec_ok: execOk,
+    app_port: port,
+    preview_ready: previewReady,
+    preview_url: previewUrl,
+    doctor,
+    recommendations,
+    commands: recoveryCommands(sandboxId, name, port),
+  };
+}
+
+async function resolveSandboxForRecovery(
+  c: ReturnType<typeof client>,
+  idOrName: string,
+): Promise<{
+  sandbox: Record<string, unknown> | null;
+  matchedBy: "id" | "name" | null;
+}> {
+  try {
+    const direct = unwrap(
+      await c.apiGet<unknown>(apiPath(`/sandboxes/${enc(idOrName)}`)),
+    );
+    const sandbox = asRecord(direct);
+    if (sandbox) return { sandbox, matchedBy: "id" };
+  } catch {
+    // Fall through to name lookup.
+  }
+
+  const list = unwrap(await c.apiGet<unknown>(apiPath("/sandboxes")));
+  const items = Array.isArray(list)
+    ? list
+    : Array.isArray((asRecord(list) ?? {})["data"])
+      ? ((asRecord(list) ?? {})["data"] as unknown[])
+      : [];
+
+  const matches = items
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .filter((item) => {
+      const name = stringOrNull(item["name"]);
+      const id = stringOrNull(item["id"]);
+      return name === idOrName || id?.startsWith(idOrName);
+    })
+    .sort((a, b) => {
+      const aTime = Date.parse(stringOrNull(a["created_at"]) ?? "") || 0;
+      const bTime = Date.parse(stringOrNull(b["created_at"]) ?? "") || 0;
+      return bTime - aTime;
+    });
+
+  return { sandbox: matches[0] ?? null, matchedBy: matches[0] ? "name" : null };
+}
+
+async function checkSandboxExec(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+): Promise<boolean> {
+  try {
+    const result = unwrap(
+      await c.apiPost<unknown>(apiPath(`/sandboxes/${enc(sandboxId)}/exec`), {
+        command: "pwd",
+      }),
+    );
+    const record = asRecord(result);
+    return Number(record?.["exit_code"] ?? 0) === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function safeDoctorSandbox(
+  sandboxId: string,
+  port: number,
+  probePath: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    return await doctorSandbox(sandboxId, port, probePath);
+  } catch (err) {
+    return {
+      preview_ready: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function suggestedRecoveryPort(template: string | null): number | null {
+  if (template === "nextjs" || template === "next-js") return 3000;
+  return null;
+}
+
+function buildRecoveryRecommendations(input: {
+  sandbox: Record<string, unknown>;
+  execOk: boolean;
+  port: number | null;
+  previewReady: boolean | null;
+  template: string | null;
+}): string[] {
+  const recs: string[] = [];
+  const state = stringOrNull(input.sandbox["state"]);
+  const ready = Boolean(input.sandbox["ready"]);
+
+  if (state !== "running") {
+    recs.push(`Sandbox state is ${state ?? "unknown"}; wait or recreate before uploading files.`);
+  } else if (!ready) {
+    recs.push("Sandbox exists but is not fully ready; try exec/write-file before retrying deploy.");
+  }
+
+  if (!input.execOk) {
+    recs.push("Exec health failed; retry later or recreate the sandbox.");
+  } else {
+    recs.push("Exec works; if upload/deploy failed, use write-file/patch plus service up.");
+  }
+
+  if (input.template === "nextjs" && input.port !== 3000) {
+    recs.push("Next.js templates default to port 3000; use 3000 unless you intentionally reconfigured readiness.");
+  }
+
+  if (input.port != null && input.previewReady === false) {
+    recs.push("Preview is not ready; start the app process, then run sandbox wait.");
+  }
+
+  if (input.previewReady === true) {
+    recs.push("Preview is ready; publish the sandbox to a durable deployment.");
+  }
+
+  return recs;
+}
+
+function recoveryCommands(
+  sandboxId: string,
+  name: string | null,
+  port: number | null,
+): Record<string, string> {
+  const commands: Record<string, string> = {
+    health: `miosa sandbox exec ${sandboxId} --json -- pwd`,
+    files: `miosa sandbox write-file ${sandboxId} /workspace/app/page.jsx ./page.jsx --json`,
+  };
+
+  if (port != null) {
+    commands.start = `miosa sandbox service up ${sandboxId} next --cwd /workspace --port ${port} --cmd "npm run dev -- --hostname 0.0.0.0 --port ${port}" --json`;
+    commands.wait = `miosa sandbox wait ${sandboxId} --port ${port} --timeout 180 --json`;
+    commands.publish = `miosa sandbox publish ${sandboxId} --path /workspace --name ${shellArg(name ?? "Recovered app")} --build-command "npm run build" --run-command "npm run start" --port ${port} --wait --timeout 900s --json`;
+  }
+
+  return commands;
+}
+
+function renderRecoverReport(report: SandboxRecoveryReport): void {
+  if (!report.sandbox_id) {
+    console.log(chalk.red("No matching sandbox found."));
+    console.log(`  ${report.commands["list"]}`);
+    return;
+  }
+
+  console.log(chalk.bold("Sandbox recovery"));
+  console.log();
+  console.log(`  ${chalk.bold("Sandbox")} ${report.sandbox_id}`);
+  console.log(`  ${chalk.bold("Matched")} ${report.matched_by}`);
+  console.log(`  ${chalk.bold("Exec")}    ${report.exec_ok ? chalk.green("ok") : chalk.red("failed")}`);
+  if (report.app_port != null) {
+    console.log(`  ${chalk.bold("Port")}    ${report.app_port}`);
+  }
+  if (report.preview_url) {
+    console.log(`  ${chalk.bold("Preview")} ${chalk.cyan(report.preview_url)}`);
+  }
+  if (report.preview_ready != null) {
+    console.log(
+      `  ${chalk.bold("Ready")}   ${report.preview_ready ? chalk.green("yes") : chalk.yellow("no")}`,
+    );
+  }
+  console.log();
+  for (const rec of report.recommendations) {
+    console.log(`  - ${rec}`);
+  }
+  console.log();
+  console.log(chalk.bold("Next commands"));
+  for (const [label, command] of Object.entries(report.commands)) {
+    console.log(`  ${chalk.dim(label.padEnd(7))} ${command}`);
+  }
+}
+
 async function createSandboxForDeploy(
   c: ReturnType<typeof client>,
   template: string,
@@ -3349,11 +3675,170 @@ async function uploadFileToSandbox(
   sandboxId: string,
   localPath: string,
   remotePath: string,
+): Promise<unknown> {
+  return writeBytesToSandbox(c, sandboxId, remotePath, fs.readFileSync(localPath));
+}
+
+async function writeBytesToSandbox(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  remotePath: string,
+  bytes: Buffer,
+): Promise<unknown> {
+  try {
+    return await c.apiPost(apiPath(`/sandboxes/${enc(sandboxId)}/files`), {
+      path: remotePath,
+      content: bytes.toString("base64"),
+    });
+  } catch (err) {
+    if (!shouldFallbackSandboxUpload(err)) throw err;
+    await writeBytesToSandboxViaExec(c, sandboxId, remotePath, bytes);
+    return {
+      data: {
+        sandbox_id: sandboxId,
+        path: remotePath,
+        size: bytes.length,
+        transport: "exec_chunked_fallback",
+      },
+    };
+  }
+}
+
+async function writeBytesToSandboxViaExec(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  remotePath: string,
+  bytes: Buffer,
 ): Promise<void> {
-  await c.apiPost(apiPath(`/sandboxes/${enc(sandboxId)}/files`), {
-    path: remotePath,
-    content: fs.readFileSync(localPath).toString("base64"),
-  });
+  const base64 = bytes.toString("base64");
+  const base64Path = `${remotePath}.b64`;
+  const chunkSize = 48_000;
+
+  await execSandbox(
+    c,
+    sandboxId,
+    `mkdir -p ${shellQuote(path.posix.dirname(remotePath))} && rm -f ${shellQuote(remotePath)} ${shellQuote(base64Path)}`,
+    "/",
+  );
+
+  for (let offset = 0; offset < base64.length; offset += chunkSize) {
+    const chunk = base64.slice(offset, offset + chunkSize);
+    await execSandbox(
+      c,
+      sandboxId,
+      `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(base64Path)}`,
+      "/",
+    );
+  }
+
+  await execSandbox(
+    c,
+    sandboxId,
+    `base64 -d ${shellQuote(base64Path)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(base64Path)}`,
+    "/",
+  );
+}
+
+function shouldFallbackSandboxUpload(err: unknown): boolean {
+  if (err instanceof NetworkError || err instanceof ServerError) return true;
+  if (err instanceof ApiResponseError) {
+    return (
+      err.retryable ||
+      /AGENT_UNAVAILABLE|SANDBOX_FILE_AGENT_UNAVAILABLE/i.test(err.code)
+    );
+  }
+  if (err instanceof Error) {
+    return /fetch failed|ECONNRESET|HTTP 502|AGENT_UNAVAILABLE|other side closed|socket hang up/i.test(
+      err.message,
+    );
+  }
+  return false;
+}
+
+function recoveryCommandForSandboxDeploy(
+  sandboxId: string,
+  opts: SandboxDeployOptions,
+  localDir: string,
+): string {
+  const parts = [
+    "miosa",
+    "sandbox",
+    "deploy",
+    shellQuote(localDir),
+    "--sandbox",
+    shellQuote(sandboxId),
+  ];
+  if (opts.port != null) parts.push("--port", String(opts.port));
+  if (opts.publishPort != null)
+    parts.push("--publish-port", String(opts.publishPort));
+  if (opts.installCommand)
+    parts.push("--install-command", shellQuote(opts.installCommand));
+  if (opts.install === false) parts.push("--no-install");
+  if (opts.start) parts.push("--start", shellQuote(opts.start));
+  if (opts.wait) parts.push("--wait");
+  if (opts.timeout != null) parts.push("--timeout", `${opts.timeout}s`);
+  if (opts.probePath) parts.push("--probe-path", shellQuote(opts.probePath));
+  return parts.join(" ");
+}
+
+function handleSandboxDeployError(
+  err: unknown,
+  opts: JsonOptions,
+): never {
+  if (err instanceof SandboxDeployPartialError) {
+    const cause = err.causeError;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const retryable =
+      cause instanceof ApiResponseError
+        ? cause.retryable
+        : shouldFallbackSandboxUpload(cause);
+
+    if (isJsonMode(opts)) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: false,
+            error: {
+              code: errorCodeForDeployCause(cause),
+              message,
+              retryable,
+              ...(cause instanceof MiosaError && cause.requestId
+                ? { request_id: cause.requestId }
+                : {}),
+            },
+            partial_resource: {
+              type: "sandbox",
+              id: err.sandboxId,
+              recovery_command: err.recoveryCommand,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return process.exit(1);
+    }
+
+    console.error(chalk.red(`Error: ${message}`));
+    console.error(
+      chalk.yellow(
+        `Sandbox ${err.sandboxId} exists. Retry into it with:\n  ${err.recoveryCommand}`,
+      ),
+    );
+    return process.exit(1);
+  }
+
+  handleError(err);
+}
+
+function errorCodeForDeployCause(err: unknown): string {
+  if (err instanceof ApiResponseError) return err.code;
+  if (err instanceof NetworkError) return "NETWORK";
+  if (err instanceof ServerError) return "SERVER";
+  if (err instanceof MiosaError) return err.constructor.name.toUpperCase();
+  if (err instanceof Error && /fetch failed|ECONNRESET/i.test(err.message))
+    return "NETWORK";
+  return "UNEXPECTED_ERROR";
 }
 
 async function uploadDirToSandbox(
@@ -4131,6 +4616,14 @@ function openUrl(url: string): void {
 function str(v: unknown): string {
   if (v === null || v === undefined) return chalk.dim("—");
   return String(v);
+}
+
+function stringOrNull(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function shellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
 /** Apply semantic color to a sandbox status string. */

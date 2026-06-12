@@ -9,7 +9,12 @@ import { MiosaClient } from "../client.js";
 import { handleError, isJsonMode, parseHostPath } from "./util.js";
 import { ProgressBar } from "../ui/progress.js";
 import { spin } from "../ui/spinner.js";
-import { UserError } from "../errors.js";
+import {
+  ApiResponseError,
+  NetworkError,
+  ServerError,
+  UserError,
+} from "../errors.js";
 
 export function register(program: Command): void {
   program
@@ -338,10 +343,64 @@ async function writeSandboxFile(
   remotePath: string,
   localPath: string,
 ): Promise<void> {
-  await client.apiPost(`/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/files`, {
-    path: remotePath,
-    content: fs.readFileSync(localPath).toString("base64"),
-  });
+  const bytes = fs.readFileSync(localPath);
+  try {
+    await client.apiPost(`/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/files`, {
+      path: remotePath,
+      content: bytes.toString("base64"),
+    });
+  } catch (err) {
+    if (!shouldFallbackSandboxUpload(err)) throw err;
+    await writeSandboxFileViaExec(client, sandboxId, remotePath, bytes);
+  }
+}
+
+async function writeSandboxFileViaExec(
+  client: MiosaClient,
+  sandboxId: string,
+  remotePath: string,
+  bytes: Buffer,
+): Promise<void> {
+  const base64 = bytes.toString("base64");
+  const base64Path = `${remotePath}.b64`;
+  const chunkSize = 48_000;
+
+  await execSandbox(
+    client,
+    sandboxId,
+    `mkdir -p ${shellQuote(path.posix.dirname(remotePath))} && rm -f ${shellQuote(remotePath)} ${shellQuote(base64Path)}`,
+  );
+
+  for (let offset = 0; offset < base64.length; offset += chunkSize) {
+    const chunk = base64.slice(offset, offset + chunkSize);
+    await execSandbox(
+      client,
+      sandboxId,
+      `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(base64Path)}`,
+    );
+  }
+
+  await execSandbox(
+    client,
+    sandboxId,
+    `base64 -d ${shellQuote(base64Path)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(base64Path)}`,
+  );
+}
+
+function shouldFallbackSandboxUpload(err: unknown): boolean {
+  if (err instanceof NetworkError || err instanceof ServerError) return true;
+  if (err instanceof ApiResponseError) {
+    return (
+      err.retryable ||
+      /AGENT_UNAVAILABLE|SANDBOX_FILE_AGENT_UNAVAILABLE/i.test(err.code)
+    );
+  }
+  if (err instanceof Error) {
+    return /fetch failed|ECONNRESET|HTTP 502|AGENT_UNAVAILABLE/i.test(
+      err.message,
+    );
+  }
+  return false;
 }
 
 async function execSandbox(

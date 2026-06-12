@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
 import { Command } from "commander";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 vi.mock("../../src/config.js", () => ({
   loadConfig: () => ({
@@ -283,6 +286,16 @@ describe("miosa sandbox exec", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
+        path: "/api/v1/deployments",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
         path: "/api/v1/sandboxes/sbx_123/publish",
         method: "POST",
         body: JSON.stringify({
@@ -293,10 +306,10 @@ describe("miosa sandbox exec", () => {
             environment: "production",
             deployment_product: "docker_deploy",
           },
+          deployment_type: "docker-deploy",
           name: "docker-site",
           run_command: "npm start",
           port: 3000,
-          deployment_type: "docker-deploy",
         }),
       })
       .reply(
@@ -345,6 +358,339 @@ describe("miosa sandbox exec", () => {
     const parsed = JSON.parse(logged.join("\n")) as Record<string, unknown>;
     expect(parsed["deployment_product"]).toBe("docker_deploy");
     expect(parsed["docker_deploy_host_id"]).toBe("ddh_123");
+  });
+
+  it("falls back to chunked exec upload when sandbox file transport returns 502", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-upload-fallback-"));
+    const file = path.join(dir, "payload.txt");
+    fs.writeFileSync(file, "hello from fallback");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/files",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox file transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    for (let i = 0; i < 3; i += 1) {
+      mock
+        .get("https://api.miosa.ai")
+        .intercept({
+          path: "/api/v1/sandboxes/sbx_123/exec",
+          method: "POST",
+        })
+        .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "" } }), {
+          headers: { "content-type": "application/json" },
+        });
+    }
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "upload",
+      "sbx_123",
+      file,
+      "/workspace/payload.txt",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      data: {
+        sandbox_id: "sbx_123",
+        path: "/workspace/payload.txt",
+        size: 19,
+        transport: "exec_chunked_fallback",
+      },
+    });
+  });
+
+  it("returns partial sandbox metadata when deploy fails after sandbox creation", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-deploy-partial-"));
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { dev: "node server.js" } }),
+    );
+    fs.writeFileSync(path.join(dir, "server.js"), "console.log('ok');\n");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+      })
+      .reply(201, JSON.stringify({ data: { id: "sbx_partial" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_partial",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_partial", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_partial/files",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox file transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_partial/exec",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox exec transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "deploy",
+      dir,
+      "--name",
+      "bennett-os-marketing",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.partial_resource).toMatchObject({
+      type: "sandbox",
+      id: "sbx_partial",
+    });
+    expect(parsed.partial_resource.recovery_command).toContain(
+      "--sandbox 'sbx_partial'",
+    );
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("starts services through the service up alias", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/services",
+        method: "POST",
+        body: JSON.stringify({
+          name: "next",
+          command: "npm run dev -- --hostname 0.0.0.0 --port 3000",
+          cwd: "/workspace",
+        }),
+      })
+      .reply(201, JSON.stringify({ data: { status: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/expose",
+        method: "POST",
+      })
+      .reply(200, JSON.stringify({ data: { url: "https://3000-sbx.sandbox.miosa.app" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "service",
+      "up",
+      "sbx_123",
+      "next",
+      "--cwd",
+      "/workspace",
+      "--port",
+      "3000",
+      "--cmd",
+      "npm run dev -- --hostname 0.0.0.0 --port 3000",
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      status: "running",
+      port: 3000,
+      preview_url: "https://3000-sbx.sandbox.miosa.app",
+    });
+  });
+
+  it("recovers a partial Next.js sandbox by name with concrete commands", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/bennett-os-marketing-v2",
+        method: "GET",
+      })
+      .reply(404, JSON.stringify({ error: { code: "NOT_FOUND" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: [
+            {
+              id: "41026070-9bb0-4d62-90b4-8ceeb0a131b6",
+              name: "bennett-os-marketing-v2",
+              template_id: "nextjs",
+              state: "running",
+              ready: false,
+              created_at: "2026-06-13T00:00:00Z",
+            },
+          ],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/41026070-9bb0-4d62-90b4-8ceeb0a131b6/exec",
+        method: "POST",
+      })
+      .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "/\n" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/41026070-9bb0-4d62-90b4-8ceeb0a131b6",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/41026070-9bb0-4d62-90b4-8ceeb0a131b6/exec",
+        method: "POST",
+      })
+      .reply(200, JSON.stringify({ data: { exit_code: 1, stdout: "refused" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/41026070-9bb0-4d62-90b4-8ceeb0a131b6/expose",
+        method: "POST",
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { url: "https://3000-41026070.sandbox.miosa.app" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://3000-41026070.sandbox.miosa.app")
+      .intercept({ path: "/", method: "GET" })
+      .reply(503, "not ready");
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "recover",
+      "bennett-os-marketing-v2",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.sandbox_id).toBe("41026070-9bb0-4d62-90b4-8ceeb0a131b6");
+    expect(parsed.matched_by).toBe("name");
+    expect(parsed.exec_ok).toBe(true);
+    expect(parsed.app_port).toBe(3000);
+    expect(parsed.commands.start).toContain("sandbox service up");
+    expect(parsed.commands.publish).toContain("sandbox publish");
   });
 });
 

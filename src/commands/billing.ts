@@ -35,6 +35,7 @@ interface Invoice {
 
 interface BillingPlan {
   name?: string;
+  plan_name?: string;
   id?: string;
   interval?: string;
   amount_cents?: number;
@@ -43,6 +44,23 @@ interface BillingPlan {
   limits?: Record<string, unknown>;
   next_billing_date?: string;
   status?: string;
+  subscription?: {
+    status?: string;
+    plan_id?: string;
+    current_period_end?: string;
+  } | null;
+}
+
+interface BillingOverview {
+  currency?: string;
+  plan_name?: string;
+  usage_budget_cents?: number;
+  topup_balance_cents?: number;
+  billing_period_usage_cents?: number;
+  available_balance_cents?: number;
+  billing_period_start?: string;
+  billing_period_end?: string | null;
+  subscription?: BillingPlan["subscription"];
 }
 
 interface BillingPortal {
@@ -67,6 +85,13 @@ function unwrapInvoices(
 function unwrapPlan(raw: { data?: BillingPlan } | BillingPlan): BillingPlan {
   if ("data" in raw && raw.data) return raw.data;
   return raw as BillingPlan;
+}
+
+function unwrapOverview(
+  raw: { data?: BillingOverview } | BillingOverview,
+): BillingOverview {
+  if ("data" in raw && raw.data) return raw.data;
+  return raw as BillingOverview;
 }
 
 function unwrapPortal(
@@ -107,7 +132,9 @@ export function register(program: Command): void {
         const config = loadConfig();
         const client = new MiosaClient(config);
         const spinner = spin("Fetching usage...");
-        const usage = unwrapUsage(await client.apiGet("/api/v1/billing/usage"));
+        const usage = unwrapOverview(
+          await client.apiGet("/api/v1/billing/overview"),
+        );
         spinner.stop();
 
         if (opts.json) {
@@ -117,24 +144,28 @@ export function register(program: Command): void {
 
         const currency = usage.currency ?? "usd";
         console.log();
-        if (usage.period_start && usage.period_end) {
+        if (usage.billing_period_start) {
           console.log(
-            chalk.dim(`  Period: ${usage.period_start} — ${usage.period_end}`),
+            chalk.dim(
+              `  Period: ${usage.billing_period_start}${usage.billing_period_end ? ` — ${usage.billing_period_end}` : ""}`,
+            ),
           );
           console.log();
         }
         console.log(
-          `  ${chalk.bold("Compute")}   ${usage.compute_hours !== undefined ? `${usage.compute_hours.toFixed(2)} hrs` : chalk.dim("-")}  ${fmtCents(usage.compute_cost_cents, currency)}`,
+          `  ${chalk.bold("Plan")}       ${usage.plan_name ?? chalk.dim("unknown")}`,
         );
         console.log(
-          `  ${chalk.bold("Storage")}   ${usage.storage_gb !== undefined ? `${usage.storage_gb.toFixed(2)} GB` : chalk.dim("-")}  ${fmtCents(usage.storage_cost_cents, currency)}`,
+          `  ${chalk.bold("Budget")}     ${fmtCents(usage.usage_budget_cents, currency)}`,
         );
         console.log(
-          `  ${chalk.bold("Egress")}    ${usage.egress_gb !== undefined ? `${usage.egress_gb.toFixed(2)} GB` : chalk.dim("-")}  ${fmtCents(usage.egress_cost_cents, currency)}`,
+          `  ${chalk.bold("Top-up")}     ${fmtCents(usage.topup_balance_cents, currency)}`,
         );
-        console.log();
         console.log(
-          `  ${chalk.bold("Total")}     ${fmtCents(usage.total_cost_cents, currency)}`,
+          `  ${chalk.bold("Used")}       ${fmtCents(usage.billing_period_usage_cents, currency)}`,
+        );
+        console.log(
+          `  ${chalk.bold("Available")}  ${fmtCents(usage.available_balance_cents, currency)}`,
         );
         console.log();
       } catch (err) {
@@ -215,7 +246,9 @@ export function register(program: Command): void {
         const config = loadConfig();
         const client = new MiosaClient(config);
         const spinner = spin("Fetching plan...");
-        const plan = unwrapPlan(await client.apiGet("/api/v1/billing/plan"));
+        const plan = unwrapOverview(
+          await client.apiGet("/api/v1/billing/overview"),
+        );
         spinner.stop();
 
         if (opts.json) {
@@ -223,36 +256,23 @@ export function register(program: Command): void {
           return;
         }
 
+        const currency = plan.currency ?? "usd";
         console.log();
         console.log(
-          `  ${chalk.bold("Plan")}    ${plan.name ?? chalk.dim("unknown")}`,
+          `  ${chalk.bold("Plan")}       ${plan.plan_name ?? chalk.dim("unknown")}`,
         );
-        if (plan.status)
+        if (plan.subscription?.status)
           console.log(
-            `  ${chalk.bold("Status")}  ${plan.status === "active" ? chalk.green(plan.status) : plan.status}`,
+            `  ${chalk.bold("Status")}     ${plan.subscription.status === "active" ? chalk.green(plan.subscription.status) : plan.subscription.status}`,
           );
-        if (plan.amount_cents !== undefined)
-          console.log(
-            `  ${chalk.bold("Price")}   ${fmtCents(plan.amount_cents, plan.currency ?? "usd")} / ${plan.interval ?? "month"}`,
-          );
-        if (plan.next_billing_date)
-          console.log(`  ${chalk.bold("Renews")}  ${plan.next_billing_date}`);
-        if (plan.limits && Object.keys(plan.limits).length > 0) {
-          console.log();
-          console.log(chalk.bold("  Limits"));
-          for (const [key, val] of Object.entries(plan.limits)) {
-            console.log(
-              `    ${key.padEnd(22)} ${val !== null && val !== undefined ? String(val) : chalk.dim("unlimited")}`,
-            );
-          }
-        }
-        if (plan.features && plan.features.length > 0) {
-          console.log();
-          console.log(chalk.bold("  Features"));
-          for (const feature of plan.features) {
-            console.log(`    ${chalk.green("+")} ${feature}`);
-          }
-        }
+        if (plan.billing_period_end)
+          console.log(`  ${chalk.bold("Renews")}     ${plan.billing_period_end}`);
+        console.log(
+          `  ${chalk.bold("Budget")}     ${fmtCents(plan.usage_budget_cents, currency)}`,
+        );
+        console.log(
+          `  ${chalk.bold("Available")}  ${fmtCents(plan.available_balance_cents, currency)}`,
+        );
         console.log();
       } catch (err) {
         handleError(err);
