@@ -21,8 +21,8 @@ export class MiosaError extends Error {
 
 export class AuthError extends MiosaError {
   constructor(
-    message = "Authentication failed. Run: miosa auth login",
-    hint = "If this terminal was revoked, run `miosa auth login` again to create a new token.",
+    message = "Authentication failed. Run: miosa login",
+    hint = "If this terminal was revoked, run `miosa login` again to create a new token.",
     details?: unknown,
     requestId?: string | null,
   ) {
@@ -97,14 +97,14 @@ export function mapHttpError(
       ) {
         return new AuthError(
           `This terminal connection is no longer authorized (${status}): ${msg}`,
-          "Run `miosa auth login` to reconnect this terminal, or manage tokens at https://miosa.ai/account.",
+          "Run `miosa login` to reconnect this terminal, or manage tokens at https://miosa.ai/account.",
           apiDetails ?? rawBody,
           requestId,
         );
       }
       return new AuthError(
         `Access denied (${status}): ${msg}`,
-        "Run `miosa auth login` to connect this terminal.",
+        "Run `miosa login` to connect this terminal.",
         apiDetails ?? rawBody,
         requestId,
       );

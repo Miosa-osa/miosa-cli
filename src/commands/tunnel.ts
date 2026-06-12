@@ -235,7 +235,7 @@ async function runForward(
   const apiKey = config.api_key;
 
   if (!apiKey) {
-    throw new Error("Not authenticated. Run: miosa auth login");
+    throw new Error("Not authenticated. Run: miosa login");
   }
 
   // Resolve the computer record to get its slug, which drives the proxy URL.

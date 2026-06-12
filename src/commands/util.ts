@@ -20,7 +20,7 @@ export function handleError(err: unknown): never {
           ? {
               code: "UNEXPECTED_ERROR",
               message: err.message,
-              retryable: false,
+              retryable: isTransientTransportError(err.message),
               ...(isDebugMode() ? { stack: err.stack } : {}),
             }
           : {
@@ -68,7 +68,14 @@ function errorCodeFor(err: MiosaError): string {
 function retryableFor(err: MiosaError): boolean {
   if ("retryable" in err && typeof err.retryable === "boolean")
     return err.retryable;
+  if (isTransientTransportError(err.message)) return true;
   return err.exitCode >= 70;
+}
+
+function isTransientTransportError(message: string): boolean {
+  return /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up/i.test(
+    message,
+  );
 }
 
 function formatDetails(details: unknown): string {
