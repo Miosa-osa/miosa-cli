@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
+import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { handleError } from "./util.js";
@@ -131,13 +132,14 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching usage...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching usage...");
         const usage = unwrapOverview(
           await client.apiGet("/api/v1/billing/overview"),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(usage, null, 2));
           return;
         }
@@ -182,13 +184,14 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching invoices...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching invoices...");
         const rows = unwrapInvoices(
           await client.apiGet("/api/v1/billing/invoices"),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(rows, null, 2));
           return;
         }
@@ -245,13 +248,14 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Fetching plan...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching plan...");
         const plan = unwrapOverview(
           await client.apiGet("/api/v1/billing/overview"),
         );
-        spinner.stop();
+        spinner?.stop();
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(plan, null, 2));
           return;
         }
@@ -288,15 +292,16 @@ export function register(program: Command): void {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Generating billing portal link...");
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Generating billing portal link...");
         const portal = unwrapPortal(
           await client.apiPost("/api/v1/billing/portal", {}),
         );
-        spinner.stop();
+        spinner?.stop();
 
         const url = portal.url ?? portal.portal_url;
 
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify(portal, null, 2));
           return;
         }
