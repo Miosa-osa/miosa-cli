@@ -291,6 +291,7 @@ describe("miosa sandbox exec", () => {
           template_id: "nextjs",
           name: "bennett-os-auth-db",
           timeout_sec: 3600,
+          persistent: true,
         }),
       })
       .reply(
@@ -362,6 +363,88 @@ describe("miosa sandbox exec", () => {
     } else {
       process.env["MIOSA_JSON"] = oldJsonMode;
     }
+  });
+
+  it("creates non-persistent sandboxes only when explicitly requested", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "throwaway",
+          timeout_sec: 3600,
+          persistent: false,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_tmp",
+            name: "throwaway",
+            template_id: "nextjs",
+            state: "running",
+            persistent: false,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "throwaway",
+      "--non-persistent",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("stops a sandbox through the persistent lifecycle endpoint", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/stop",
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { id: "sbx_123", state: "paused", persistent: true } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "stop",
+      "sbx_123",
+      "--json",
+    ]);
+
+    expect(console.log).toHaveBeenCalledWith(
+      JSON.stringify({ id: "sbx_123", state: "paused", persistent: true }, null, 2),
+    );
+    expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
   it("updates nested deployment state after publish --wait", async () => {
