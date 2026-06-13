@@ -44,6 +44,7 @@ describe("miosa capabilities", () => {
     expect(manifest.resources.map((r) => r.id)).toEqual(
       expect.arrayContaining([
         "sandbox",
+        "connect_provider",
         "computer",
         "deployment_app",
         "database",
@@ -53,6 +54,8 @@ describe("miosa capabilities", () => {
     expect(manifest.workflows.map((w) => w.id)).toEqual(
       expect.arrayContaining([
         "auth_health",
+        "connect_provider_for_sandbox_agent",
+        "runtime_token_api",
         "dockerfile_template_sandbox",
         "sandbox_preview",
         "publish_durable_app",

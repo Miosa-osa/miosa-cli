@@ -171,12 +171,32 @@ const manifest: CapabilitiesManifest = {
       notes: [
         "For app templates, prefer --template <id> --auto-start --publish-port <port> --wait --json.",
         "Next.js starter template: miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --json.",
+        "For AI agents, run the coding agent inside the sandbox with miosa sandbox prompt or sandbox exec; do not build locally then upload unless exact-repo upload is explicitly required.",
+        "Use miosa sandbox connectors attach <sandbox-id> <connector> --env <PROVIDER_API_KEY> --json to expose brokered provider credentials without putting raw keys in the VM.",
+        "Use miosa sandbox prompt <sandbox-id> --provider claude --connector <connector> --preflight --json -- <task> before agent work that depends on a provider key.",
         "Use sandbox deploy for preview readiness.",
         "Use sandbox publish --docker-deploy to promote a sandbox-built app through the recommended workspace Docker Deploy runtime.",
         "Use sandbox publish without --docker-deploy only when you explicitly need the standard MIOSA Deploy runtime.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
         "Use miosa sandbox ports <sandbox-id> --json before previewing to detect port conflicts.",
         "Use miosa sandbox metrics <sandbox-id> --json for readiness, timeout, and resource diagnostics.",
+      ],
+    },
+    {
+      id: "connect_provider",
+      label: "MIOSA Connect Provider",
+      purpose:
+        "Encrypted provider credential and runtime-token surface for agents, sandboxes, computers, and app code.",
+      status: "beta",
+      list: "miosa connectors list --json",
+      create:
+        "miosa connectors create anthropic --name workspace-claude --stdin --json",
+      show: "miosa connectors show anthropic/workspace-claude --json",
+      notes: [
+        "API-key connectors are stored encrypted and the raw value is never printed by create/list/show.",
+        "Use miosa connectors token <connector> --subject app --json when app code needs a runtime provider token.",
+        "Use sandbox connector bindings for agent CLIs and provider SDKs that expect normal env vars like ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+        "Sandbox connector bindings inject miosa-tok-* placeholders; the egress proxy swaps the real secret at the network boundary.",
       ],
     },
     {
@@ -332,6 +352,99 @@ const manifest: CapabilitiesManifest = {
     ],
   },
   workflows: [
+    {
+      id: "connect_provider_for_sandbox_agent",
+      title: "Store Provider Key And Bind It To A Sandbox Agent",
+      goal: "Let Claude Code, Codex, OpenAI SDKs, Anthropic SDKs, or AI SDK harnesses run inside a sandbox without raw provider keys in prompts, files, or local machines.",
+      status: "beta",
+      steps: [
+        {
+          command:
+            "printf '%s' \"$ANTHROPIC_API_KEY\" | miosa connectors create anthropic --name workspace-claude --stdin --json",
+          purpose:
+            "Store the provider API key encrypted as a MIOSA Connect connector. The raw key must not appear in command output.",
+          json: true,
+        },
+        {
+          command:
+            "miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --timeout 1h --json",
+          purpose:
+            "Create a persistent sandbox for agent-side development and preview.",
+          json: true,
+          wait: true,
+        },
+        {
+          command:
+            "miosa sandbox connectors attach <sandbox-id> anthropic/workspace-claude --env ANTHROPIC_API_KEY --json",
+          purpose:
+            "Bind the connector to the sandbox as a brokered env placeholder.",
+          json: true,
+        },
+        {
+          command:
+            "miosa sandbox connectors sync <sandbox-id> --json",
+          purpose:
+            "Push connector placeholder env vars into a currently running sandbox after attach/resume.",
+          json: true,
+        },
+        {
+          command:
+            "miosa sandbox prompt <sandbox-id> --provider claude --connector anthropic/workspace-claude --preflight --cwd /workspace --json -- \"Build the requested page and run the tests\"",
+          purpose:
+            "Preflight the connector, then run the agent CLI inside the sandbox workspace.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "connectors create returns id/name/preview without raw provider key",
+        "sandbox connector binding returns miosa-tok-* placeholder_token",
+        "connector preflight returns bound true",
+        "sandbox prompt exec returns exit_code 0 or structured agent output",
+      ],
+      failure_signals: [
+        "CONNECTOR_NOT_FOUND",
+        "CONNECTOR_NOT_BOUND",
+        "MISSING_ENV_NAME",
+        "sandbox not running or connector sync skipped",
+      ],
+    },
+    {
+      id: "runtime_token_api",
+      title: "Request Runtime Provider Token From App Code Or Automation",
+      goal: "Use MIOSA Connect as a Vercel-Connect-style runtime token broker for app/server code.",
+      status: "beta",
+      steps: [
+        {
+          command:
+            "miosa connectors list --json",
+          purpose: "Find the connector UID or ID available to the current tenant/workspace.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors token anthropic/workspace-claude --subject app --json",
+          purpose:
+            "Request a runtime token for service-level app/provider calls.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors token github/acme --subject user:<user-id> --installation-id <installation-id> --scope repo:read --json",
+          purpose:
+            "Request a user-subject provider token when delegated user access is required.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "token endpoint returns token plus connector metadata",
+        "subject matches app or user:<id>",
+      ],
+      failure_signals: [
+        "CONNECTOR_NOT_FOUND",
+        "CONNECTOR_DECRYPT_FAILED",
+        "AUTH or FORBIDDEN",
+      ],
+    },
     {
       id: "agent_app_decision",
       title: "Inspect And Plan An App Before Acting",
