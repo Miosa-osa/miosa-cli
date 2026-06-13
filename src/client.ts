@@ -382,15 +382,18 @@ export class MiosaClient {
     const billingCreditBalance =
       billingOverview?.available_balance_cents ??
       (billingOverview
-        ? (billingOverview.usage_budget_cents ?? 0) +
-          (billingOverview.topup_balance_cents ?? 0) -
-          (billingOverview.billing_period_usage_cents ?? 0)
+        ? Math.max(
+            0,
+            (billingOverview.usage_budget_cents ?? 0) +
+              (billingOverview.topup_balance_cents ?? 0) -
+              (billingOverview.billing_period_usage_cents ?? 0),
+          )
         : null);
 
     return {
       ...tenant,
       plan: tenant.plan ?? (tenant as { plan_name?: string }).plan_name ?? null,
-      credit_balance: tenant.credit_balance ?? billingCreditBalance ?? 0,
+      credit_balance: billingCreditBalance ?? tenant.credit_balance ?? 0,
     };
   }
 
