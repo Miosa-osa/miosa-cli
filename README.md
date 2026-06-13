@@ -125,7 +125,9 @@ miosa sandbox publish <sandbox-id> \
 
 ## Agentic sandbox app templates
 
-Agents should start from app templates instead of empty sandboxes when building common web apps. For a working Next.js starter with a public preview:
+Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/stop preserves the filesystem and moves the session to `paused`; `destroy` is the permanent delete operation.
+
+For a working Next.js starter with a public preview:
 
 ```bash
 miosa sandbox create \
@@ -133,7 +135,7 @@ miosa sandbox create \
   --auto-start \
   --publish-port 3000 \
   --wait \
-  --timeout 900 \
+  --timeout 1h \
   --json
 ```
 
@@ -165,6 +167,38 @@ Discover the full agent contract with:
 
 ```bash
 miosa capabilities --json
+```
+
+### Persistent sandbox workflow
+
+The normal agent loop happens inside the sandbox filesystem:
+
+```bash
+miosa sandbox write-file <sandbox-id> /workspace/app/page.jsx ./page.jsx --json
+miosa sandbox exec <sandbox-id> --cwd /workspace --cmd "npm install && npm run build" --shell-cmd "bash -lc" --json
+miosa sandbox wait <sandbox-id> --port 3000 --timeout 180 --json
+```
+
+Stop without losing work:
+
+```bash
+miosa sandbox stop <sandbox-id> --json
+miosa sandbox resume <sandbox-id> --json
+```
+
+Checkpoint and fork:
+
+```bash
+miosa sandbox snapshot <sandbox-id> --comment "before auth refactor" --json
+miosa sandbox snapshots list <sandbox-id> --json
+miosa sandbox create --snapshot <snapshot-id> --timeout 1h --wait --json
+miosa sandbox fork <sandbox-id> --name feature-branch --json
+```
+
+Use a disposable sandbox only when you explicitly do not want preserved state:
+
+```bash
+miosa sandbox create --template node --non-persistent --timeout 10m --json
 ```
 
 ### Agent-safe exec and logs

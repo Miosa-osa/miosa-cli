@@ -313,7 +313,11 @@ export function register(program: Command): void {
         collectOption,
         [],
       )
-      .option("--always-on", "Disable auto-destroy on idle")
+      .option("--always-on", "Keep the sandbox running until explicitly stopped or destroyed")
+      .option(
+        "--non-persistent",
+        "Discard filesystem state on timeout instead of pausing for resume",
+      )
       .option(
         "--auto-start",
         "Seed and start the template app after the sandbox reaches running",
@@ -342,6 +346,7 @@ export function register(program: Command): void {
           allowedCidr?: string[];
           deniedCidr?: string[];
           alwaysOn?: boolean;
+          nonPersistent?: boolean;
           autoStart?: boolean;
         },
       ) =>
@@ -388,6 +393,7 @@ export function register(program: Command): void {
             };
           }
           if (opts.alwaysOn) body["always_on"] = true;
+          body["persistent"] = opts.nonPersistent ? false : true;
           if (opts.autoStart) body["auto_start"] = true;
 
           const raw = unwrap(
@@ -486,15 +492,36 @@ export function register(program: Command): void {
   // stop — snapshot + pause (mirrors `box stop`)
   sandbox
     .command("stop <sandbox-id>")
-    .description("Snapshot the Sandbox and pause billing")
-    .option("--no-snapshot", "Skip the snapshot step (pause only)")
+    .description("Stop a persistent Sandbox session and preserve its filesystem")
+    .option(
+      "--no-snapshot",
+      "Deprecated compatibility flag; stop still preserves state server-side",
+    )
     .option("--json", "Output as JSON")
     .action((id: string, opts: { snapshot?: boolean } & JsonOptions) =>
       runAction(async () => {
-        if (opts.snapshot !== false) {
-          await postAndPrint(`/sandboxes/${enc(id)}/snapshots`, opts, {});
+        const stopped = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/stop`),
+            {},
+          ),
+        );
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(stopped, null, 2));
+          return;
         }
-        await postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {});
+
+        const row = (stopped ?? {}) as Record<string, unknown>;
+        console.log(chalk.green("Sandbox stopped"));
+        console.log(
+          kvPanel([
+            { label: "ID", value: str(row["id"] ?? id) },
+            { label: "State", value: statusColor(str(row["state"] ?? "paused")) },
+            { label: "Resume", value: `miosa sandbox resume ${id}` },
+            { label: "Destroy", value: `miosa sandbox destroy ${id}` },
+          ]),
+        );
       }),
     );
 
