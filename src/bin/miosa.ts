@@ -181,6 +181,7 @@ const commandModules = [
   "../commands/update.js",
   "../commands/deploy.js",
   "../commands/docker-deploy.js",
+  "../commands/connectors.js",
   "../commands/apps.js",
   "../commands/logs.js",
   "../commands/releases.js",

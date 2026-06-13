@@ -17,6 +17,7 @@ const COMMANDS = [
   "computers",
   "config",
   "connect",
+  "connectors",
   "containers",
   "cp",
   "cron",
@@ -90,7 +91,9 @@ const SUBCOMMANDS: Record<string, string[]> = {
     "shell",
     "publish",
     "deploy",
+    "connectors",
   ],
+  connectors: ["list", "show", "create", "token"],
   releases: ["list", "show", "get", "promote", "rollback"],
   workspaces: [
     "list",

@@ -579,6 +579,8 @@ export function register(program: Command): void {
       }),
     );
 
+  registerSandboxConnectorCommands(sandbox);
+
   // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
   // Implemented as `exec claude/codex/claude-code <instruction>`.
   sandbox
@@ -591,6 +593,14 @@ export function register(program: Command): void {
       "AI provider: claude (default), codex, claude-code",
     )
     .option("--model <name>", "Provider-specific model name")
+    .option(
+      "--connector <uid>",
+      "MIOSA Connect connector UID to preflight before running the agent",
+    )
+    .option(
+      "--preflight",
+      "Verify the Sandbox has the requested provider connector before exec",
+    )
     .option("--cwd <path>", "Working directory inside the Sandbox")
     .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
     .option("--json", "Output as JSON")
@@ -601,6 +611,8 @@ export function register(program: Command): void {
         opts: {
           provider?: string;
           model?: string;
+          connector?: string;
+          preflight?: boolean;
           cwd?: string;
           timeout?: number;
         } & JsonOptions,
@@ -612,6 +624,14 @@ export function register(program: Command): void {
             throw new Error(
               `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
             );
+          }
+          if (opts.connector || opts.preflight) {
+            await preflightSandboxConnector(id, {
+              provider,
+              connector: opts.connector,
+              model: opts.model,
+              cwd: opts.cwd,
+            });
           }
           const instruction = words.join(" ");
           const modelFlag = opts.model
@@ -2281,6 +2301,98 @@ export function register(program: Command): void {
     );
 }
 
+function registerSandboxConnectorCommands(sandbox: Command): void {
+  const connectors = sandbox
+    .command("connectors")
+    .alias("providers")
+    .description("Manage brokered provider connector bindings for a Sandbox");
+
+  connectors
+    .command("list <sandbox-id>")
+    .description("List provider connectors bound to a Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap(
+          await client().apiGet<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/connectors`),
+          ),
+        );
+        printValue(raw, opts);
+      }),
+    );
+
+  connectors
+    .command("attach <sandbox-id> <connector>")
+    .description("Attach a connector to a Sandbox as brokered env")
+    .requiredOption(
+      "--env <name>",
+      "Environment variable name, e.g. ANTHROPIC_API_KEY",
+    )
+    .option("--mode <mode>", "brokered-env or plain-env", "brokered-env")
+    .option("--installation-id <id>", "Provider installation ID")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        connector: string,
+        opts: JsonOptions & {
+          env: string;
+          mode?: string;
+          installationId?: string;
+        },
+      ) =>
+        runAction(async () => {
+          const body = {
+            connector,
+            env_name: opts.env,
+            mode: normalizeConnectorMode(opts.mode ?? "brokered-env"),
+            installation_id: opts.installationId,
+          };
+          const raw = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/connectors`),
+              body,
+            ),
+          );
+          printValue(raw, opts);
+        }),
+    );
+
+  connectors
+    .command("detach <sandbox-id> <binding-id-or-connector>")
+    .description("Detach a connector binding from a Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, binding: string, opts: JsonOptions) =>
+      runAction(() =>
+        deleteAndPrint(
+          `/sandboxes/${enc(id)}/connectors/${enc(binding)}`,
+          opts,
+        ),
+      ),
+    );
+
+  connectors
+    .command("sync <sandbox-id>")
+    .description("Sync connector placeholder env vars into a running Sandbox")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/connectors/sync`),
+            {},
+          ),
+        );
+        printValue(raw, opts);
+      }),
+    );
+}
+
+function normalizeConnectorMode(value: string): string {
+  return value.replaceAll("_", "-");
+}
+
 // ── sandbox ssh implementation ─────────────────────────────────────────────
 //
 // Protocol:
@@ -3687,6 +3799,26 @@ async function resumeSandboxAndPrint(
     }
     throw err;
   }
+}
+
+async function preflightSandboxConnector(
+  sandboxId: string,
+  params: {
+    provider: string;
+    connector?: string;
+    model?: string;
+    cwd?: string;
+  },
+): Promise<void> {
+  await client().apiPost<unknown>(
+    apiPath(`/sandboxes/${enc(sandboxId)}/connectors/preflight`),
+    {
+      provider: params.provider,
+      connector: params.connector,
+      model: params.model,
+      cwd: params.cwd,
+    },
+  );
 }
 
 async function postSandboxExecAndPrint(

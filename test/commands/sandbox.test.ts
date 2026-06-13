@@ -1211,3 +1211,116 @@ describe("miosa sandbox db", () => {
     expect(parsed["database_id"]).toBe("db_123");
   });
 });
+
+describe("miosa sandbox connectors", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("attaches a brokered provider connector to a sandbox", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/connectors",
+        method: "POST",
+        body: JSON.stringify({
+          connector: "anthropic/workspace-claude",
+          env_name: "ANTHROPIC_API_KEY",
+          mode: "brokered-env",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "binding_123",
+            connector: "anthropic/workspace-claude",
+            env_name: "ANTHROPIC_API_KEY",
+            mode: "brokered-env",
+            placeholder_preview: "miosa-tok-...",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "connectors",
+      "attach",
+      "sbx_123",
+      "anthropic/workspace-claude",
+      "--env",
+      "ANTHROPIC_API_KEY",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as Record<string, unknown>;
+    expect(parsed["id"]).toBe("binding_123");
+    expect(parsed["env_name"]).toBe("ANTHROPIC_API_KEY");
+    expect(parsed["placeholder_preview"]).toBe("miosa-tok-...");
+  });
+
+  it("preflights a requested connector before sandbox prompt exec", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/connectors/preflight",
+        method: "POST",
+        body: JSON.stringify({
+          provider: "claude",
+          connector: "anthropic/workspace-claude",
+        }),
+      })
+      .reply(200, JSON.stringify({ data: { ok: true } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+        body: JSON.stringify({ command: "claude 'hello'" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { exit_code: 0, stdout: "done\n" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "prompt",
+      "sbx_123",
+      "--connector",
+      "anthropic/workspace-claude",
+      "hello",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+});
