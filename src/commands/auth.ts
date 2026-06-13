@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { spawn } from "node:child_process";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { UserError } from "../errors.js";
@@ -67,12 +68,64 @@ function unwrapData<T>(payload: unknown, listKey?: string): T {
   return payload as T;
 }
 
+function runTopLevelAlias(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [process.argv[1] ?? "", command, ...args], {
+      stdio: "inherit",
+      env: process.env,
+    });
+
+    child.on("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+
+      process.exitCode = code ?? 1;
+      resolve();
+    });
+
+    child.on("error", (error) => {
+      console.error(chalk.red(`Failed to run miosa ${command}: ${error.message}`));
+      process.exitCode = 1;
+      resolve();
+    });
+  });
+}
+
 export function register(program: Command): void {
   const auth = program
     .command("auth")
     .description(
       "Manage API tokens (use `miosa login` / `logout` / `whoami` for sign-in)",
     );
+
+  auth
+    .command("login")
+    .description("Alias for `miosa login`")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (_opts, command) => {
+      await runTopLevelAlias("login", command.args);
+    });
+
+  auth
+    .command("whoami")
+    .description("Alias for `miosa whoami`")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (_opts, command) => {
+      await runTopLevelAlias("whoami", command.args);
+    });
+
+  auth
+    .command("logout")
+    .description("Alias for `miosa logout`")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (_opts, command) => {
+      await runTopLevelAlias("logout", command.args);
+    });
 
   const token = auth.command("token").description("Manage API tokens");
 
