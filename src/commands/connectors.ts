@@ -187,7 +187,7 @@ async function readStdin(): Promise<string> {
 }
 
 function normalizeMode(value: string): string {
-  return value.replaceAll("_", "-");
+  return value.replaceAll("-", "_");
 }
 
 function unwrapData(raw: unknown): unknown {

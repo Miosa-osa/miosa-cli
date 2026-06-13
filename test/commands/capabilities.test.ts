@@ -69,6 +69,7 @@ describe("miosa capabilities", () => {
         .flatMap((workflow) => workflow.steps)
         .some((step) => step.command.includes("--json")),
     ).toBe(true);
+    expect(JSON.stringify(manifest)).toContain("refero/design-research");
   });
 
   it("honors MIOSA_JSON=1 without an explicit flag", async () => {

@@ -46,7 +46,7 @@ describe("miosa connectors", () => {
         method: "POST",
         body: JSON.stringify({
           provider: "anthropic",
-          type: "api-key",
+          type: "api_key",
           uid: "anthropic/workspace-claude",
           scope: "tenant",
           credential: {
