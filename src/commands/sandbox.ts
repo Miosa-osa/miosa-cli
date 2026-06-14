@@ -624,14 +624,15 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const provider = opts.provider ?? "claude";
-          const runtimeCommand = runtimeCommandForProvider(
-            provider,
-            opts.runtimeCommand,
-          );
-          if (!runtimeCommand) {
+          if (!isSupportedPromptProvider(provider)) {
             const allowedProviders = supportedPromptProviders();
             throw new Error(
               `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+            );
+          }
+          if (opts.runtimeCommand && provider !== "custom") {
+            throw new Error(
+              "--runtime-command can only be used with --provider custom",
             );
           }
           if (opts.connector || opts.preflight) {
@@ -643,20 +644,48 @@ export function register(program: Command): void {
             });
           }
           const instruction = words.join(" ");
-          const modelFlag = opts.model
-            ? ` --model ${`'${opts.model.replace(/'/g, "'\\''")}'`}`
-            : "";
-          const command = commandInCwd(
-            `${runtimeCommand}${modelFlag} ${shellQuote(instruction)}`,
-            opts.cwd,
-          );
-          const body: Record<string, unknown> = { command };
-          if (opts.cwd) {
-            body["cwd"] = opts.cwd;
-            body["dir"] = opts.cwd;
-          }
+          const body: Record<string, unknown> = {
+            target_kind: "sandbox",
+            target_id: id,
+            provider,
+            prompt: instruction,
+          };
+          if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
+          if (opts.model) body["model"] = opts.model;
+          if (opts.cwd) body["cwd"] = opts.cwd;
           if (opts.timeout != null) body["timeout"] = opts.timeout;
-          await postSandboxExecAndPrint(id, opts, body);
+
+          const run = unwrap(
+            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+          ) as Record<string, unknown>;
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(run, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(
+            kvPanel([
+              { label: "Run", value: chalk.bold(str(run["id"])) },
+              { label: "Target", value: `${str(run["target_kind"])} ${id}` },
+              { label: "Provider", value: str(run["provider"]) },
+              { label: "Status", value: statusColor(str(run["status"])) },
+              { label: "Exit", value: str(run["exit_code"]) },
+            ]),
+          );
+
+          const output = str(run["output"]).trim();
+          const stderr = str(run["stderr"]).trim();
+          if (output) {
+            console.log();
+            console.log(output);
+          }
+          if (stderr) {
+            console.error();
+            console.error(chalk.red(stderr));
+          }
+          console.log();
         }),
     );
 
@@ -4822,6 +4851,10 @@ function runtimeCommandForProvider(
   };
 
   return builtIns[normalized] ?? null;
+}
+
+function isSupportedPromptProvider(provider: string): boolean {
+  return supportedPromptProviders().includes(provider.trim().toLowerCase());
 }
 
 function backgroundCommand(command: string): string {
