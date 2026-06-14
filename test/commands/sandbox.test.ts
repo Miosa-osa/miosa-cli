@@ -1323,4 +1323,64 @@ describe("miosa sandbox connectors", () => {
 
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
+
+  it("supports custom in-sandbox agent runtimes", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/connectors/preflight",
+        method: "POST",
+        body: JSON.stringify({
+          provider: "custom",
+          connector: "ai/hermes",
+          cwd: "/workspace",
+        }),
+      })
+      .reply(200, JSON.stringify({ data: { ok: true } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+        body: JSON.stringify({
+          command: "cd '/workspace' && hermes-agent run 'build the page'",
+          cwd: "/workspace",
+          dir: "/workspace",
+        }),
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { exit_code: 0, stdout: "done\n" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "prompt",
+      "sbx_123",
+      "--provider",
+      "custom",
+      "--runtime-command",
+      "hermes-agent run",
+      "--connector",
+      "ai/hermes",
+      "--cwd",
+      "/workspace",
+      "build",
+      "the",
+      "page",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
 });

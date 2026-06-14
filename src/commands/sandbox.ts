@@ -582,15 +582,19 @@ export function register(program: Command): void {
   registerSandboxConnectorCommands(sandbox);
 
   // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
-  // Implemented as `exec claude/codex/claude-code <instruction>`.
+  // Implemented as sandbox exec so agents work inside the remote filesystem.
   sandbox
     .command("prompt <sandbox-id> <instruction...>")
     .description(
-      "Run an in-Sandbox AI agent (claude/codex) with the given instruction",
+      "Run an in-Sandbox AI agent runtime with the given instruction",
     )
     .option(
       "--provider <name>",
-      "AI provider: claude (default), codex, claude-code",
+      "Agent runtime: claude (default), claude-code, codex, pi, hermes, osa, custom",
+    )
+    .option(
+      "--runtime-command <command>",
+      "Executable command for --provider custom, e.g. 'hermes-agent run'",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -610,6 +614,7 @@ export function register(program: Command): void {
         words: string[],
         opts: {
           provider?: string;
+          runtimeCommand?: string;
           model?: string;
           connector?: string;
           preflight?: boolean;
@@ -619,8 +624,12 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const provider = opts.provider ?? "claude";
-          const allowedProviders = ["claude", "codex", "claude-code"];
-          if (!allowedProviders.includes(provider)) {
+          const runtimeCommand = runtimeCommandForProvider(
+            provider,
+            opts.runtimeCommand,
+          );
+          if (!runtimeCommand) {
+            const allowedProviders = supportedPromptProviders();
             throw new Error(
               `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
             );
@@ -638,7 +647,7 @@ export function register(program: Command): void {
             ? ` --model ${`'${opts.model.replace(/'/g, "'\\''")}'`}`
             : "";
           const command = commandInCwd(
-            `${provider}${modelFlag} ${shellQuote(instruction)}`,
+            `${runtimeCommand}${modelFlag} ${shellQuote(instruction)}`,
             opts.cwd,
           );
           const body: Record<string, unknown> = { command };
@@ -4775,6 +4784,44 @@ async function fetchApiRaw(path: string, body?: unknown): Promise<unknown> {
 function commandInCwd(command: string, cwd?: string): string {
   if (!cwd) return command;
   return `cd ${shellQuote(cwd)} && ${command}`;
+}
+
+function supportedPromptProviders(): string[] {
+  return [
+    "claude",
+    "claude-code",
+    "codex",
+    "pi",
+    "hermes",
+    "osa",
+    "custom",
+  ];
+}
+
+function runtimeCommandForProvider(
+  provider: string,
+  runtimeCommand?: string,
+): string | null {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === "custom") {
+    if (!runtimeCommand?.trim()) {
+      throw new Error(
+        "--provider custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
+      );
+    }
+    return runtimeCommand.trim();
+  }
+
+  const builtIns: Record<string, string> = {
+    claude: "claude",
+    "claude-code": "claude",
+    codex: "codex",
+    pi: "pi",
+    hermes: "hermes",
+    osa: "osa",
+  };
+
+  return builtIns[normalized] ?? null;
 }
 
 function backgroundCommand(command: string): string {
