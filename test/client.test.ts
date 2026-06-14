@@ -198,6 +198,71 @@ describe("MiosaClient", () => {
       expect(result.credit_balance).toBe(5000);
     });
 
+    it("accepts tenant envelope responses", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      const pool = mock.get("https://api.miosa.ai");
+      pool
+        .intercept({ path: "/api/v1/platform/tenants/current", method: "GET" })
+        .reply(
+          200,
+          JSON.stringify({
+            tenant: {
+              id: "t_123",
+              name: "Envelope Corp",
+              slug: "envelope",
+              plan_name: "free",
+              inserted_at: "2024-01-01T00:00:00Z",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+
+      const client = new MiosaClient(makeConfig());
+      const result = await client.getTenant();
+      expect(result.name).toBe("Envelope Corp");
+      expect(result.slug).toBe("envelope");
+      expect(result.plan).toBe("free");
+    });
+
+    it("throws a readable UserError when tenant response is empty", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      const pool = mock.get("https://api.miosa.ai");
+      pool
+        .intercept({ path: "/api/v1/platform/tenants/current", method: "GET" })
+        .reply(200, JSON.stringify({}), {
+          headers: { "content-type": "application/json" },
+      });
+
+      const client = new MiosaClient(makeConfig());
+      const err = await client.getTenant().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(UserError);
+      expect((err as Error).message).toBe(
+        "MIOSA returned an invalid account response.",
+      );
+    });
+
+    it("throws a readable UserError when tenant response has no name", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      const pool = mock.get("https://api.miosa.ai");
+      pool
+        .intercept({ path: "/api/v1/platform/tenants/current", method: "GET" })
+        .reply(200, JSON.stringify({ data: { slug: "missing-name" } }), {
+          headers: { "content-type": "application/json" },
+        });
+
+      const client = new MiosaClient(makeConfig());
+      await expect(client.getTenant()).rejects.toThrow(UserError);
+    });
+
     it("should hydrate tenant credits from billing overview when tenant response omits legacy balance", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();

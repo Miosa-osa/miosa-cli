@@ -24,7 +24,7 @@ import type {
   TunnelCreateParams,
   TunnelSlug,
 } from "./types.js";
-import { AuthError, mapHttpError, NetworkError } from "./errors.js";
+import { AuthError, mapHttpError, NetworkError, UserError } from "./errors.js";
 import { isDebugMode } from "./cli-env.js";
 
 export class MiosaClient {
@@ -373,11 +373,13 @@ export class MiosaClient {
   // --- Tenant ---
 
   async getTenant(): Promise<Tenant> {
-    const response = await this.get<{ data?: Tenant } & Partial<Tenant>>(
+    const response = await this.get<
+      { data?: unknown; tenant?: unknown } & Record<string, unknown>
+    >(
       "/api/v1/platform/tenants/current",
     );
 
-    const tenant = response.data ?? (response as Tenant);
+    const tenant = normalizeTenantResponse(response);
     const billingOverview = await this.getBillingOverview().catch(() => null);
     const billingCreditBalance =
       billingOverview?.available_balance_cents ??
@@ -1011,6 +1013,37 @@ export class MiosaClient {
     }
     return res;
   }
+}
+
+function normalizeTenantResponse(
+  response: { data?: unknown; tenant?: unknown } & Record<string, unknown>,
+): Tenant {
+  const candidate = response.data ?? response.tenant ?? response;
+
+  if (!isRecord(candidate)) {
+    throw malformedTenantError();
+  }
+
+  const name = stringField(candidate, "name");
+  const slug = stringField(candidate, "slug");
+
+  if (!name || !slug) {
+    throw malformedTenantError();
+  }
+
+  return candidate as unknown as Tenant;
+}
+
+function malformedTenantError(): UserError {
+  return new UserError(
+    "MIOSA returned an invalid account response.",
+    "Run `miosa status --json` and try `miosa login` again. If this persists, contact MIOSA support with --debug output.",
+  );
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
 function responseHeader(
