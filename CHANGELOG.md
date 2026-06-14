@@ -2,6 +2,12 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.0.67] - 2026-06-14
+
+### Fixed
+- Updated `miosa capabilities` guidance so `sandbox prompt` describes the
+  durable `/agent-runs` path instead of the old raw exec path.
+
 ## [1.0.66] - 2026-06-14
 
 ### Changed
