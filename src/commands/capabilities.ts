@@ -408,7 +408,7 @@ const manifest: CapabilitiesManifest = {
       ],
       success_signals: [
         "devices catalog includes sandbox_worker and computer",
-        "sandbox prompt posts to /sandboxes/<id>/exec",
+        "sandbox prompt creates a durable /agent-runs record",
         "agent output references files under /workspace",
       ],
       failure_signals: [
@@ -478,7 +478,7 @@ const manifest: CapabilitiesManifest = {
         "connectors list includes refero/design-research with managed true when platform configured",
         "sandbox connector binding returns miosa-tok-* placeholder_token",
         "connector preflight returns bound true",
-        "sandbox prompt exec returns exit_code 0 or structured agent output",
+        "sandbox prompt returns an agent run with exit_code 0 or structured agent output",
       ],
       failure_signals: [
         "CONNECTOR_NOT_FOUND",
