@@ -8,6 +8,7 @@ import {
   unwrap,
   type JsonOptions,
 } from "./enterprise-util.js";
+import { parseSse } from "../client.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 
@@ -21,12 +22,33 @@ interface AgentRunGroup {
   created_at?: string;
 }
 
+interface AgentRunGroupEvent {
+  id?: string;
+  agent_run_group_id?: string;
+  agent_run_id?: string;
+  sequence?: number;
+  type?: string;
+  message?: string;
+  created_at?: string;
+}
+
 function rows(raw: unknown): AgentRunGroup[] {
   if (Array.isArray(raw)) return raw as AgentRunGroup[];
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
     for (const key of ["data", "groups", "items"]) {
       if (Array.isArray(value[key])) return value[key] as AgentRunGroup[];
+    }
+  }
+  return [];
+}
+
+function eventRows(raw: unknown): AgentRunGroupEvent[] {
+  if (Array.isArray(raw)) return raw as AgentRunGroupEvent[];
+  if (raw && typeof raw === "object") {
+    const value = raw as Record<string, unknown>;
+    for (const key of ["data", "events", "items"]) {
+      if (Array.isArray(value[key])) return value[key] as AgentRunGroupEvent[];
     }
   }
   return [];
@@ -50,6 +72,25 @@ function colorStatus(status: string | undefined): string {
     default:
       return chalk.dim(status ?? "-");
   }
+}
+
+function groupEventData(event: unknown): AgentRunGroupEvent {
+  if (!event || typeof event !== "object") return {};
+  const value = event as Record<string, unknown>;
+
+  if (value["type"] === "unknown" && typeof value["raw"] === "string") {
+    try {
+      return JSON.parse(value["raw"]) as AgentRunGroupEvent;
+    } catch {
+      return { type: "unknown", message: value["raw"] };
+    }
+  }
+
+  if (value["data"] && typeof value["data"] === "object") {
+    return value["data"] as AgentRunGroupEvent;
+  }
+
+  return value as AgentRunGroupEvent;
 }
 
 function parseJsonFile(path: string): unknown {
@@ -217,6 +258,63 @@ export function register(program: Command): void {
           return;
         }
         console.log(chalk.green(`Canceled agent run group ${id}`));
+      }),
+    );
+
+  command
+    .command("events <id>")
+    .description("Show or stream Agent Run Group events")
+    .option("--stream", "Keep the connection open and stream new events")
+    .option("--limit <n>", "Stop after N streamed events")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { stream?: boolean; limit?: string } & JsonOptions) =>
+      runAction(async () => {
+        const path = `/api/v1/agent-run-groups/${enc(id)}/events`;
+
+        if (opts.stream) {
+          const limit = opts.limit ? Number(opts.limit) : undefined;
+          let seen = 0;
+          const res = await client().apiStream(path);
+
+          for await (const event of parseSse(res.body)) {
+            seen += 1;
+            const data = groupEventData(event);
+
+            if (isJsonMode(opts)) {
+              console.log(JSON.stringify(data, null, 2));
+            } else {
+              console.log(
+                [
+                  chalk.dim(str(data.sequence ?? seen)),
+                  colorStatus(data.type),
+                  str(data.agent_run_id),
+                  str(data.message),
+                ]
+                  .filter(Boolean)
+                  .join("  "),
+              );
+            }
+
+            if (limit && seen >= limit) break;
+          }
+          return;
+        }
+
+        const data = eventRows(unwrap(await client().apiGet<unknown>(path)));
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(data, null, 2));
+          return;
+        }
+        if (data.length === 0) {
+          console.log(chalk.dim("No agent run group events found."));
+          return;
+        }
+        renderTable(data, [
+          { header: "SEQ", key: (row) => str(row.sequence ?? "-"), width: 8 },
+          { header: "TYPE", key: (row) => colorStatus(row.type), width: 18 },
+          { header: "RUN", key: (row) => str(row.agent_run_id ?? "-"), width: 18 },
+          { header: "MESSAGE", key: (row) => str(row.message ?? ""), width: 42 },
+        ]);
       }),
     );
 }

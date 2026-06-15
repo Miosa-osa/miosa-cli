@@ -10,6 +10,9 @@ vi.mock("../../src/commands/enterprise-util.js", async (importOriginal) => {
     client: () => ({
       apiGet: async (path: string) => {
         calls.push({ method: "GET", path });
+        if (path.endsWith("/events")) {
+          return { data: [{ id: "evt_1", type: "created", agent_run_id: "run_1" }] };
+        }
         if (path.includes("?")) {
           return { data: [{ id: "grp_1", name: "fanout", status: "running", counts: { total: 1 } }] };
         }
@@ -18,6 +21,10 @@ vi.mock("../../src/commands/enterprise-util.js", async (importOriginal) => {
       apiPost: async (path: string, body: unknown) => {
         calls.push({ method: "POST", path, body });
         return { data: { id: "grp_1", name: "fanout", status: "running", results: [] } };
+      },
+      apiStream: async (path: string) => {
+        calls.push({ method: "STREAM", path });
+        throw new Error("not used in this test");
       },
     }),
   };
@@ -122,6 +129,22 @@ describe("miosa agent-run-groups", () => {
     expect(calls[2]).toMatchObject({
       method: "POST",
       path: "/api/v1/agent-run-groups/grp_1/cancel",
+    });
+  });
+
+  it("lists group events", async () => {
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "agent-run-groups",
+      "events",
+      "grp_1",
+      "--json",
+    ]);
+
+    expect(calls[0]).toMatchObject({
+      method: "GET",
+      path: "/api/v1/agent-run-groups/grp_1/events",
     });
   });
 });
