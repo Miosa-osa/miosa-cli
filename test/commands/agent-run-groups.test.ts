@@ -102,6 +102,7 @@ describe("miosa agent-run-groups", () => {
       "grp_1",
       "--run",
       '{"sandbox_id":"sbx_1","provider":"claude","prompt":"build"}',
+      "--async",
     ]);
 
     await program().parseAsync(["node", "miosa", "agent-run-groups", "cancel", "grp_1"]);
@@ -113,7 +114,10 @@ describe("miosa agent-run-groups", () => {
     expect(calls[1]).toMatchObject({
       method: "POST",
       path: "/api/v1/agent-run-groups/grp_1/dispatch",
-      body: { runs: [{ sandbox_id: "sbx_1", provider: "claude", prompt: "build" }] },
+      body: {
+        runs: [{ sandbox_id: "sbx_1", provider: "claude", prompt: "build" }],
+        async: true,
+      },
     });
     expect(calls[2]).toMatchObject({
       method: "POST",

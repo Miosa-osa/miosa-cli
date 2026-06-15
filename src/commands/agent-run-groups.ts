@@ -188,13 +188,15 @@ export function register(program: Command): void {
     .description("Dispatch a manifest of Agent Runs into a group")
     .option("--manifest <file>", "JSON array or { runs: [...] } file")
     .option("--run <json>", "One run JSON object; repeat for multiple runs", collect, [])
+    .option("--async", "Queue entries and return immediately")
     .option("--json", "Output as JSON")
-    .action((id: string, opts: { manifest?: string; run?: string[] } & JsonOptions) =>
+    .action((id: string, opts: { manifest?: string; run?: string[]; async?: boolean } & JsonOptions) =>
       runAction(async () => {
         const runs = manifestFromOptions(opts);
         const data = unwrap(
           await client().apiPost<unknown>(`/api/v1/agent-run-groups/${enc(id)}/dispatch`, {
             runs,
+            async: opts.async || undefined,
           }),
         );
         console.log(JSON.stringify(data, null, 2));
