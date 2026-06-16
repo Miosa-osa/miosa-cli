@@ -2,6 +2,20 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.0.67] - 2026-06-14
+
+### Fixed
+- Updated `miosa capabilities` guidance so `sandbox prompt` describes the
+  durable `/agent-runs` path instead of the old raw exec path.
+
+## [1.0.66] - 2026-06-14
+
+### Changed
+- `miosa sandbox prompt` now dispatches through the durable `/api/v1/agent-runs`
+  backend instead of bypassing it with raw sandbox exec.
+- Added backend-aligned prompt providers: `claude`, `claude-code`, `codex`,
+  `hermes`, `osa`, `pi`, and `custom` with `--runtime-command`.
+
 ## [1.0.54] - 2026-06-10
 
 ### Changed

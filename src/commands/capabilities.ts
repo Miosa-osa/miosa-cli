@@ -187,6 +187,22 @@ const manifest: CapabilitiesManifest = {
       ],
     },
     {
+      id: "device",
+      label: "Agent Device",
+      purpose:
+        "Product-level routing model for choosing between sandbox workers, Computers, local devices, and Docker Deploy hosts.",
+      status: "stable",
+      list: "miosa devices list --json",
+      show: "miosa devices catalog --json",
+      notes: [
+        "Use miosa devices catalog --json before launching a new agent workflow.",
+        "Sandbox workers are the default for code/build/test/preview work because the agent writes and runs code inside the remote filesystem.",
+        "Computers are for browser, GUI, dashboard login, CUA, and shared desktop state.",
+        "Local devices are for local discovery only; move execution into a sandbox or Computer when customer code needs isolation.",
+        "Docker Deploy hosts are deployment appliances for versioned app containers, not interactive coding workspaces.",
+      ],
+    },
+    {
       id: "connect_provider",
       label: "MIOSA Connect Provider",
       purpose:
@@ -359,6 +375,51 @@ const manifest: CapabilitiesManifest = {
   },
   workflows: [
     {
+      id: "choose_agent_device",
+      title: "Choose The Correct MIOSA Device For An Agent Job",
+      goal: "Route agent work to the right execution surface before creating resources or uploading code.",
+      status: "stable",
+      steps: [
+        {
+          command: "miosa devices catalog --json",
+          purpose:
+            "Read the device taxonomy and routing guidance for sandbox workers, Computers, local devices, and Docker Deploy hosts.",
+          json: true,
+        },
+        {
+          command: "miosa devices list --json",
+          purpose:
+            "Inspect existing hosted devices before creating a new sandbox or Computer.",
+          json: true,
+        },
+        {
+          command:
+            "miosa sandbox create --template nextjs --timeout 1h --wait --json",
+          purpose:
+            "Create the default code/build/test/preview device when no existing sandbox worker should be reused.",
+          json: true,
+          wait: true,
+        },
+        {
+          command:
+            "miosa sandbox prompt <sandbox-id> --provider codex --cwd /workspace --json -- \"Build and test the requested change\"",
+          purpose:
+            "Run the coding agent inside the sandbox filesystem instead of building locally and uploading artifacts.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "devices catalog includes sandbox_worker and computer",
+        "sandbox prompt creates a durable /agent-runs record",
+        "agent output references files under /workspace",
+      ],
+      failure_signals: [
+        "Unsupported provider without --provider custom --runtime-command",
+        "sandbox not running",
+        "connector preflight fails before agent launch",
+      ],
+    },
+    {
       id: "connect_provider_for_sandbox_agent",
       title: "Bind Provider Tools To A Sandbox Agent",
       goal: "Let Claude Code, Codex, OpenAI SDKs, Anthropic SDKs, AI SDK harnesses, or managed tools run inside a sandbox without raw provider keys in prompts, files, or local machines.",
@@ -419,7 +480,7 @@ const manifest: CapabilitiesManifest = {
         "connectors list includes refero/design-research with managed true when platform configured",
         "sandbox connector binding returns miosa-tok-* placeholder_token",
         "connector preflight returns bound true",
-        "sandbox prompt exec returns exit_code 0 or structured agent output",
+        "sandbox prompt returns an agent run with exit_code 0 or structured agent output",
       ],
       failure_signals: [
         "CONNECTOR_NOT_FOUND",

@@ -1,16 +1,20 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { apiPath, client, unwrap, type JsonOptions } from "./enterprise-util.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
-import { apiPath, client, unwrap } from "./enterprise-util.js";
 import { handleError } from "./util.js";
 
-type DeviceKind = "sandbox_worker" | "computer";
-type DeviceFilter = "all" | DeviceKind;
-type ApiRecord = Record<string, unknown>;
+type DeviceKind =
+  | "sandbox_worker"
+  | "computer"
+  | "local_device"
+  | "docker_deploy_host";
 
-type DeviceCatalogEntry = {
-  kind: string;
+type DeviceSource = "sandboxes" | "computers";
+
+interface DeviceCatalogEntry {
+  kind: DeviceKind;
   label: string;
   purpose: string;
   lifecycle: string;
@@ -18,22 +22,28 @@ type DeviceCatalogEntry = {
   primary_commands: string[];
   use_when: string[];
   avoid_when: string[];
-};
+}
 
-type DeviceRecord = {
+interface DeviceRecord {
   id: string;
   kind: DeviceKind;
-  source: string;
+  source: DeviceSource;
   name?: string;
   state?: string;
   ready?: boolean;
   persistent?: boolean;
   always_on?: boolean;
+  region?: string;
   template?: string;
   preview_url?: string;
   timeout_remaining_ms?: number;
-  region?: string;
-};
+}
+
+interface DeviceListError {
+  source: DeviceSource;
+  message: string;
+  retryable: boolean;
+}
 
 const DEVICE_CATALOG: DeviceCatalogEntry[] = [
   {
@@ -136,7 +146,7 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
   },
 ];
 
-const ROUTING = {
+const ROUTING: Record<string, string> = {
   build_code:
     "Use sandbox_worker. Run the coding agent inside it with sandbox prompt/exec and publish after HTTP 200.",
   browser_automation:
@@ -161,7 +171,7 @@ export function register(program: Command): void {
     .command("catalog")
     .description("Print the MIOSA device catalog and routing guidance")
     .option("--json", "Output as JSON")
-    .action((opts: { json?: boolean }) =>
+    .action((opts: JsonOptions) =>
       runDeviceAction(async () => {
         const output = { devices: DEVICE_CATALOG, routing: ROUTING };
         if (isJsonMode(opts)) {
@@ -187,13 +197,18 @@ export function register(program: Command): void {
   devices
     .command("list")
     .description("List active hosted devices from sandboxes and computers")
-    .option("--type <kind>", "Filter: all, sandbox_worker, sandbox, computer", "all")
+    .option(
+      "--type <kind>",
+      "Filter: all, sandbox_worker, sandbox, computer",
+      "all",
+    )
     .option("--json", "Output as JSON")
-    .action((opts: { type?: string; json?: boolean }) =>
+    .action((opts: JsonOptions & { type?: string }) =>
       runDeviceAction(async () => {
         const filter = normalizeKindFilter(opts.type ?? "all");
         const { devices: records, errors } = await listDevices(filter);
         const output = { devices: records, errors };
+
         if (isJsonMode(opts)) {
           console.log(JSON.stringify(output, null, 2));
           return;
@@ -205,23 +220,23 @@ export function register(program: Command): void {
           renderTable(records, [
             { header: "ID", key: (row) => row.id, width: 12 },
             { header: "KIND", key: (row) => row.kind },
-            { header: "NAME", key: (row) => row.name ?? "-" },
-            { header: "STATE", key: (row) => row.state ?? "-" },
+            { header: "NAME", key: (row) => row.name ?? "—" },
+            { header: "STATE", key: (row) => row.state ?? "—" },
             {
               header: "READY",
               key: (row) =>
-                row.ready == null ? "-" : row.ready ? "yes" : "no",
+                row.ready == null ? "—" : row.ready ? "yes" : "no",
             },
             {
               header: "PERSISTENT",
               key: (row) =>
                 row.persistent == null
-                  ? "-"
+                  ? "—"
                   : row.persistent
                     ? "yes"
                     : "no",
             },
-            { header: "PREVIEW", key: (row) => row.preview_url ?? "-" },
+            { header: "PREVIEW", key: (row) => row.preview_url ?? "—" },
           ]);
         }
 
@@ -236,16 +251,17 @@ export function register(program: Command): void {
     );
 }
 
-async function listDevices(
-  filter: DeviceFilter,
-): Promise<{ devices: DeviceRecord[]; errors: Array<{ source: string; message: string; retryable: boolean }> }> {
+async function listDevices(filter: DeviceKind | "all"): Promise<{
+  devices: DeviceRecord[];
+  errors: DeviceListError[];
+}> {
   const records: DeviceRecord[] = [];
-  const errors: Array<{ source: string; message: string; retryable: boolean }> = [];
+  const errors: DeviceListError[] = [];
 
   if (filter === "all" || filter === "sandbox_worker") {
     try {
       const sandboxes = unwrapList(
-        await client().apiGet(apiPath("/sandboxes")),
+        await client().apiGet<unknown>(apiPath("/sandboxes")),
         ["sandboxes"],
       );
       records.push(...sandboxes.map(normalizeSandbox));
@@ -257,7 +273,7 @@ async function listDevices(
   if (filter === "all" || filter === "computer") {
     try {
       const computers = unwrapList(
-        await client().apiGet(apiPath("/computers")),
+        await client().apiGet<unknown>(apiPath("/computers")),
         ["computers"],
       );
       records.push(...computers.map(normalizeComputer));
@@ -269,7 +285,7 @@ async function listDevices(
   return { devices: records, errors };
 }
 
-function normalizeKindFilter(value: string): DeviceFilter {
+function normalizeKindFilter(value: string): DeviceKind | "all" {
   const normalized = value.trim().toLowerCase().replaceAll("-", "_");
   if (normalized === "all") return "all";
   if (normalized === "sandbox") return "sandbox_worker";
@@ -280,7 +296,7 @@ function normalizeKindFilter(value: string): DeviceFilter {
   );
 }
 
-function normalizeSandbox(row: ApiRecord): DeviceRecord {
+function normalizeSandbox(row: Record<string, unknown>): DeviceRecord {
   return {
     id: stringField(row, "id"),
     kind: "sandbox_worker",
@@ -290,13 +306,14 @@ function normalizeSandbox(row: ApiRecord): DeviceRecord {
     ready: optionalBoolean(row, "ready"),
     persistent: optionalBoolean(row, "persistent"),
     always_on: optionalBoolean(row, "always_on"),
-    template: optionalString(row, "template_id") ?? optionalString(row, "template"),
+    template:
+      optionalString(row, "template_id") ?? optionalString(row, "template"),
     preview_url: optionalString(row, "preview_url"),
     timeout_remaining_ms: optionalNumber(row, "timeout_remaining_ms"),
   };
 }
 
-function normalizeComputer(row: ApiRecord): DeviceRecord {
+function normalizeComputer(row: Record<string, unknown>): DeviceRecord {
   return {
     id: stringField(row, "id"),
     kind: "computer",
@@ -305,12 +322,13 @@ function normalizeComputer(row: ApiRecord): DeviceRecord {
     state: optionalString(row, "status") ?? optionalString(row, "state"),
     ready: optionalBoolean(row, "ready"),
     region: optionalString(row, "region"),
-    template: optionalString(row, "template_type") ?? optionalString(row, "template"),
+    template:
+      optionalString(row, "template_type") ?? optionalString(row, "template"),
   };
 }
 
-function unwrapList(payload: unknown, keys: string[]): ApiRecord[] {
-  const value = unwrap(payload);
+function unwrapList(payload: unknown, keys: string[]): Record<string, unknown>[] {
+  const value = unwrap<unknown>(payload);
   if (Array.isArray(value)) return value.filter(isRecord);
   if (isRecord(value)) {
     for (const key of keys) {
@@ -321,40 +339,45 @@ function unwrapList(payload: unknown, keys: string[]): ApiRecord[] {
   return [];
 }
 
-function deviceListError(
-  source: string,
-  err: unknown,
-): { source: string; message: string; retryable: boolean } {
+function deviceListError(source: DeviceSource, err: unknown): DeviceListError {
   const message = err instanceof Error ? err.message : String(err);
   return {
     source,
     message,
-    retryable:
-      /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
-        message,
-      ),
+    retryable: /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
+      message,
+    ),
   };
 }
 
-function stringField(row: ApiRecord, key: string): string {
+function stringField(row: Record<string, unknown>, key: string): string {
   const value = row[key];
   return typeof value === "string" ? value : String(value ?? "");
 }
 
-function optionalString(row: ApiRecord, key: string): string | undefined {
+function optionalString(
+  row: Record<string, unknown>,
+  key: string,
+): string | undefined {
   const value = row[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function optionalBoolean(row: ApiRecord, key: string): boolean | undefined {
+function optionalBoolean(
+  row: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
   return typeof row[key] === "boolean" ? row[key] : undefined;
 }
 
-function optionalNumber(row: ApiRecord, key: string): number | undefined {
+function optionalNumber(
+  row: Record<string, unknown>,
+  key: string,
+): number | undefined {
   return typeof row[key] === "number" ? row[key] : undefined;
 }
 
-function isRecord(value: unknown): value is ApiRecord {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

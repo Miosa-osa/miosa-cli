@@ -611,16 +611,21 @@ export function register(program: Command): void {
 
   registerSandboxConnectorCommands(sandbox);
 
-  // prompt — invoke an in-Sandbox AI agent CLI through the Agent Runs API.
-  // This keeps the old CLI shape while returning a stable run response shape.
+  // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
+  // Implemented through Agent Runs so callers get a stable run response while
+  // execution still happens inside the remote filesystem.
   sandbox
     .command("prompt <sandbox-id> <instruction...>")
     .description(
-      "Run an in-Sandbox AI agent with the given instruction",
+      "Run an in-Sandbox AI agent runtime with the given instruction",
     )
     .option(
       "--provider <name>",
-      "AI provider: claude (default), claude-code, codex, hermes, osa, pi",
+      "Agent runtime: claude (default), claude-code, codex, pi, hermes, osa, custom",
+    )
+    .option(
+      "--runtime-command <command>",
+      "Executable command for --provider custom, e.g. 'hermes-agent run'",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -651,6 +656,7 @@ export function register(program: Command): void {
         words: string[],
         opts: {
           provider?: string;
+          runtimeCommand?: string;
           model?: string;
           connector?: string;
           preflight?: boolean;
@@ -663,17 +669,15 @@ export function register(program: Command): void {
       ) =>
         runAction(async () => {
           const provider = opts.provider ?? "claude";
-          const allowedProviders = [
-            "claude",
-            "claude-code",
-            "codex",
-            "hermes",
-            "osa",
-            "pi",
-          ];
-          if (!allowedProviders.includes(provider)) {
+          if (!isSupportedPromptProvider(provider)) {
+            const allowedProviders = supportedPromptProviders();
             throw new Error(
               `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+            );
+          }
+          if (opts.runtimeCommand && provider !== "custom") {
+            throw new Error(
+              "--runtime-command can only be used with --provider custom",
             );
           }
           if (opts.connector || opts.preflight) {
@@ -691,6 +695,7 @@ export function register(program: Command): void {
             provider,
             prompt: instruction,
           };
+          if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
           if (opts.env && opts.env.length > 0) {
@@ -5051,6 +5056,48 @@ async function fetchApiRaw(path: string, body?: unknown): Promise<unknown> {
 function commandInCwd(command: string, cwd?: string): string {
   if (!cwd) return command;
   return `cd ${shellQuote(cwd)} && ${command}`;
+}
+
+function supportedPromptProviders(): string[] {
+  return [
+    "claude",
+    "claude-code",
+    "codex",
+    "pi",
+    "hermes",
+    "osa",
+    "custom",
+  ];
+}
+
+function runtimeCommandForProvider(
+  provider: string,
+  runtimeCommand?: string,
+): string | null {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === "custom") {
+    if (!runtimeCommand?.trim()) {
+      throw new Error(
+        "--provider custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
+      );
+    }
+    return runtimeCommand.trim();
+  }
+
+  const builtIns: Record<string, string> = {
+    claude: "claude",
+    "claude-code": "claude",
+    codex: "codex",
+    pi: "pi",
+    hermes: "hermes",
+    osa: "osa",
+  };
+
+  return builtIns[normalized] ?? null;
+}
+
+function isSupportedPromptProvider(provider: string): boolean {
+  return supportedPromptProviders().includes(provider.trim().toLowerCase());
 }
 
 function backgroundCommand(command: string): string {

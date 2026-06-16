@@ -169,6 +169,26 @@ Discover the full agent contract with:
 miosa capabilities --json
 ```
 
+### Device routing for agents
+
+Use `miosa devices catalog --json` before launching an agent workflow. It
+explains the four execution surfaces:
+
+- `sandbox_worker`: default for code, builds, tests, previews, artifacts, and
+  publish. Agents should write and run code inside `/workspace`.
+- `computer`: full VM/desktop for browser automation, form filling, dashboard
+  logins, screenshots, and Computer Use Agent sessions.
+- `local_device`: developer-owned machine for local discovery and MCP setup.
+- `docker_deploy_host`: workspace appliance that runs versioned app containers
+  after a sandbox-built app is published.
+
+```bash
+miosa devices catalog --json
+miosa devices list --json
+miosa sandbox prompt <sandbox-id> --provider codex --cwd /workspace --json -- "build and test the requested app"
+miosa sandbox prompt <sandbox-id> --provider custom --runtime-command "hermes-agent run" --json -- "run the configured agent"
+```
+
 ### Persistent sandbox workflow
 
 The normal agent loop happens inside the sandbox filesystem:
