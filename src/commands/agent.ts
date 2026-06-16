@@ -84,6 +84,9 @@ type AgentRunOptions = JsonOptions & {
   timeout?: string;
   agentProfile?: string;
   skipAgentProfile?: boolean;
+  externalWorkspace?: string;
+  externalUser?: string;
+  externalProject?: string;
   executionPacket?: string;
   executionPacketFile?: string;
   outputContract?: string;
@@ -412,6 +415,9 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
   if (opts.timeout) body["timeout"] = Number.parseInt(opts.timeout, 10);
   if (opts.agentProfile) body["agent_runtime_profile_id"] = opts.agentProfile;
   if (opts.skipAgentProfile) body["skip_agent_runtime_profile"] = true;
+  if (opts.externalWorkspace) body["external_workspace_id"] = opts.externalWorkspace;
+  if (opts.externalUser) body["external_user_id"] = opts.externalUser;
+  if (opts.externalProject) body["external_project_id"] = opts.externalProject;
   const executionPacket = readJsonValue(
     opts.executionPacket,
     opts.executionPacketFile,
@@ -472,6 +478,9 @@ async function runOpenComputerHostPrompt(
   if (opts.model) body["model"] = opts.model;
   if (opts.agentProfile) body["agent_runtime_profile_id"] = opts.agentProfile;
   if (opts.skipAgentProfile) body["skip_agent_runtime_profile"] = true;
+  if (opts.externalWorkspace) body["external_workspace_id"] = opts.externalWorkspace;
+  if (opts.externalUser) body["external_user_id"] = opts.externalUser;
+  if (opts.externalProject) body["external_project_id"] = opts.externalProject;
   const executionPacket = readJsonValue(
     opts.executionPacket,
     opts.executionPacketFile,
@@ -563,6 +572,9 @@ function buildRun(agent: Command): void {
     .option("--timeout <sec>", "Timeout in seconds")
     .option("--agent-profile <id>", "Agent runtime profile ID")
     .option("--skip-agent-profile", "Do not apply default agent runtime profile")
+    .option("--external-workspace <id>", "White-label workspace/customer ID for billing attribution")
+    .option("--external-user <id>", "White-label user ID for billing attribution")
+    .option("--external-project <id>", "White-label project ID for billing attribution")
     .option("--execution-packet <json>", "Execution packet JSON for product context, plan, and acceptance criteria")
     .option("--execution-packet-file <file>", "Read execution packet JSON from a file")
     .option("--output-contract <json>", "Output contract JSON declaring expected artifacts/previews")

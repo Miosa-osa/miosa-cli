@@ -648,6 +648,18 @@ export function register(program: Command): void {
       "--skip-agent-profile",
       "Do not apply the default agent runtime profile",
     )
+    .option(
+      "--external-workspace <id>",
+      "White-label workspace/customer ID for billing attribution",
+    )
+    .option(
+      "--external-user <id>",
+      "White-label user ID for billing attribution",
+    )
+    .option(
+      "--external-project <id>",
+      "White-label project ID for billing attribution",
+    )
     .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
@@ -664,6 +676,9 @@ export function register(program: Command): void {
           env?: string[];
           agentProfile?: string;
           skipAgentProfile?: boolean;
+          externalWorkspace?: string;
+          externalUser?: string;
+          externalProject?: string;
           timeout?: number;
         } & JsonOptions,
       ) =>
@@ -706,6 +721,15 @@ export function register(program: Command): void {
           }
           if (opts.skipAgentProfile) {
             body["skip_agent_runtime_profile"] = true;
+          }
+          if (opts.externalWorkspace) {
+            body["external_workspace_id"] = opts.externalWorkspace;
+          }
+          if (opts.externalUser) {
+            body["external_user_id"] = opts.externalUser;
+          }
+          if (opts.externalProject) {
+            body["external_project_id"] = opts.externalProject;
           }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
 
