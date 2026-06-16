@@ -75,8 +75,9 @@ describe("miosa agent-runtime-profiles", () => {
           runtime: "claude-code",
           workspace_id: "workspace_1",
           applies_to: ["sandbox", "computer"],
-          tools: ["shell", "files"],
-          env: { NODE_ENV: "test" },
+          tools: ["shell", "files", "browser"],
+          connectors: ["refero", "github"],
+          env: { NODE_ENV: "test", ANTHROPIC_API_KEY: "secret-ref" },
           is_default: true,
         }),
       })
@@ -139,8 +140,16 @@ describe("miosa agent-runtime-profiles", () => {
       "sandbox,computer",
       "--tools",
       "shell,files",
+      "--tool",
+      "browser",
+      "--connectors",
+      "refero",
+      "--connector",
+      "github",
       "--env",
       '{"NODE_ENV":"test"}',
+      "--env-var",
+      "ANTHROPIC_API_KEY=secret-ref",
       "--default",
     ]);
     await program.parseAsync([

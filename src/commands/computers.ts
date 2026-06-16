@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import chalk from "chalk";
 import {
@@ -16,6 +17,7 @@ import {
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
+import { isJsonMode } from "../cli-env.js";
 import { loadConfig } from "../config.js";
 import {
   formatDuration,
@@ -96,7 +98,7 @@ export function register(program: Command): void {
           await client().apiGet<unknown>(apiPath(path)),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(raw, null, 2));
           return;
         }
@@ -181,7 +183,7 @@ export function register(program: Command): void {
           await client().apiGet<unknown>(apiPath(`/computers/${enc(id)}`)),
         );
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(raw, null, 2));
           return;
         }
@@ -258,6 +260,14 @@ export function register(program: Command): void {
       .option(
         "--external-project <id>",
         "Your internal project ID (attribution)",
+      )
+      .option(
+        "--agent-profile <profile-id>",
+        "Agent runtime profile to mount into the computer",
+      )
+      .option(
+        "--skip-agent-profile",
+        "Do not apply the default agent runtime profile",
       ),
   )
     .option("--json", "Output as JSON")
@@ -268,6 +278,8 @@ export function register(program: Command): void {
           workspace?: string;
           externalWorkspace?: string;
           externalProject?: string;
+          agentProfile?: string;
+          skipAgentProfile?: boolean;
         },
       ) =>
         runAction(async () => {
@@ -282,6 +294,10 @@ export function register(program: Command): void {
             base["external_workspace_id"] = opts.externalWorkspace;
           if (opts.externalProject)
             base["external_project_id"] = opts.externalProject;
+          if (opts.agentProfile)
+            base["agent_runtime_profile_id"] = opts.agentProfile;
+          if (opts.skipAgentProfile)
+            base["skip_agent_runtime_profile"] = true;
 
           const createStart = Date.now();
           const result = await client().apiPost<unknown>(
@@ -296,7 +312,7 @@ export function register(program: Command): void {
               ? (result as Record<string, unknown>)["data"]
               : result;
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             printValue(value, opts);
             return;
           }
@@ -361,6 +377,78 @@ export function register(program: Command): void {
     );
 
   computers!
+    .command("download <computer-id> <remote-path>")
+    .description("Download a file from a Computer to a local path or stdout")
+    .option("--output <file>", "Write to this local file instead of stdout")
+    .option("--json", "Output as JSON metadata")
+    .action(
+      (
+        id: string,
+        remotePath: string,
+        opts: { output?: string } & JsonOptions,
+      ) =>
+        runAction(async () => {
+          const query = new URLSearchParams({ path: remotePath });
+          const bytes = await client().apiGetBinary(
+            apiPath(`/computers/${enc(id)}/files/download?${query.toString()}`),
+          );
+
+          if (opts.output) {
+            fs.writeFileSync(opts.output, bytes);
+            if (isJsonMode(opts)) {
+              console.log(
+                JSON.stringify(
+                  {
+                    computer_id: id,
+                    remote_path: remotePath,
+                    output: opts.output,
+                    bytes: bytes.length,
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
+            console.log(chalk.green(`Downloaded ${remotePath} → ${opts.output}`));
+            return;
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(
+              JSON.stringify(
+                {
+                  computer_id: id,
+                  remote_path: remotePath,
+                  bytes: bytes.length,
+                  content_base64: bytes.toString("base64"),
+                },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+
+          process.stdout.write(bytes);
+        }),
+    );
+
+  computers!
+    .command("export <computer-id> <remote-path>")
+    .description("Export a file from a Computer")
+    .option("--json", "Output as JSON")
+    .action((id: string, remotePath: string, opts: JsonOptions) =>
+      runAction(() =>
+        postAndPrint(
+          `/computers/${enc(id)}/files/export`,
+          opts,
+          { path: remotePath },
+        ),
+      ),
+    );
+
+  computers!
     .command("delete-checkpoint <computer-id> <checkpoint-id>")
     .alias("delete-snapshot")
     .description("Delete a Computer checkpoint")
@@ -385,7 +473,7 @@ export function register(program: Command): void {
         );
         const url = `${baseUrl}/api/v1/computers/${enc(id)}/desktop/vnc`;
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify({ url }, null, 2));
           return;
         }

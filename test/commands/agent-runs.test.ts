@@ -205,4 +205,89 @@ describe("miosa agent-runs", () => {
       Buffer.from("<html>report</html>"),
     );
   });
+
+  it("lists agent run events", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/agent-runs/run_123/events",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: [
+            {
+              id: "evt_123",
+              agent_run_id: "run_123",
+              sequence: 1,
+              type: "created",
+              message: "Agent run created",
+            },
+          ],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "agent-runs",
+      "events",
+      "run_123",
+    ]);
+
+    const outputs = logged.map((entry) => JSON.parse(entry));
+    expect(outputs[0][0]).toMatchObject({
+      id: "evt_123",
+      agent_run_id: "run_123",
+      type: "created",
+    });
+  });
+
+  it("waits for an agent run", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/agent-runs/run_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "run_123",
+            target_kind: "sandbox",
+            target_id: "sbx_123",
+            status: "succeeded",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "agent-runs",
+      "wait",
+      "run_123",
+    ]);
+
+    const outputs = logged.map((entry) => JSON.parse(entry));
+    expect(outputs[0]).toMatchObject({ id: "run_123", status: "succeeded" });
+  });
 });

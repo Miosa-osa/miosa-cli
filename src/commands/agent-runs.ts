@@ -9,6 +9,7 @@ import {
   unwrap,
   type JsonOptions,
 } from "./enterprise-util.js";
+import { parseSse } from "../client.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 
@@ -32,12 +33,32 @@ interface AgentArtifact {
   created_at?: string;
 }
 
+interface AgentRunEvent {
+  id?: string;
+  agent_run_id?: string;
+  sequence?: number;
+  type?: string;
+  message?: string;
+  created_at?: string;
+}
+
 function rows(raw: unknown): AgentRun[] {
   if (Array.isArray(raw)) return raw as AgentRun[];
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
     for (const key of ["data", "runs", "items"]) {
       if (Array.isArray(value[key])) return value[key] as AgentRun[];
+    }
+  }
+  return [];
+}
+
+function eventRows(raw: unknown): AgentRunEvent[] {
+  if (Array.isArray(raw)) return raw as AgentRunEvent[];
+  if (raw && typeof raw === "object") {
+    const value = raw as Record<string, unknown>;
+    for (const key of ["data", "events", "items"]) {
+      if (Array.isArray(value[key])) return value[key] as AgentRunEvent[];
     }
   }
   return [];
@@ -73,6 +94,52 @@ function str(value: unknown): string {
   if (typeof value === "string") return value;
   if (value == null) return "";
   return String(value);
+}
+
+function agentEventData(event: unknown): AgentRunEvent {
+  if (!event || typeof event !== "object") return {};
+  const value = event as Record<string, unknown>;
+
+  if (value["type"] === "unknown" && typeof value["raw"] === "string") {
+    try {
+      return JSON.parse(value["raw"]) as AgentRunEvent;
+    } catch {
+      return { type: "unknown", message: value["raw"] };
+    }
+  }
+
+  if (value["data"] && typeof value["data"] === "object") {
+    return value["data"] as AgentRunEvent;
+  }
+
+  return value as AgentRunEvent;
+}
+
+function isTerminalStatus(status: unknown): boolean {
+  return (
+    typeof status === "string" &&
+    ["succeeded", "failed", "canceled", "cancelled"].includes(status.toLowerCase())
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRun(id: string, timeoutSec: number): Promise<AgentRun> {
+  const deadline = Date.now() + timeoutSec * 1000;
+
+  while (true) {
+    const data = unwrap(
+      await client().apiGet<unknown>(`/api/v1/agent-runs/${enc(id)}`),
+    ) as AgentRun;
+    if (isTerminalStatus(data.status)) return data;
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for agent run ${id}`);
+    }
+    await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
+  }
 }
 
 export function register(program: Command): void {
@@ -192,6 +259,80 @@ export function register(program: Command): void {
           { header: "SIZE", key: (row) => str(row.size_bytes ?? "-"), width: 10 },
           { header: "PATH", key: (row) => str(row.path), width: 56 },
         ]);
+      }),
+    );
+
+  command
+    .command("events <id>")
+    .description("Show or stream Agent Run events")
+    .option("--stream", "Keep the connection open and stream new events")
+    .option("--limit <n>", "Stop after N streamed events")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { stream?: boolean; limit?: string } & JsonOptions) =>
+      runAction(async () => {
+        const path = `/api/v1/agent-runs/${enc(id)}/events`;
+
+        if (opts.stream) {
+          const limit = opts.limit ? Number(opts.limit) : undefined;
+          let seen = 0;
+          const res = await client().apiStream(path);
+
+          for await (const event of parseSse(res.body)) {
+            seen += 1;
+            const data = agentEventData(event);
+
+            if (isJsonMode(opts)) {
+              console.log(JSON.stringify(data, null, 2));
+            } else {
+              console.log(
+                [
+                  chalk.dim(str(data.sequence ?? seen)),
+                  colorStatus(data.type),
+                  str(data.agent_run_id ?? id),
+                  str(data.message),
+                ]
+                  .filter(Boolean)
+                  .join("  "),
+              );
+            }
+
+            if (limit && seen >= limit) break;
+          }
+          return;
+        }
+
+        const data = eventRows(unwrap(await client().apiGet<unknown>(path)));
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(data, null, 2));
+          return;
+        }
+        if (data.length === 0) {
+          console.log(chalk.dim("No agent run events found."));
+          return;
+        }
+        renderTable(data, [
+          { header: "SEQ", key: (row) => str(row.sequence ?? "-"), width: 8 },
+          { header: "TYPE", key: (row) => colorStatus(row.type), width: 18 },
+          { header: "MESSAGE", key: (row) => str(row.message ?? ""), width: 56 },
+        ]);
+      }),
+    );
+
+  command
+    .command("wait <id>")
+    .description("Wait for an Agent Run to reach a terminal state")
+    .option("--timeout <seconds>", "Maximum seconds to wait", "900")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: { timeout?: string } & JsonOptions) =>
+      runAction(async () => {
+        const data = await waitForRun(id, Number(opts.timeout ?? 900));
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(data, null, 2));
+          return;
+        }
+        console.log(
+          `${chalk.green("Agent run finished")} ${id} ${colorStatus(data.status)}`,
+        );
       }),
     );
 

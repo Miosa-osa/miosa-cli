@@ -293,6 +293,14 @@ export function register(program: Command): void {
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
       .option(
+        "--agent-profile <id>",
+        "Agent runtime profile ID to mount into the sandbox",
+      )
+      .option(
+        "--skip-agent-profile",
+        "Do not apply the tenant/workspace default agent runtime profile",
+      )
+      .option(
         "--network-policy <policy>",
         "Network policy: allow-all or deny-all",
       )
@@ -345,6 +353,8 @@ export function register(program: Command): void {
           depth?: number;
           snapshot?: string;
           workspace?: string;
+          agentProfile?: string;
+          skipAgentProfile?: boolean;
           networkPolicy?: string;
           allowedDomain?: string[];
           allowedCidr?: string[];
@@ -383,6 +393,12 @@ export function register(program: Command): void {
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
           if (opts.snapshot) body["snapshot_id"] = opts.snapshot;
+          if (opts.agentProfile) {
+            body["agent_runtime_profile_id"] = opts.agentProfile;
+          }
+          if (opts.skipAgentProfile) {
+            body["skip_agent_runtime_profile"] = true;
+          }
           const workspace =
             opts.workspace ??
             (program.opts() as { workspace?: string }).workspace ??
@@ -595,16 +611,16 @@ export function register(program: Command): void {
 
   registerSandboxConnectorCommands(sandbox);
 
-  // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
-  // Implemented as `exec claude/codex/claude-code <instruction>`.
+  // prompt — invoke an in-Sandbox AI agent CLI through the Agent Runs API.
+  // This keeps the old CLI shape while returning a stable run response shape.
   sandbox
     .command("prompt <sandbox-id> <instruction...>")
     .description(
-      "Run an in-Sandbox AI agent (claude/codex) with the given instruction",
+      "Run an in-Sandbox AI agent with the given instruction",
     )
     .option(
       "--provider <name>",
-      "AI provider: claude (default), codex, claude-code",
+      "AI provider: claude (default), claude-code, codex, hermes, osa, pi",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -616,6 +632,17 @@ export function register(program: Command): void {
       "Verify the Sandbox has the requested provider connector before exec",
     )
     .option("--cwd <path>", "Working directory inside the Sandbox")
+    .option(
+      "--env <KEY=VALUE>",
+      "Environment variable for the Agent Run. Repeatable.",
+      collectOption,
+      [],
+    )
+    .option("--agent-profile <id>", "Agent runtime profile ID")
+    .option(
+      "--skip-agent-profile",
+      "Do not apply the default agent runtime profile",
+    )
     .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
@@ -628,12 +655,22 @@ export function register(program: Command): void {
           connector?: string;
           preflight?: boolean;
           cwd?: string;
+          env?: string[];
+          agentProfile?: string;
+          skipAgentProfile?: boolean;
           timeout?: number;
         } & JsonOptions,
       ) =>
         runAction(async () => {
           const provider = opts.provider ?? "claude";
-          const allowedProviders = ["claude", "codex", "claude-code"];
+          const allowedProviders = [
+            "claude",
+            "claude-code",
+            "codex",
+            "hermes",
+            "osa",
+            "pi",
+          ];
           if (!allowedProviders.includes(provider)) {
             throw new Error(
               `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
@@ -648,20 +685,56 @@ export function register(program: Command): void {
             });
           }
           const instruction = words.join(" ");
-          const modelFlag = opts.model
-            ? ` --model ${`'${opts.model.replace(/'/g, "'\\''")}'`}`
-            : "";
-          const command = commandInCwd(
-            `${provider}${modelFlag} ${shellQuote(instruction)}`,
-            opts.cwd,
-          );
-          const body: Record<string, unknown> = { command };
-          if (opts.cwd) {
-            body["cwd"] = opts.cwd;
-            body["dir"] = opts.cwd;
+          const body: Record<string, unknown> = {
+            target_kind: "sandbox",
+            target_id: id,
+            provider,
+            prompt: instruction,
+          };
+          if (opts.model) body["model"] = opts.model;
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.env && opts.env.length > 0) {
+            body["env"] = parseEnvPairs(opts.env);
+          }
+          if (opts.agentProfile) {
+            body["agent_runtime_profile_id"] = opts.agentProfile;
+          }
+          if (opts.skipAgentProfile) {
+            body["skip_agent_runtime_profile"] = true;
           }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
-          await postSandboxExecAndPrint(id, opts, body);
+
+          const run = unwrap(
+            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+          ) as Record<string, unknown>;
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(run, null, 2));
+            return;
+          }
+
+          console.log();
+          console.log(
+            kvPanel([
+              { label: "Run", value: chalk.bold(str(run["id"])) },
+              { label: "Target", value: `${str(run["target_kind"])} ${id}` },
+              { label: "Provider", value: str(run["provider"]) },
+              { label: "Status", value: statusColor(str(run["status"])) },
+              { label: "Exit", value: str(run["exit_code"]) },
+            ]),
+          );
+
+          const output = str(run["output"]).trim();
+          const stderr = str(run["stderr"]).trim();
+          if (output) {
+            console.log();
+            console.log(output);
+          }
+          if (stderr) {
+            console.error();
+            console.error(chalk.red(stderr));
+          }
+          console.log();
         }),
     );
 
@@ -1109,9 +1182,9 @@ export function register(program: Command): void {
   sandbox
     .command("wait <sandbox-id>")
     .description(
-      "Wait for sandbox VM, internal app port, edge route, TLS, and public preview readiness",
+      "Wait for sandbox VM readiness; pass --port to also verify app preview readiness",
     )
-    .requiredOption(
+    .option(
       "--port <port>",
       "Port inside the sandbox to check",
       parseIntegerOption,
@@ -1124,7 +1197,7 @@ export function register(program: Command): void {
       (
         id: string,
         opts: {
-          port: number;
+          port?: number;
           url?: boolean;
           timeout: number;
           probePath: string;
@@ -1132,12 +1205,15 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
-          const result = await waitSandboxReady(
-            id,
-            opts.port,
-            opts.probePath,
-            opts.timeout,
-          );
+          const result =
+            opts.port == null
+              ? await waitSandboxVmReady(id, opts.timeout)
+              : await waitSandboxReady(
+                  id,
+                  opts.port,
+                  opts.probePath,
+                  opts.timeout,
+                );
           if (opts.url && result.url) {
             console.log(result.url);
             return;
@@ -1147,7 +1223,7 @@ export function register(program: Command): void {
             return;
           }
           console.log(chalk.green("Ready"));
-          console.log(chalk.cyan(result.url));
+          if (result.url) console.log(chalk.cyan(result.url));
         }),
     );
 
@@ -2008,43 +2084,151 @@ export function register(program: Command): void {
         try {
           const encoded = enc(remotePath.replace(/^\//, ""));
           const c = client();
-          const result = await c.apiGet<unknown>(
+          const bytes = await c.apiGetBinary(
             apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
           );
 
-          if (isJsonMode(opts)) {
-            console.log(JSON.stringify(result, null, 2));
-            return;
-          }
-
-          const data =
-            result !== null &&
-            typeof result === "object" &&
-            !Array.isArray(result)
-              ? ((result as Record<string, unknown>)["data"] ?? result)
-              : result;
-
-          const downloadContent =
-            data !== null &&
-            typeof data === "object" &&
-            !Array.isArray(data) &&
-            "content" in data &&
-            typeof (data as Record<string, unknown>)["content"] === "string"
-              ? ((data as Record<string, unknown>)["content"] as string)
-              : null;
-          const bytes: Buffer =
-            downloadContent !== null
-              ? Buffer.from(downloadContent, "base64")
-              : Buffer.from(JSON.stringify(data, null, 2), "utf8");
-
           if (opts.output) {
             fs.writeFileSync(opts.output, bytes);
+            if (isJsonMode(opts)) {
+              console.log(
+                JSON.stringify(
+                  {
+                    sandbox_id: id,
+                    remote_path: remotePath,
+                    output: opts.output,
+                    bytes: bytes.length,
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
             console.log(
               chalk.green(`Downloaded ${remotePath} → ${opts.output}`),
             );
           } else {
+            if (isJsonMode(opts)) {
+              console.log(
+                JSON.stringify(
+                  {
+                    sandbox_id: id,
+                    remote_path: remotePath,
+                    bytes: bytes.length,
+                    content_base64: bytes.toString("base64"),
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
             process.stdout.write(bytes);
           }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  sandbox
+    .command("export <sandbox-id> <remote-paths...>")
+    .description(
+      "Create a portable export for sandbox-generated files; optionally download it",
+    )
+    .option("--label <label>", "Human-readable export label")
+    .option("--filename <name>", "Filename to use when downloading")
+    .option("--output <file>", "Download the file/archive to this local path")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        remotePaths: string[],
+        opts: {
+          label?: string;
+          filename?: string;
+          output?: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          if (remotePaths.length === 0) {
+            throw new UserError("At least one remote path is required.");
+          }
+
+          const body: Record<string, unknown> =
+            remotePaths.length === 1
+              ? { path: remotePaths[0] }
+              : { paths: remotePaths };
+          if (opts.label) body["label"] = opts.label;
+          if (opts.filename) body["filename"] = opts.filename;
+
+          const exportData = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/exports`),
+              body,
+            ),
+          ) as Record<string, unknown>;
+
+          if (opts.output) {
+            const query = new URLSearchParams();
+            if (remotePaths.length === 1) {
+              query.set("path", remotePaths[0] ?? "");
+            } else {
+              for (const remotePath of remotePaths) {
+                query.append("paths[]", remotePath);
+              }
+            }
+            if (opts.filename) query.set("filename", opts.filename);
+            const bytes = await client().apiGetBinary(
+              apiPath(`/sandboxes/${enc(id)}/exports/download?${query.toString()}`),
+            );
+            fs.writeFileSync(opts.output, bytes);
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(
+              JSON.stringify(
+                opts.output
+                  ? { ...exportData, downloaded_to: opts.output }
+                  : exportData,
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+
+          console.log();
+          console.log(
+            kvPanel([
+              { label: "Export", value: chalk.bold(str(exportData["id"])) },
+              { label: "Sandbox", value: id },
+              { label: "Status", value: statusColor(str(exportData["status"])) },
+              {
+                label: "Archive",
+                value: str(exportData["archive_download_url"]),
+              },
+              ...(opts.output
+                ? [{ label: "Downloaded", value: opts.output }]
+                : []),
+            ]),
+          );
+          const files = Array.isArray(exportData["files"])
+            ? (exportData["files"] as Record<string, unknown>[])
+            : [];
+          if (files.length > 0) {
+            console.log();
+            renderTable(files, [
+              { header: "PATH", key: "path" as keyof Record<string, unknown> },
+              {
+                header: "DOWNLOAD URL",
+                key: "download_url" as keyof Record<string, unknown>,
+              },
+            ]);
+          }
+          console.log();
         } catch (err) {
           handleError(err);
         }
@@ -2919,6 +3103,25 @@ async function waitSandboxReady(
     port,
     internal_status: internal.status,
     ...preview,
+  };
+}
+
+async function waitSandboxVmReady(
+  sandboxId: string,
+  timeoutSec: number,
+): Promise<
+  Record<string, unknown> & {
+    sandbox_id: string;
+    ready: boolean;
+    url: null;
+  }
+> {
+  const sandbox = await waitForSandboxRunning(client(), sandboxId, timeoutSec);
+  return {
+    ...sandbox,
+    sandbox_id: sandboxId,
+    ready: true,
+    url: null,
   };
 }
 

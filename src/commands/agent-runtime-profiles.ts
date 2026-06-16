@@ -41,6 +41,29 @@ function splitList(value?: string): string[] | undefined {
   return parts.length > 0 ? parts : undefined;
 }
 
+function mergeLists(...values: Array<string[] | undefined>): string[] | undefined {
+  const merged = values.flatMap((value) => value ?? []);
+  return merged.length > 0 ? Array.from(new Set(merged)) : undefined;
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
+function parseEnvPairs(values: string[] | undefined): Record<string, string> | undefined {
+  if (!values?.length) return undefined;
+  const env: Record<string, string> = {};
+  for (const value of values) {
+    const index = value.indexOf("=");
+    if (index <= 0) {
+      throw new Error(`Invalid --env-var ${value}; expected KEY=VALUE`);
+    }
+    env[value.slice(0, index)] = value.slice(index + 1);
+  }
+  return env;
+}
+
 function parseJsonObject(value: string | undefined, field: string): Record<string, unknown> | undefined {
   if (!value) return undefined;
   const parsed = JSON.parse(value) as unknown;
@@ -48,6 +71,13 @@ function parseJsonObject(value: string | undefined, field: string): Record<strin
     throw new Error(`${field} must be a JSON object`);
   }
   return parsed as Record<string, unknown>;
+}
+
+function mergeObjects(
+  ...values: Array<Record<string, unknown> | undefined>
+): Record<string, unknown> | undefined {
+  const merged = Object.assign({}, ...values.filter(Boolean));
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 function body(opts: Record<string, unknown>): Record<string, unknown> {
@@ -121,8 +151,11 @@ export function register(program: Command): void {
     .option("--description <text>", "Profile description")
     .option("--applies-to <csv>", "Comma-separated resource kinds: sandbox, computer, agent")
     .option("--tools <csv>", "Comma-separated tool IDs")
+    .option("--tool <id>", "Tool ID. Repeatable.", collectOption, [])
     .option("--connectors <csv>", "Comma-separated connector UIDs")
+    .option("--connector <uid>", "Connector UID. Repeatable.", collectOption, [])
     .option("--env <json>", "Environment defaults as a JSON object")
+    .option("--env-var <KEY=VALUE>", "Environment default. Repeatable.", collectOption, [])
     .option("--policy <json>", "Policy defaults as a JSON object")
     .option("--metadata <json>", "Metadata as a JSON object")
     .option("--default", "Mark as default")
@@ -136,9 +169,18 @@ export function register(program: Command): void {
           project_id: opts.project,
           description: opts.description,
           applies_to: splitList(opts.appliesTo as string | undefined),
-          tools: splitList(opts.tools as string | undefined),
-          connectors: splitList(opts.connectors as string | undefined),
-          env: parseJsonObject(opts.env as string | undefined, "--env"),
+          tools: mergeLists(
+            splitList(opts.tools as string | undefined),
+            opts.tool as string[] | undefined,
+          ),
+          connectors: mergeLists(
+            splitList(opts.connectors as string | undefined),
+            opts.connector as string[] | undefined,
+          ),
+          env: mergeObjects(
+            parseJsonObject(opts.env as string | undefined, "--env"),
+            parseEnvPairs(opts.envVar as string[] | undefined),
+          ),
           policy: parseJsonObject(opts.policy as string | undefined, "--policy"),
           metadata: parseJsonObject(opts.metadata as string | undefined, "--metadata"),
           is_default: opts.default === true,
@@ -160,8 +202,11 @@ export function register(program: Command): void {
     .option("--description <text>", "Profile description")
     .option("--applies-to <csv>", "Comma-separated resource kinds: sandbox, computer, agent")
     .option("--tools <csv>", "Comma-separated tool IDs")
+    .option("--tool <id>", "Tool ID. Repeatable.", collectOption, [])
     .option("--connectors <csv>", "Comma-separated connector UIDs")
+    .option("--connector <uid>", "Connector UID. Repeatable.", collectOption, [])
     .option("--env <json>", "Environment defaults as a JSON object")
+    .option("--env-var <KEY=VALUE>", "Environment default. Repeatable.", collectOption, [])
     .option("--policy <json>", "Policy defaults as a JSON object")
     .option("--metadata <json>", "Metadata as a JSON object")
     .option("--default", "Mark as default")
@@ -175,9 +220,18 @@ export function register(program: Command): void {
           project_id: opts.project,
           description: opts.description,
           applies_to: splitList(opts.appliesTo as string | undefined),
-          tools: splitList(opts.tools as string | undefined),
-          connectors: splitList(opts.connectors as string | undefined),
-          env: parseJsonObject(opts.env as string | undefined, "--env"),
+          tools: mergeLists(
+            splitList(opts.tools as string | undefined),
+            opts.tool as string[] | undefined,
+          ),
+          connectors: mergeLists(
+            splitList(opts.connectors as string | undefined),
+            opts.connector as string[] | undefined,
+          ),
+          env: mergeObjects(
+            parseJsonObject(opts.env as string | undefined, "--env"),
+            parseEnvPairs(opts.envVar as string[] | undefined),
+          ),
           policy: parseJsonObject(opts.policy as string | undefined, "--policy"),
           metadata: parseJsonObject(opts.metadata as string | undefined, "--metadata"),
           is_default: opts.default === true ? true : undefined,
