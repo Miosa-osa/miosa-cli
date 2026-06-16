@@ -15,13 +15,14 @@
  */
 
 import type { Command } from "commander";
+import fs from "node:fs";
 import chalk from "chalk";
 import { MiosaClient } from "../client.js";
 import { loadConfig } from "../config.js";
 import { UserError } from "../errors.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { handleError, isJsonMode } from "./util.js";
+import { handleError, isJsonMode, parseEnvPairs } from "./util.js";
 
 // ---------------------------------------------------------------------------
 // Domain types — match backend CUA session shape
@@ -72,6 +73,29 @@ type AgentStartOptions = JsonOptions & {
   maxTurns?: string;
 };
 
+type AgentRunOptions = JsonOptions & {
+  sandbox?: string;
+  computer?: string;
+  host?: string;
+  provider?: string;
+  model?: string;
+  cwd?: string;
+  env?: string[];
+  timeout?: string;
+  agentProfile?: string;
+  skipAgentProfile?: boolean;
+  executionPacket?: string;
+  executionPacketFile?: string;
+  outputContract?: string;
+  outputContractFile?: string;
+  approvalPolicy?: string;
+  approvalPolicyFile?: string;
+  capability?: string[];
+  stream?: boolean;
+  wait?: boolean;
+  waitTimeout?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -82,6 +106,24 @@ function apiV1(path: string): string {
 
 function enc(value: string): string {
   return encodeURIComponent(value);
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
+function readJsonValue(value: string | undefined, file: string | undefined, label: string): unknown {
+  if (value && file) {
+    throw new UserError(`Use either --${label} or --${label}-file, not both.`);
+  }
+  if (file) {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  }
+  if (value) {
+    return JSON.parse(value);
+  }
+  return undefined;
 }
 
 /** Extract a list from the standard {data: [...]} envelope or bare array. */
@@ -161,6 +203,19 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
+function str(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
+function unwrapData(payload: unknown): Record<string, unknown> {
+  if (isRecord(payload) && isRecord(payload["data"])) {
+    return payload["data"] as Record<string, unknown>;
+  }
+  return isRecord(payload) ? payload : {};
+}
+
 function colorStatus(status: string): string {
   switch (status.toLowerCase()) {
     case "running":
@@ -169,12 +224,45 @@ function colorStatus(status: string): string {
       return chalk.yellow(status);
     case "completed":
     case "done":
+    case "succeeded":
       return chalk.dim(status);
     case "failed":
+    case "canceled":
     case "cancelled":
       return chalk.red(status);
     default:
       return chalk.dim(status);
+  }
+}
+
+function isTerminalStatus(status: unknown): boolean {
+  return (
+    typeof status === "string" &&
+    ["succeeded", "failed", "canceled", "cancelled"].includes(status.toLowerCase())
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAgentRun(
+  c: MiosaClient,
+  id: string,
+  timeoutSec: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutSec * 1000;
+
+  while (true) {
+    const run = unwrapData(
+      await c.apiGet<unknown>(apiV1(`/agent-runs/${enc(id)}`)),
+    );
+    if (isTerminalStatus(run["status"])) return run;
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for agent run ${id}`);
+    }
+    await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
   }
 }
 
@@ -289,6 +377,143 @@ async function resumeAgentSession(
   if (instruction) console.log(chalk.dim(`Task submitted to ${sessionId}.`));
 }
 
+async function runPromptTarget(instruction: string, opts: AgentRunOptions): Promise<void> {
+  const targets = [opts.sandbox, opts.computer, opts.host].filter(Boolean);
+  if (targets.length !== 1) {
+    throw new UserError(
+      "Choose exactly one target.",
+      "Use one of: --sandbox <id>, --computer <name-or-id>, or --host <id>.",
+    );
+  }
+
+  const config = loadConfig();
+  const c = new MiosaClient(config);
+
+  if (opts.host) {
+    await runOpenComputerHostPrompt(c, opts.host, instruction, opts);
+    return;
+  }
+
+  const targetKind = opts.sandbox ? "sandbox" : "computer";
+  const targetId =
+    targetKind === "computer"
+      ? (await resolveComputer(c, opts.computer as string)).id
+      : (opts.sandbox as string);
+
+  const body: Record<string, unknown> = {
+    target_kind: targetKind,
+    target_id: targetId,
+    prompt: instruction,
+    provider: opts.provider ?? "claude",
+  };
+  if (opts.model) body["model"] = opts.model;
+  if (opts.cwd) body["cwd"] = opts.cwd;
+  if (opts.env && opts.env.length > 0) body["env"] = parseEnvPairs(opts.env);
+  if (opts.timeout) body["timeout"] = Number.parseInt(opts.timeout, 10);
+  if (opts.agentProfile) body["agent_runtime_profile_id"] = opts.agentProfile;
+  if (opts.skipAgentProfile) body["skip_agent_runtime_profile"] = true;
+  const executionPacket = readJsonValue(
+    opts.executionPacket,
+    opts.executionPacketFile,
+    "execution-packet",
+  );
+  const outputContract = readJsonValue(
+    opts.outputContract,
+    opts.outputContractFile,
+    "output-contract",
+  );
+  const approvalPolicy = readJsonValue(
+    opts.approvalPolicy,
+    opts.approvalPolicyFile,
+    "approval-policy",
+  );
+  if (executionPacket !== undefined) body["execution_packet"] = executionPacket;
+  if (outputContract !== undefined) body["output_contract"] = outputContract;
+  if (approvalPolicy !== undefined) body["approval_policy"] = approvalPolicy;
+  if (opts.capability?.length) body["capability_requirements"] = opts.capability;
+
+  let run = unwrapData(await c.apiPost<unknown>(apiV1("/agent-runs"), body));
+  const runId = str(run["id"]);
+  if (opts.wait) {
+    if (!runId) throw new Error("Agent run response did not include an id.");
+    run = await waitForAgentRun(
+      c,
+      runId,
+      Number.parseInt(opts.waitTimeout ?? opts.timeout ?? "900", 10),
+    );
+  }
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify(run, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`Agent run ${str(run["status"] || "created")}: ${str(run["id"])}`));
+  console.log(chalk.dim(`Target: ${targetKind} ${targetId}`));
+  const output = str(run["output"]).trim();
+  const stderr = str(run["stderr"]).trim();
+  if (output) {
+    console.log();
+    console.log(output);
+  }
+  if (stderr) {
+    console.error();
+    console.error(chalk.red(stderr));
+  }
+}
+
+async function runOpenComputerHostPrompt(
+  c: MiosaClient,
+  hostId: string,
+  instruction: string,
+  opts: AgentRunOptions,
+): Promise<void> {
+  const body: Record<string, unknown> = { task: instruction };
+  if (opts.model) body["model"] = opts.model;
+  if (opts.agentProfile) body["agent_runtime_profile_id"] = opts.agentProfile;
+  if (opts.skipAgentProfile) body["skip_agent_runtime_profile"] = true;
+  const executionPacket = readJsonValue(
+    opts.executionPacket,
+    opts.executionPacketFile,
+    "execution-packet",
+  );
+  const outputContract = readJsonValue(
+    opts.outputContract,
+    opts.outputContractFile,
+    "output-contract",
+  );
+  const approvalPolicy = readJsonValue(
+    opts.approvalPolicy,
+    opts.approvalPolicyFile,
+    "approval-policy",
+  );
+  if (executionPacket !== undefined) body["execution_packet"] = executionPacket;
+  if (outputContract !== undefined) body["output_contract"] = outputContract;
+  if (approvalPolicy !== undefined) body["approval_policy"] = approvalPolicy;
+  if (opts.capability?.length) body["capability_requirements"] = opts.capability;
+  if (opts.timeout) {
+    body["budget"] = { timeout_ms: Number.parseInt(opts.timeout, 10) * 1000 };
+  }
+
+  const session = unwrapData(
+    await c.apiPost<unknown>(
+      apiV1(`/opencomputers/hosts/${enc(hostId)}/agent/dispatch`),
+      body,
+    ),
+  );
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
+  console.log(chalk.green(`OpenComputers agent session started: ${str(session["id"] || session["session_id"])}`));
+  console.log(chalk.dim(`Host: ${hostId}`));
+  if (session["sse_url"]) {
+    console.log(chalk.dim(`Events: ${str(session["sse_url"])}`));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand builders
 // ---------------------------------------------------------------------------
@@ -317,6 +542,55 @@ function buildStart(agent: Command): void {
         }
       },
     );
+}
+
+function buildRun(agent: Command): void {
+  agent
+    .command("run <instruction...>")
+    .description(
+      "Dispatch one prompt to a Sandbox, Computer, or OpenComputers host",
+    )
+    .option("--sandbox <id>", "Sandbox ID target")
+    .option("--computer <name-or-id>", "Computer name or ID target")
+    .option("--host <id>", "OpenComputers host ID target")
+    .option(
+      "--provider <name>",
+      "Agent provider for Sandbox/Computer targets: claude, claude-code, codex, hermes, osa, pi, custom",
+    )
+    .option("--model <name>", "Provider/model override")
+    .option("--cwd <path>", "Working directory for Sandbox/Computer targets")
+    .option("--env <KEY=VALUE>", "Environment variable for Sandbox/Computer targets. Repeatable.", collectOption, [])
+    .option("--timeout <sec>", "Timeout in seconds")
+    .option("--agent-profile <id>", "Agent runtime profile ID")
+    .option("--skip-agent-profile", "Do not apply default agent runtime profile")
+    .option("--execution-packet <json>", "Execution packet JSON for product context, plan, and acceptance criteria")
+    .option("--execution-packet-file <file>", "Read execution packet JSON from a file")
+    .option("--output-contract <json>", "Output contract JSON declaring expected artifacts/previews")
+    .option("--output-contract-file <file>", "Read output contract JSON from a file")
+    .option("--approval-policy <json>", "Approval policy JSON for publish/writeback/destructive actions")
+    .option("--approval-policy-file <file>", "Read approval policy JSON from a file")
+    .option("--capability <name>", "Required runtime capability. Repeatable.", collectOption, [])
+    .option("--wait", "Wait for Sandbox/Computer Agent Run completion")
+    .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
+    .option("--json", "Output as JSON")
+    .action(async (instruction: string[], opts: AgentRunOptions, command: Command) => {
+      try {
+        const resolvedOpts = command.optsWithGlobals<AgentRunOptions>();
+        const mergedOpts = { ...opts };
+        for (const [key, value] of Object.entries(resolvedOpts)) {
+          if ((mergedOpts as Record<string, unknown>)[key] == null) {
+            (mergedOpts as Record<string, unknown>)[key] = value;
+          }
+        }
+        const prompt = instruction.join(" ").trim();
+        if (!prompt) {
+          throw new UserError("No agent instruction provided.");
+        }
+        await runPromptTarget(prompt, mergedOpts);
+      } catch (err) {
+        handleError(err);
+      }
+    });
 }
 
 function buildLs(agent: Command): void {
@@ -751,6 +1025,7 @@ export function register(program: Command): void {
     );
 
   buildStart(agent);
+  buildRun(agent);
   buildLs(agent);
   buildGet(agent);
   buildTask(agent);

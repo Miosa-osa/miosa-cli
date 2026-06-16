@@ -138,6 +138,49 @@ export class MiosaClient {
     return this.get<T>(path);
   }
 
+  /** Generic binary GET for file/artifact download routes. */
+  async apiGetBinary(path: string): Promise<Buffer> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "GET",
+        headers: this.headers(),
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        "Check your connection and endpoint: miosa status",
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res, "GET", path);
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /** Generic SSE GET for command groups that stream API events. */
+  async apiStream(path: string): Promise<Dispatcher.ResponseData> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "GET",
+        headers: {
+          ...this.headers(),
+          Accept: "text/event-stream",
+        },
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        "Check your connection and endpoint: miosa status",
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res, "GET", path);
+    return res;
+  }
+
   /** Generic POST for command groups that map directly to stable API routes. */
   async apiPost<T>(path: string, body?: unknown): Promise<T> {
     return this.post<T>(path, body);

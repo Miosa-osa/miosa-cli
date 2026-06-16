@@ -74,6 +74,129 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("downloads raw sandbox files without parsing them as JSON", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-cli-sandbox-"));
+    const output = path.join(tmpDir, "index.html");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/files/workspace%2Findex.html",
+        method: "GET",
+      })
+      .reply(200, "<html><body>artifact</body></html>", {
+        headers: { "content-type": "text/html" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "download",
+      "sbx_123",
+      "/workspace/index.html",
+      "--output",
+      output,
+      "--json",
+    ]);
+
+    expect(fs.readFileSync(output, "utf8")).toBe(
+      "<html><body>artifact</body></html>",
+    );
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      sandbox_id: "sbx_123",
+      remote_path: "/workspace/index.html",
+      output,
+      bytes: 34,
+    });
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("creates and downloads sandbox exports through the release/v1 routes", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-cli-export-"));
+    const output = path.join(tmpDir, "export.tar");
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exports",
+        method: "POST",
+        body: JSON.stringify({
+          paths: ["/workspace/report.html", "/workspace/assets"],
+          label: "Agent artifacts",
+          filename: "agent-artifacts.tar",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "exp_123",
+            sandbox_id: "sbx_123",
+            status: "ready",
+            filename: "agent-artifacts.tar",
+            archive_download_url:
+              "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-artifacts.tar",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-artifacts.tar",
+        method: "GET",
+      })
+      .reply(200, "tar-bytes", {
+        headers: { "content-type": "application/x-tar" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "export",
+      "sbx_123",
+      "/workspace/report.html",
+      "/workspace/assets",
+      "--label",
+      "Agent artifacts",
+      "--filename",
+      "agent-artifacts.tar",
+      "--output",
+      output,
+      "--json",
+    ]);
+
+    expect(fs.readFileSync(output, "utf8")).toBe("tar-bytes");
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      id: "exp_123",
+      sandbox_id: "sbx_123",
+      status: "ready",
+      downloaded_to: output,
+    });
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("passes through unknown flags and preserves quoting for bash -c", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -411,6 +534,52 @@ describe("miosa sandbox exec", () => {
     ]);
 
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("waits for sandbox VM readiness without requiring an app port", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            id: "sbx_123",
+            state: "running",
+            ready: true,
+            persistent: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "wait",
+      "sbx_123",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n")) as Record<string, unknown>;
+    expect(parsed["id"]).toBe("sbx_123");
+    expect(parsed["sandbox_id"]).toBe("sbx_123");
+    expect(parsed["ready"]).toBe(true);
+    expect(parsed["url"]).toBeNull();
   });
 
   it("stops a sandbox through the persistent lifecycle endpoint", async () => {
@@ -1299,13 +1468,28 @@ describe("miosa sandbox connectors", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/exec",
+        path: "/api/v1/agent-runs",
         method: "POST",
-        body: JSON.stringify({ command: "claude 'hello'" }),
+        body: JSON.stringify({
+          target_kind: "sandbox",
+          target_id: "sbx_123",
+          provider: "claude",
+          prompt: "hello",
+          env: { FEATURE_FLAG: "on" },
+          agent_runtime_profile_id: "prof_123",
+        }),
       })
       .reply(
-        200,
-        JSON.stringify({ data: { exit_code: 0, stdout: "done\n" } }),
+        201,
+        JSON.stringify({
+          data: {
+            id: "run_123",
+            target_kind: "sandbox",
+            target_id: "sbx_123",
+            provider: "claude",
+            status: "succeeded",
+          },
+        }),
         { headers: { "content-type": "application/json" } },
       );
 
@@ -1318,6 +1502,10 @@ describe("miosa sandbox connectors", () => {
       "sbx_123",
       "--connector",
       "anthropic/workspace-claude",
+      "--env",
+      "FEATURE_FLAG=on",
+      "--agent-profile",
+      "prof_123",
       "hello",
     ]);
 

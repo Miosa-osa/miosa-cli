@@ -70,10 +70,14 @@ function unwrapData<T>(payload: unknown, listKey?: string): T {
 
 function runTopLevelAlias(command: string, args: string[]): Promise<void> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [process.argv[1] ?? "", command, ...args], {
-      stdio: "inherit",
-      env: process.env,
-    });
+    const child = spawn(
+      process.execPath,
+      [process.argv[1] ?? "", command, ...args],
+      {
+        stdio: "inherit",
+        env: process.env,
+      },
+    );
 
     child.on("exit", (code, signal) => {
       if (signal) {
@@ -86,7 +90,9 @@ function runTopLevelAlias(command: string, args: string[]): Promise<void> {
     });
 
     child.on("error", (error) => {
-      console.error(chalk.red(`Failed to run miosa ${command}: ${error.message}`));
+      console.error(
+        chalk.red(`Failed to run miosa ${command}: ${error.message}`),
+      );
       process.exitCode = 1;
       resolve();
     });
@@ -257,4 +263,168 @@ export function register(program: Command): void {
         handleError(err);
       }
     });
+
+  // ── project-auth subcommands ───────────────────────────────────────────
+  //
+  // Manage the built-in per-resource auth system (sandbox / deployment).
+  // Routes: POST /api/v1/project-auth/enable|disable  GET /api/v1/project-auth/status
+
+  const projectAuth = auth
+    .command("project-auth")
+    .description("Manage built-in project auth for sandboxes and deployments");
+
+  projectAuth
+    .command("status")
+    .description("Show project-auth status for a resource")
+    .requiredOption(
+      "--resource-type <type>",
+      "Resource type: sandbox | deployment",
+    )
+    .requiredOption("--resource-id <id>", "ID of the sandbox or deployment")
+    .option("--json", "Output as JSON")
+    .action(
+      async (opts: {
+        resourceType: string;
+        resourceId: string;
+        json?: boolean;
+      }) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const api = requireApiMethods(client);
+          const result = unwrapData<Record<string, unknown>>(
+            await api.apiGet<unknown>(
+              `/api/v1/project-auth/status?resource_type=${encodeURIComponent(opts.resourceType)}&resource_id=${encodeURIComponent(opts.resourceId)}`,
+            ),
+          );
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          const enabled = result["enabled"] ?? result["state"];
+          console.log(
+            chalk.bold("Project auth status") +
+              chalk.dim(` (${opts.resourceType} ${opts.resourceId})`),
+          );
+          console.log(
+            `  ${chalk.bold("Enabled:")} ${enabled ? chalk.green("yes") : chalk.red("no")}`,
+          );
+          if (result["config"] && typeof result["config"] === "object") {
+            console.log(
+              `  ${chalk.bold("Config:")} ${JSON.stringify(result["config"])}`,
+            );
+          }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  projectAuth
+    .command("enable")
+    .description("Enable project auth for a sandbox or deployment")
+    .requiredOption(
+      "--resource-type <type>",
+      "Resource type: sandbox | deployment",
+    )
+    .requiredOption("--resource-id <id>", "ID of the sandbox or deployment")
+    .option("--signup-enabled", "Allow new user signups (default: true)")
+    .option("--no-signup-enabled", "Disallow new signups after initial setup")
+    .option(
+      "--email-confirm-required",
+      "Require email confirmation before first login",
+    )
+    .option("--token-expiry-sec <seconds>", "Access token TTL in seconds")
+    .option("--json", "Output as JSON")
+    .action(
+      async (opts: {
+        resourceType: string;
+        resourceId: string;
+        signupEnabled?: boolean;
+        emailConfirmRequired?: boolean;
+        tokenExpirySec?: string;
+        json?: boolean;
+      }) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const api = requireApiMethods(client);
+
+          const config: Record<string, unknown> = {};
+          if (opts.signupEnabled !== undefined)
+            config["signup_enabled"] = opts.signupEnabled;
+          if (opts.emailConfirmRequired)
+            config["email_confirm_required"] = true;
+          if (opts.tokenExpirySec !== undefined)
+            config["token_expiry_sec"] = Number.parseInt(
+              opts.tokenExpirySec,
+              10,
+            );
+
+          const body: Record<string, unknown> = {
+            resource_type: opts.resourceType,
+            resource_id: opts.resourceId,
+          };
+          if (Object.keys(config).length > 0) body["config"] = config;
+
+          const result = unwrapData<Record<string, unknown>>(
+            await api.apiPost<unknown>("/api/v1/project-auth/enable", body),
+          );
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          console.log(
+            chalk.green(
+              `Project auth enabled for ${opts.resourceType} ${opts.resourceId}.`,
+            ),
+          );
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  projectAuth
+    .command("disable")
+    .description("Disable project auth for a sandbox or deployment")
+    .requiredOption(
+      "--resource-type <type>",
+      "Resource type: sandbox | deployment",
+    )
+    .requiredOption("--resource-id <id>", "ID of the sandbox or deployment")
+    .option("--json", "Output as JSON")
+    .action(
+      async (opts: {
+        resourceType: string;
+        resourceId: string;
+        json?: boolean;
+      }) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const api = requireApiMethods(client);
+          const result = unwrapData<Record<string, unknown>>(
+            await api.apiPost<unknown>("/api/v1/project-auth/disable", {
+              resource_type: opts.resourceType,
+              resource_id: opts.resourceId,
+            }),
+          );
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          console.log(
+            chalk.yellow(
+              `Project auth disabled for ${opts.resourceType} ${opts.resourceId}.`,
+            ),
+          );
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 }

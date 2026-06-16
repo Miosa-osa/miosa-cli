@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { MiosaClient } from "../client.js";
+import { loadConfig } from "../config.js";
 import { printJson } from "./util.js";
 
 type CapabilityStatus = "stable" | "beta" | "partial" | "probe_required";
@@ -1079,8 +1081,23 @@ export function register(program: Command): void {
     .description(
       "Print agent-readable CLI capabilities, resources, and workflow recipes",
     )
+    .option("--live", "Fetch live backend runtime capabilities from /api/v1/runtime-capabilities")
     .option("--json", "Output machine-readable JSON")
-    .action((opts: { json?: boolean }) => {
+    .action(async (opts: { live?: boolean; json?: boolean }) => {
+      if (opts.live) {
+        const client = new MiosaClient(loadConfig());
+        const capabilities = await client.apiGet<unknown>("/api/v1/runtime-capabilities");
+        if (opts.json || process.env["MIOSA_JSON"] === "1") {
+          printJson(capabilities);
+          return;
+        }
+
+        console.log(chalk.bold("MIOSA Runtime Capabilities"));
+        console.log(chalk.dim("Machine-readable form: miosa capabilities --live --json"));
+        printJson(capabilities);
+        return;
+      }
+
       if (opts.json || process.env["MIOSA_JSON"] === "1") {
         printJson(manifest);
         return;

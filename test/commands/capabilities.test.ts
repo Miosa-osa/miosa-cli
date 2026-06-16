@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Command } from "commander";
+import { MockAgent, setGlobalDispatcher } from "undici";
+
+vi.mock("../../src/config.js", () => ({
+  loadConfig: () => ({
+    endpoint: "https://api.miosa.ai",
+    api_key: "msk_u_test",
+    default_host: null,
+  }),
+}));
 
 const { register } = await import("../../src/commands/capabilities.js");
 
@@ -86,6 +95,45 @@ describe("miosa capabilities", () => {
 
     expect(JSON.parse(logged.join(""))).toMatchObject({
       cli: { agent_entrypoint: "miosa capabilities --json" },
+    });
+  });
+
+  it("fetches live backend runtime capabilities", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/runtime-capabilities", method: "GET" })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            version: 1,
+            agent_runs: {
+              contract_fields: ["execution_packet", "output_contract"],
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "capabilities", "--live", "--json"]);
+
+    expect(JSON.parse(logged.join(""))).toMatchObject({
+      data: {
+        version: 1,
+        agent_runs: {
+          contract_fields: ["execution_packet", "output_contract"],
+        },
+      },
     });
   });
 });

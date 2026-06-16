@@ -227,6 +227,7 @@ export function register(program: Command): void {
 
           console.log(kvPanel(rows));
           console.log();
+          warnIfExpiringSoon(sb, str(sb["id"]));
           console.log(
             hintBlock("Try", [
               `miosa sandbox exec ${str(sb["id"])} --command ...`,
@@ -292,6 +293,14 @@ export function register(program: Command): void {
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
       .option(
+        "--agent-profile <id>",
+        "Agent runtime profile ID to mount into the sandbox",
+      )
+      .option(
+        "--skip-agent-profile",
+        "Do not apply the tenant/workspace default agent runtime profile",
+      )
+      .option(
         "--network-policy <policy>",
         "Network policy: allow-all or deny-all",
       )
@@ -313,7 +322,10 @@ export function register(program: Command): void {
         collectOption,
         [],
       )
-      .option("--always-on", "Keep the sandbox running until explicitly stopped or destroyed")
+      .option(
+        "--always-on",
+        "Keep the sandbox running until explicitly stopped or destroyed",
+      )
       .option(
         "--non-persistent",
         "Discard filesystem state on timeout instead of pausing for resume",
@@ -341,6 +353,8 @@ export function register(program: Command): void {
           depth?: number;
           snapshot?: string;
           workspace?: string;
+          agentProfile?: string;
+          skipAgentProfile?: boolean;
           networkPolicy?: string;
           allowedDomain?: string[];
           allowedCidr?: string[];
@@ -379,6 +393,12 @@ export function register(program: Command): void {
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
           if (opts.snapshot) body["snapshot_id"] = opts.snapshot;
+          if (opts.agentProfile) {
+            body["agent_runtime_profile_id"] = opts.agentProfile;
+          }
+          if (opts.skipAgentProfile) {
+            body["skip_agent_runtime_profile"] = true;
+          }
           const workspace =
             opts.workspace ??
             (program.opts() as { workspace?: string }).workspace ??
@@ -409,12 +429,17 @@ export function register(program: Command): void {
                 opts.publishPort,
                 opts.probePath ?? "/",
                 Math.max(
-                  Math.min(opts.timeout ?? DEFAULT_CREATE_WAIT_TIMEOUT_SEC, DEFAULT_CREATE_WAIT_TIMEOUT_SEC),
+                  Math.min(
+                    opts.timeout ?? DEFAULT_CREATE_WAIT_TIMEOUT_SEC,
+                    DEFAULT_CREATE_WAIT_TIMEOUT_SEC,
+                  ),
                   30,
                 ),
               );
               const latest = unwrap(
-                await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}`)),
+                await client().apiGet<unknown>(
+                  apiPath(`/sandboxes/${enc(id)}`),
+                ),
               );
               Object.assign(sb, latest, {
                 preview,
@@ -492,7 +517,9 @@ export function register(program: Command): void {
   // stop — snapshot + pause (mirrors `box stop`)
   sandbox
     .command("stop <sandbox-id>")
-    .description("Stop a persistent Sandbox session and preserve its filesystem")
+    .description(
+      "Stop a persistent Sandbox session and preserve its filesystem",
+    )
     .option(
       "--no-snapshot",
       "Deprecated compatibility flag; stop still preserves state server-side",
@@ -517,7 +544,10 @@ export function register(program: Command): void {
         console.log(
           kvPanel([
             { label: "ID", value: str(row["id"] ?? id) },
-            { label: "State", value: statusColor(str(row["state"] ?? "paused")) },
+            {
+              label: "State",
+              value: statusColor(str(row["state"] ?? "paused")),
+            },
             { label: "Resume", value: `miosa sandbox resume ${id}` },
             { label: "Destroy", value: `miosa sandbox destroy ${id}` },
           ]),
@@ -582,7 +612,8 @@ export function register(program: Command): void {
   registerSandboxConnectorCommands(sandbox);
 
   // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
-  // Implemented as sandbox exec so agents work inside the remote filesystem.
+  // Implemented through Agent Runs so callers get a stable run response while
+  // execution still happens inside the remote filesystem.
   sandbox
     .command("prompt <sandbox-id> <instruction...>")
     .description(
@@ -606,6 +637,17 @@ export function register(program: Command): void {
       "Verify the Sandbox has the requested provider connector before exec",
     )
     .option("--cwd <path>", "Working directory inside the Sandbox")
+    .option(
+      "--env <KEY=VALUE>",
+      "Environment variable for the Agent Run. Repeatable.",
+      collectOption,
+      [],
+    )
+    .option("--agent-profile <id>", "Agent runtime profile ID")
+    .option(
+      "--skip-agent-profile",
+      "Do not apply the default agent runtime profile",
+    )
     .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
     .option("--json", "Output as JSON")
     .action(
@@ -619,6 +661,9 @@ export function register(program: Command): void {
           connector?: string;
           preflight?: boolean;
           cwd?: string;
+          env?: string[];
+          agentProfile?: string;
+          skipAgentProfile?: boolean;
           timeout?: number;
         } & JsonOptions,
       ) =>
@@ -653,6 +698,15 @@ export function register(program: Command): void {
           if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.env && opts.env.length > 0) {
+            body["env"] = parseEnvPairs(opts.env);
+          }
+          if (opts.agentProfile) {
+            body["agent_runtime_profile_id"] = opts.agentProfile;
+          }
+          if (opts.skipAgentProfile) {
+            body["skip_agent_runtime_profile"] = true;
+          }
           if (opts.timeout != null) body["timeout"] = opts.timeout;
 
           const run = unwrap(
@@ -976,7 +1030,9 @@ export function register(program: Command): void {
 
   sandbox
     .command("metrics <sandbox-id>")
-    .description("Show Sandbox resource, uptime, timeout, and readiness metrics")
+    .description(
+      "Show Sandbox resource, uptime, timeout, and readiness metrics",
+    )
     .option("--window <window>", "Metrics window: 1h, 24h, or 7d", "1h")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions & { window: string }) =>
@@ -1055,31 +1111,31 @@ export function register(program: Command): void {
           json?: boolean;
         },
       ) => {
-          try {
-            const result = await deploySandbox(localDir, opts);
-            if (isJsonMode(opts)) {
-              console.log(JSON.stringify(result, null, 2));
-              return;
-            }
-
-            console.log();
-            console.log(`  ${chalk.bold("Sandbox")}  ${result.sandbox_id}`);
-            console.log(`  ${chalk.bold("Port")}     ${result.port}`);
-            console.log(
-              `  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`,
-            );
-            console.log(
-              `  ${chalk.bold("Ready")}    ${
-                result.preview_ready
-                  ? chalk.green("yes")
-                  : chalk.yellow("not verified")
-              }`,
-            );
-            console.log();
-          } catch (err) {
-            handleSandboxDeployError(err, opts);
+        try {
+          const result = await deploySandbox(localDir, opts);
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
           }
-        },
+
+          console.log();
+          console.log(`  ${chalk.bold("Sandbox")}  ${result.sandbox_id}`);
+          console.log(`  ${chalk.bold("Port")}     ${result.port}`);
+          console.log(
+            `  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`,
+          );
+          console.log(
+            `  ${chalk.bold("Ready")}    ${
+              result.preview_ready
+                ? chalk.green("yes")
+                : chalk.yellow("not verified")
+            }`,
+          );
+          console.log();
+        } catch (err) {
+          handleSandboxDeployError(err, opts);
+        }
+      },
     );
 
   sandbox
@@ -1131,9 +1187,9 @@ export function register(program: Command): void {
   sandbox
     .command("wait <sandbox-id>")
     .description(
-      "Wait for sandbox VM, internal app port, edge route, TLS, and public preview readiness",
+      "Wait for sandbox VM readiness; pass --port to also verify app preview readiness",
     )
-    .requiredOption(
+    .option(
       "--port <port>",
       "Port inside the sandbox to check",
       parseIntegerOption,
@@ -1146,7 +1202,7 @@ export function register(program: Command): void {
       (
         id: string,
         opts: {
-          port: number;
+          port?: number;
           url?: boolean;
           timeout: number;
           probePath: string;
@@ -1154,12 +1210,15 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
-          const result = await waitSandboxReady(
-            id,
-            opts.port,
-            opts.probePath,
-            opts.timeout,
-          );
+          const result =
+            opts.port == null
+              ? await waitSandboxVmReady(id, opts.timeout)
+              : await waitSandboxReady(
+                  id,
+                  opts.port,
+                  opts.probePath,
+                  opts.timeout,
+                );
           if (opts.url && result.url) {
             console.log(result.url);
             return;
@@ -1169,7 +1228,7 @@ export function register(program: Command): void {
             return;
           }
           console.log(chalk.green("Ready"));
-          console.log(chalk.cyan(result.url));
+          if (result.url) console.log(chalk.cyan(result.url));
         }),
     );
 
@@ -2030,43 +2089,151 @@ export function register(program: Command): void {
         try {
           const encoded = enc(remotePath.replace(/^\//, ""));
           const c = client();
-          const result = await c.apiGet<unknown>(
+          const bytes = await c.apiGetBinary(
             apiPath(`/sandboxes/${enc(id)}/files/${encoded}`),
           );
 
-          if (isJsonMode(opts)) {
-            console.log(JSON.stringify(result, null, 2));
-            return;
-          }
-
-          const data =
-            result !== null &&
-            typeof result === "object" &&
-            !Array.isArray(result)
-              ? ((result as Record<string, unknown>)["data"] ?? result)
-              : result;
-
-          const downloadContent =
-            data !== null &&
-            typeof data === "object" &&
-            !Array.isArray(data) &&
-            "content" in data &&
-            typeof (data as Record<string, unknown>)["content"] === "string"
-              ? ((data as Record<string, unknown>)["content"] as string)
-              : null;
-          const bytes: Buffer =
-            downloadContent !== null
-              ? Buffer.from(downloadContent, "base64")
-              : Buffer.from(JSON.stringify(data, null, 2), "utf8");
-
           if (opts.output) {
             fs.writeFileSync(opts.output, bytes);
+            if (isJsonMode(opts)) {
+              console.log(
+                JSON.stringify(
+                  {
+                    sandbox_id: id,
+                    remote_path: remotePath,
+                    output: opts.output,
+                    bytes: bytes.length,
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
             console.log(
               chalk.green(`Downloaded ${remotePath} → ${opts.output}`),
             );
           } else {
+            if (isJsonMode(opts)) {
+              console.log(
+                JSON.stringify(
+                  {
+                    sandbox_id: id,
+                    remote_path: remotePath,
+                    bytes: bytes.length,
+                    content_base64: bytes.toString("base64"),
+                  },
+                  null,
+                  2,
+                ),
+              );
+              return;
+            }
             process.stdout.write(bytes);
           }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  sandbox
+    .command("export <sandbox-id> <remote-paths...>")
+    .description(
+      "Create a portable export for sandbox-generated files; optionally download it",
+    )
+    .option("--label <label>", "Human-readable export label")
+    .option("--filename <name>", "Filename to use when downloading")
+    .option("--output <file>", "Download the file/archive to this local path")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        id: string,
+        remotePaths: string[],
+        opts: {
+          label?: string;
+          filename?: string;
+          output?: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          if (remotePaths.length === 0) {
+            throw new UserError("At least one remote path is required.");
+          }
+
+          const body: Record<string, unknown> =
+            remotePaths.length === 1
+              ? { path: remotePaths[0] }
+              : { paths: remotePaths };
+          if (opts.label) body["label"] = opts.label;
+          if (opts.filename) body["filename"] = opts.filename;
+
+          const exportData = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/exports`),
+              body,
+            ),
+          ) as Record<string, unknown>;
+
+          if (opts.output) {
+            const query = new URLSearchParams();
+            if (remotePaths.length === 1) {
+              query.set("path", remotePaths[0] ?? "");
+            } else {
+              for (const remotePath of remotePaths) {
+                query.append("paths[]", remotePath);
+              }
+            }
+            if (opts.filename) query.set("filename", opts.filename);
+            const bytes = await client().apiGetBinary(
+              apiPath(`/sandboxes/${enc(id)}/exports/download?${query.toString()}`),
+            );
+            fs.writeFileSync(opts.output, bytes);
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(
+              JSON.stringify(
+                opts.output
+                  ? { ...exportData, downloaded_to: opts.output }
+                  : exportData,
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+
+          console.log();
+          console.log(
+            kvPanel([
+              { label: "Export", value: chalk.bold(str(exportData["id"])) },
+              { label: "Sandbox", value: id },
+              { label: "Status", value: statusColor(str(exportData["status"])) },
+              {
+                label: "Archive",
+                value: str(exportData["archive_download_url"]),
+              },
+              ...(opts.output
+                ? [{ label: "Downloaded", value: opts.output }]
+                : []),
+            ]),
+          );
+          const files = Array.isArray(exportData["files"])
+            ? (exportData["files"] as Record<string, unknown>[])
+            : [];
+          if (files.length > 0) {
+            console.log();
+            renderTable(files, [
+              { header: "PATH", key: "path" as keyof Record<string, unknown> },
+              {
+                header: "DOWNLOAD URL",
+                key: "download_url" as keyof Record<string, unknown>,
+              },
+            ]);
+          }
+          console.log();
         } catch (err) {
           handleError(err);
         }
@@ -2786,7 +2953,9 @@ class SandboxDeployPartialError extends Error {
     public readonly sandboxId: string,
     public readonly recoveryCommand: string,
   ) {
-    super(causeError instanceof Error ? causeError.message : String(causeError));
+    super(
+      causeError instanceof Error ? causeError.message : String(causeError),
+    );
     this.name = "SandboxDeployPartialError";
   }
 }
@@ -2939,6 +3108,25 @@ async function waitSandboxReady(
     port,
     internal_status: internal.status,
     ...preview,
+  };
+}
+
+async function waitSandboxVmReady(
+  sandboxId: string,
+  timeoutSec: number,
+): Promise<
+  Record<string, unknown> & {
+    sandbox_id: string;
+    ready: boolean;
+    url: null;
+  }
+> {
+  const sandbox = await waitForSandboxRunning(client(), sandboxId, timeoutSec);
+  return {
+    ...sandbox,
+    sandbox_id: sandboxId,
+    ready: true,
+    url: null,
   };
 }
 
@@ -3546,7 +3734,9 @@ async function recoverSandboxDeploy(
 
   const execOk = await checkSandboxExec(c, sandboxId);
   const doctor =
-    port != null ? await safeDoctorSandbox(sandboxId, port, opts.probePath) : null;
+    port != null
+      ? await safeDoctorSandbox(sandboxId, port, opts.probePath)
+      : null;
 
   const previewUrl = stringOrNull(doctor?.["preview_url"]);
   const previewReady =
@@ -3667,23 +3857,33 @@ function buildRecoveryRecommendations(input: {
   const ready = Boolean(input.sandbox["ready"]);
 
   if (state !== "running") {
-    recs.push(`Sandbox state is ${state ?? "unknown"}; wait or recreate before uploading files.`);
+    recs.push(
+      `Sandbox state is ${state ?? "unknown"}; wait or recreate before uploading files.`,
+    );
   } else if (!ready) {
-    recs.push("Sandbox exists but is not fully ready; try exec/write-file before retrying deploy.");
+    recs.push(
+      "Sandbox exists but is not fully ready; try exec/write-file before retrying deploy.",
+    );
   }
 
   if (!input.execOk) {
     recs.push("Exec health failed; retry later or recreate the sandbox.");
   } else {
-    recs.push("Exec works; if upload/deploy failed, use write-file/patch plus service up.");
+    recs.push(
+      "Exec works; if upload/deploy failed, use write-file/patch plus service up.",
+    );
   }
 
   if (input.template === "nextjs" && input.port !== 3000) {
-    recs.push("Next.js templates default to port 3000; use 3000 unless you intentionally reconfigured readiness.");
+    recs.push(
+      "Next.js templates default to port 3000; use 3000 unless you intentionally reconfigured readiness.",
+    );
   }
 
   if (input.port != null && input.previewReady === false) {
-    recs.push("Preview is not ready; start the app process, then run sandbox wait.");
+    recs.push(
+      "Preview is not ready; start the app process, then run sandbox wait.",
+    );
   }
 
   if (input.previewReady === true) {
@@ -3723,7 +3923,9 @@ function renderRecoverReport(report: SandboxRecoveryReport): void {
   console.log();
   console.log(`  ${chalk.bold("Sandbox")} ${report.sandbox_id}`);
   console.log(`  ${chalk.bold("Matched")} ${report.matched_by}`);
-  console.log(`  ${chalk.bold("Exec")}    ${report.exec_ok ? chalk.green("ok") : chalk.red("failed")}`);
+  console.log(
+    `  ${chalk.bold("Exec")}    ${report.exec_ok ? chalk.green("ok") : chalk.red("failed")}`,
+  );
   if (report.app_port != null) {
     console.log(`  ${chalk.bold("Port")}    ${report.app_port}`);
   }
@@ -3936,7 +4138,11 @@ function sandboxRecoveryHint(
   const template = String(sandbox["template_id"] ?? "nextjs");
   const timeoutRemainingSec = timeoutRemainingSeconds(sandbox);
 
-  if (state === "running" && timeoutRemainingSec != null && timeoutRemainingSec <= EXPIRING_SANDBOX_THRESHOLD_SEC) {
+  if (
+    state === "running" &&
+    timeoutRemainingSec != null &&
+    timeoutRemainingSec <= EXPIRING_SANDBOX_THRESHOLD_SEC
+  ) {
     return `Sandbox expires soon. Extend it with: miosa sandbox extend ${sandboxId} --timeout 1h`;
   }
 
@@ -3969,7 +4175,9 @@ function sandboxLifecycleDetails(
   };
 }
 
-function sandboxLastErrorReason(sandbox: Record<string, unknown>): string | null {
+function sandboxLastErrorReason(
+  sandbox: Record<string, unknown>,
+): string | null {
   const lastError = sandboxLastError(sandbox);
   if (!lastError) return null;
   const reason = lastError["reason"];
@@ -3994,6 +4202,35 @@ function timeoutRemainingSeconds(
   if (typeof ms === "number") return Math.ceil(ms / 1000);
   const sec = sandbox["timeout_remaining_sec"];
   return typeof sec === "number" ? sec : null;
+}
+
+/**
+ * Prints a yellow expiry warning when a running sandbox has <5 minutes left.
+ * Call this in any non-JSON render path that shows sandbox state.
+ */
+function warnIfExpiringSoon(
+  sandbox: Record<string, unknown>,
+  sandboxId: string,
+): void {
+  const state = String(
+    sandbox["state"] ?? sandbox["status"] ?? "",
+  ).toLowerCase();
+  if (state !== "running" && state !== "active") return;
+  const remainingSec = timeoutRemainingSeconds(sandbox);
+  if (remainingSec == null || remainingSec > EXPIRING_SANDBOX_THRESHOLD_SEC)
+    return;
+
+  const mins = Math.floor(remainingSec / 60);
+  const secs = remainingSec % 60;
+  const humanTime =
+    mins > 0 ? `${mins}m${secs > 0 ? `${secs}s` : ""}` : `${secs}s`;
+
+  console.log(
+    chalk.yellow(
+      `  Warning: Sandbox expires in ${humanTime}. Extend: miosa sandbox extend ${sandboxId} --timeout 1h`,
+    ),
+  );
+  console.log();
 }
 
 function createDeployArchive(sourceDir: string): string {
@@ -4040,7 +4277,12 @@ async function uploadFileToSandbox(
   localPath: string,
   remotePath: string,
 ): Promise<unknown> {
-  return writeBytesToSandbox(c, sandboxId, remotePath, fs.readFileSync(localPath));
+  return writeBytesToSandbox(
+    c,
+    sandboxId,
+    remotePath,
+    fs.readFileSync(localPath),
+  );
 }
 
 async function writeBytesToSandbox(
@@ -4145,10 +4387,7 @@ function recoveryCommandForSandboxDeploy(
   return parts.join(" ");
 }
 
-function handleSandboxDeployError(
-  err: unknown,
-  opts: JsonOptions,
-): never {
+function handleSandboxDeployError(err: unknown, opts: JsonOptions): never {
   if (err instanceof SandboxDeployPartialError) {
     const cause = err.causeError;
     const message = cause instanceof Error ? cause.message : String(cause);
@@ -4334,7 +4573,10 @@ function renderResourceMetrics(title: string, raw: unknown): void {
   printBanner({ subtitle: title });
   console.log(
     kvPanel([
-      { label: "resource_id", value: String(row["resource_id"] ?? row["sandbox_id"] ?? "-") },
+      {
+        label: "resource_id",
+        value: String(row["resource_id"] ?? row["sandbox_id"] ?? "-"),
+      },
       { label: "window", value: String(row["window"] ?? "1h") },
       { label: "state", value: formatState(current["state"]) },
       { label: "ready", value: formatBool(current["ready"]) },
@@ -4375,7 +4617,8 @@ function formatBool(value: unknown): string {
 }
 
 function formatMaybe(value: unknown): string {
-  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  if (value === null || value === undefined || value === "")
+    return chalk.dim("-");
   return String(value);
 }
 
@@ -5064,6 +5307,7 @@ function renderCreateSuccess(raw: unknown, elapsedMs: number): void {
     ]),
   );
   console.log();
+  warnIfExpiringSoon(sb, id);
   console.log(
     hintBlock("Next", [
       `miosa sandbox show ${id}`,

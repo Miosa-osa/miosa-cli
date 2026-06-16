@@ -11,7 +11,13 @@ import { isJsonMode } from "../cli-env.js";
 export type ApiObject = Record<string, unknown>;
 export type ApiClient = Pick<
   MiosaClient,
-  "apiGet" | "apiPost" | "apiPut" | "apiPatch" | "apiDelete"
+  | "apiGet"
+  | "apiGetBinary"
+  | "apiStream"
+  | "apiPost"
+  | "apiPut"
+  | "apiPatch"
+  | "apiDelete"
 >;
 export type JsonOptions = { json?: boolean };
 export type DataOptions = JsonOptions & {
