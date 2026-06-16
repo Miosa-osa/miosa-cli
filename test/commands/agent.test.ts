@@ -200,6 +200,9 @@ describe("miosa agent", () => {
           provider: "codex",
           env: { FEATURE_FLAG: "on" },
           agent_runtime_profile_id: "prof_123",
+          external_workspace_id: "clinic-iq",
+          external_user_id: "founder-1",
+          external_project_id: "landing-page",
         }),
       })
       .reply(
@@ -237,6 +240,12 @@ describe("miosa agent", () => {
       "FEATURE_FLAG=on",
       "--agent-profile",
       "prof_123",
+      "--external-workspace",
+      "clinic-iq",
+      "--external-user",
+      "founder-1",
+      "--external-project",
+      "landing-page",
     ]);
 
     expect(JSON.parse(logged.join("\n"))).toMatchObject({

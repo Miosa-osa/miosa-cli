@@ -17,6 +17,9 @@ interface AgentRun {
   id: string;
   target_kind?: string;
   target_id?: string;
+  external_workspace_id?: string;
+  external_user_id?: string;
+  external_project_id?: string;
   provider?: string;
   status?: string;
   prompt?: string;
@@ -154,6 +157,9 @@ export function register(program: Command): void {
     .option("--computer <id>", "Filter by computer ID")
     .option("--workspace <id>", "Filter by workspace ID")
     .option("--project <id>", "Filter by project ID")
+    .option("--external-workspace <id>", "Filter by white-label workspace/customer ID")
+    .option("--external-user <id>", "Filter by white-label user ID")
+    .option("--external-project <id>", "Filter by white-label project ID")
     .option("--target-kind <kind>", "Filter by target kind")
     .option("--target-id <id>", "Filter by target ID")
     .option("--status <status>", "Filter by run status")
@@ -166,6 +172,9 @@ export function register(program: Command): void {
           computer?: string;
           workspace?: string;
           project?: string;
+          externalWorkspace?: string;
+          externalUser?: string;
+          externalProject?: string;
           targetKind?: string;
           targetId?: string;
           status?: string;
@@ -182,6 +191,11 @@ export function register(program: Command): void {
           const query = new URLSearchParams();
           if (opts.workspace) query.set("workspace_id", opts.workspace);
           if (opts.project) query.set("project_id", opts.project);
+          if (opts.externalWorkspace)
+            query.set("external_workspace_id", opts.externalWorkspace);
+          if (opts.externalUser) query.set("external_user_id", opts.externalUser);
+          if (opts.externalProject)
+            query.set("external_project_id", opts.externalProject);
           if (opts.sandbox) {
             query.set("target_kind", "sandbox");
             query.set("target_id", opts.sandbox);
@@ -210,6 +224,18 @@ export function register(program: Command): void {
           renderTable(data, [
             { header: "ID", key: "id", width: 18 },
             { header: "TARGET", key: (row) => `${str(row.target_kind)} ${str(row.target_id)}`, width: 28 },
+            {
+              header: "EXTERNAL",
+              key: (row) =>
+                [
+                  str(row.external_workspace_id),
+                  str(row.external_user_id),
+                  str(row.external_project_id),
+                ]
+                  .filter(Boolean)
+                  .join(" / "),
+              width: 30,
+            },
             { header: "PROVIDER", key: "provider", width: 12 },
             { header: "STATUS", key: (row) => colorStatus(row.status), width: 12 },
             { header: "PROMPT", key: (row) => str(row.prompt), width: 44 },

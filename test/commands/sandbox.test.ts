@@ -1477,6 +1477,9 @@ describe("miosa sandbox connectors", () => {
           prompt: "hello",
           env: { FEATURE_FLAG: "on" },
           agent_runtime_profile_id: "prof_123",
+          external_workspace_id: "clinic-iq",
+          external_user_id: "founder-1",
+          external_project_id: "landing-page",
         }),
       })
       .reply(
@@ -1506,6 +1509,12 @@ describe("miosa sandbox connectors", () => {
       "FEATURE_FLAG=on",
       "--agent-profile",
       "prof_123",
+      "--external-workspace",
+      "clinic-iq",
+      "--external-user",
+      "founder-1",
+      "--external-project",
+      "landing-page",
       "hello",
     ]);
 
