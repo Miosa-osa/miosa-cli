@@ -48,7 +48,7 @@ describe("miosa agent-runs", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs?target_kind=sandbox&target_id=sbx_123&status=running",
+        path: "/api/v1/agent-runs?external_workspace_id=clinic-iq&external_user_id=founder-1&external_project_id=landing-page&target_kind=sandbox&target_id=sbx_123&status=running",
         method: "GET",
       })
       .reply(
@@ -113,6 +113,12 @@ describe("miosa agent-runs", () => {
       "sbx_123",
       "--status",
       "running",
+      "--external-workspace",
+      "clinic-iq",
+      "--external-user",
+      "founder-1",
+      "--external-project",
+      "landing-page",
     ]);
     await program.parseAsync([
       "node",
