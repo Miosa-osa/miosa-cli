@@ -459,6 +459,94 @@ export function register(program: Command): void {
       ),
     );
 
+  const connectors = computers!
+    .command("connectors")
+    .description("Manage provider connectors bound to a Computer");
+
+  connectors
+    .command("list <computer-id>")
+    .description("List provider connectors bound to a Computer")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => getAndPrint(`/computers/${enc(id)}/connectors`, opts)),
+    );
+
+  connectors
+    .command("attach <computer-id> <connector>")
+    .description("Attach a provider connector to a Computer as a brokered env var")
+    .requiredOption("--env <name>", "Environment variable name to expose")
+    .option("--mode <mode>", "brokered-env or plain-env", "brokered-env")
+    .option("--project <id>", "Project ID for attribution")
+    .option("--environment <name>", "Environment name", "development")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        connector: string,
+        opts: JsonOptions & {
+          env: string;
+          mode?: string;
+          project?: string;
+          environment?: string;
+        },
+      ) =>
+        runAction(() =>
+          postAndPrint(
+            `/computers/${enc(id)}/connectors`,
+            opts,
+            {
+              connector,
+              env_name: opts.env,
+              mode: opts.mode?.replaceAll("-", "_"),
+              project_id: opts.project,
+              environment: opts.environment,
+            },
+          ),
+        ),
+    );
+
+  connectors
+    .command("detach <computer-id> <binding>")
+    .alias("rm")
+    .description("Detach a provider connector binding from a Computer")
+    .option("--json", "Output as JSON")
+    .action((id: string, binding: string, opts: JsonOptions) =>
+      runAction(() =>
+        deleteAndPrint(`/computers/${enc(id)}/connectors/${enc(binding)}`, opts),
+      ),
+    );
+
+  connectors
+    .command("sync <computer-id>")
+    .description("Show materialized connector env vars for a Computer")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => postAndPrint(`/computers/${enc(id)}/connectors/sync`, opts, {})),
+    );
+
+  connectors
+    .command("preflight <computer-id>")
+    .description("Verify a required provider connector is bound before agent work")
+    .option("--connector <uid>", "Connector UID or binding id")
+    .option("--provider <provider>", "Provider name for diagnostics")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: JsonOptions & { connector?: string; provider?: string },
+      ) =>
+        runAction(() =>
+          postAndPrint(
+            `/computers/${enc(id)}/connectors/preflight`,
+            opts,
+            {
+              connector: opts.connector,
+              provider: opts.provider,
+            },
+          ),
+        ),
+    );
+
   computers!
     .command("vnc <computer-id>")
     .description("Open the VNC viewer for a Computer in your browser")

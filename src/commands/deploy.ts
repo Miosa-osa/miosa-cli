@@ -1011,6 +1011,164 @@ Examples:
       }
     });
 
+  // ── deploy connectors ───────────────────────────────────────────────────────
+
+  const connectorsCmd = deploy
+    .command("connectors")
+    .description("Manage provider connectors bound to a deployment");
+
+  connectorsCmd
+    .command("list [id]")
+    .description("List provider connectors bound to a deployment")
+    .option("--json", "Output raw JSON")
+    .action(async (id: string | undefined, opts: { json?: boolean }) => {
+      try {
+        const cwd = process.cwd();
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const deploymentId = resolveDeploymentId(id, cwd);
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching deployment connectors...");
+        const raw = await client.apiGet<unknown>(
+          `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors`,
+        );
+        spinner?.stop();
+        printConnectorResult(raw, opts);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  connectorsCmd
+    .command("attach <connector> [id]")
+    .description("Attach a provider connector to a deployment as a brokered env var")
+    .requiredOption("--env <name>", "Environment variable name to expose")
+    .option("--mode <mode>", "brokered-env or plain-env", "brokered-env")
+    .option("--project <id>", "Project ID for attribution")
+    .option("--environment <name>", "Environment name", "production")
+    .option("--external-workspace-id <id>", "White-label platform workspace attribution")
+    .option("--external-user-id <id>", "White-label platform user attribution")
+    .option("--external-project-id <id>", "White-label platform project attribution")
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        connector: string,
+        id: string | undefined,
+        opts: {
+          env: string;
+          mode?: string;
+          project?: string;
+          environment?: string;
+          externalWorkspaceId?: string;
+          externalUserId?: string;
+          externalProjectId?: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(id, cwd);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Attaching deployment connector...");
+          const raw = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors`,
+            {
+              connector,
+              env_name: opts.env,
+              mode: opts.mode?.replaceAll("-", "_"),
+              project_id: opts.project,
+              environment: opts.environment,
+              external_workspace_id: opts.externalWorkspaceId,
+              external_user_id: opts.externalUserId,
+              external_project_id: opts.externalProjectId,
+            },
+          );
+          spinner?.succeed("Deployment connector attached");
+          printConnectorResult(raw, opts);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  connectorsCmd
+    .command("detach <binding> [id]")
+    .alias("rm")
+    .description("Detach a provider connector binding from a deployment")
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        binding: string,
+        id: string | undefined,
+        opts: { json?: boolean },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(id, cwd);
+          const raw = await client.apiDelete<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors/${encodeURIComponent(binding)}`,
+          );
+          printConnectorResult(raw, opts);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  connectorsCmd
+    .command("sync [id]")
+    .description("Show deployment connector env vars materialized at next boot")
+    .option("--json", "Output raw JSON")
+    .action(async (id: string | undefined, opts: { json?: boolean }) => {
+      try {
+        const cwd = process.cwd();
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const deploymentId = resolveDeploymentId(id, cwd);
+        const raw = await client.apiPost<unknown>(
+          `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors/sync`,
+          {},
+        );
+        printConnectorResult(raw, opts);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  connectorsCmd
+    .command("preflight [id]")
+    .description("Verify a required provider connector is bound before deploy/runtime work")
+    .option("--connector <uid>", "Connector UID or binding id")
+    .option("--provider <provider>", "Provider name for diagnostics")
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string | undefined,
+        opts: { connector?: string; provider?: string; json?: boolean },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(id, cwd);
+          const raw = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors/preflight`,
+            {
+              connector: opts.connector,
+              provider: opts.provider,
+            },
+          );
+          printConnectorResult(raw, opts);
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
   // ── deploy domain ────────────────────────────────────────────────────────────
 
   const domainCmd = deploy
@@ -1087,4 +1245,42 @@ Examples:
         handleError(err);
       }
     });
+}
+
+function printConnectorResult(raw: unknown, opts: { json?: boolean }): void {
+  const value =
+    raw && typeof raw === "object" && "data" in raw
+      ? (raw as { data: unknown }).data
+      : raw;
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify(value, null, 2));
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      console.log(chalk.dim("  No deployment connectors bound."));
+      return;
+    }
+
+    renderTable(value as Array<Record<string, unknown>>, [
+      { header: "ID", key: (row) => String(row.id ?? ""), width: 36 },
+      { header: "SECRET", key: (row) => String(row.secret_id ?? ""), width: 36 },
+      { header: "ENV", key: (row) => String(row.expose_as_env ?? ""), width: 24 },
+      { header: "EXPOSURE", key: (row) => String(row.exposure ?? ""), width: 12 },
+    ]);
+    return;
+  }
+
+  if (value && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const rendered =
+        entry && typeof entry === "object" ? JSON.stringify(entry) : String(entry ?? "—");
+      console.log(`  ${chalk.bold(key.padEnd(18))} ${rendered}`);
+    }
+    return;
+  }
+
+  console.log(String(value ?? ""));
 }

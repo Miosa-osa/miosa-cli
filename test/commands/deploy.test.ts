@@ -496,6 +496,156 @@ describe("miosa deploy env list", () => {
   });
 });
 
+// ── deploy connectors ────────────────────────────────────────────────────────
+
+describe("miosa deploy connectors", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  it("attaches, lists, preflights, syncs, and detaches deployment connectors", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/connectors`,
+        method: "POST",
+        body: JSON.stringify({
+          connector: "anthropic/deployment",
+          env_name: "ANTHROPIC_API_KEY",
+          mode: "brokered_env",
+          environment: "production",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "bnd_123",
+            expose_as_env: "ANTHROPIC_API_KEY",
+            sync: { requires_redeploy: true },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/connectors`,
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: [{ id: "bnd_123", expose_as_env: "ANTHROPIC_API_KEY" }] }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/connectors/preflight`,
+        method: "POST",
+        body: JSON.stringify({ connector: "anthropic/deployment" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { status: { bound: true }, sync: { requires_redeploy: true } } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/connectors/sync`,
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { status: "materialized_on_next_boot" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/connectors/anthropic%2Fdeployment`,
+        method: "DELETE",
+      })
+      .reply(200, JSON.stringify({ data: { id: "bnd_123" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "connectors",
+      "attach",
+      "anthropic/deployment",
+      mockDeployment.id,
+      "--env",
+      "ANTHROPIC_API_KEY",
+      "--json",
+    ]);
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "connectors",
+      "list",
+      mockDeployment.id,
+      "--json",
+    ]);
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "connectors",
+      "preflight",
+      mockDeployment.id,
+      "--connector",
+      "anthropic/deployment",
+      "--json",
+    ]);
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "connectors",
+      "sync",
+      mockDeployment.id,
+      "--json",
+    ]);
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "connectors",
+      "detach",
+      "anthropic/deployment",
+      mockDeployment.id,
+      "--json",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("ANTHROPIC_API_KEY");
+    expect(output).toContain("requires_redeploy");
+    expect(output).toContain("materialized_on_next_boot");
+    expect(output).toContain("bnd_123");
+  });
+});
+
 // ── deploy logs ───────────────────────────────────────────────────────────────
 
 describe("miosa deploy logs", () => {

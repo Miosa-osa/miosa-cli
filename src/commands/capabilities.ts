@@ -176,6 +176,8 @@ const manifest: CapabilitiesManifest = {
         "For AI agents, run the coding agent inside the sandbox with miosa sandbox prompt or sandbox exec; do not build locally then upload unless exact-repo upload is explicitly required.",
         "Use miosa sandbox write-file, sandbox exec, sandbox connectors, and sandbox prompt as the agent's in-sandbox tool surface for creating and editing files.",
         "Use miosa sandbox connectors attach <sandbox-id> <connector> --env <PROVIDER_API_KEY> --json to expose brokered provider credentials without putting raw keys in the VM.",
+        "Use miosa computers connectors attach <computer-id> <connector> --env <PROVIDER_API_KEY> --json for persistent desktop/VM agent sessions.",
+        "Use miosa deploy connectors attach <deployment-id> <connector> --env <PROVIDER_API_KEY> --json for production deployment runtimes; redeploy to boot with the new placeholder env.",
         "Built-in MIOSA-managed design research connector: miosa sandbox connectors attach <sandbox-id> refero/design-research --env REFERO_MCP_TOKEN --json.",
         "Use miosa sandbox prompt <sandbox-id> --provider claude --connector <connector> --preflight --json -- <task> before agent work that depends on a provider key.",
         "Use sandbox deploy for preview readiness.",
@@ -200,7 +202,15 @@ const manifest: CapabilitiesManifest = {
         "MIOSA-managed connectors can appear in miosa connectors list without the tenant bringing a vendor token. Built-in: refero/design-research.",
         "Managed connectors are binding-only when marked by MIOSA; clients should attach them to sandboxes/computers instead of requesting the raw platform token.",
         "API-key connectors are stored encrypted and the raw value is never printed by create/list/show.",
-        "Use miosa connectors token <connector> --subject app --json when app code needs a runtime provider token.",
+        "Use miosa connectors installations --json to inspect provider grants/backing installations.",
+        "Use miosa connectors oauth providers --json and miosa connectors oauth start <provider> --json to drive end-user OAuth consent for provider-backed connectors.",
+        "Use miosa connectors project-links create <connector> --project <id> --environment <env> --scope <scope> --json to authorize a connector for a project/environment.",
+        "Use miosa connectors defaults create <connector> --project <id> --default-scope project --target agent --scope <scope> --json when a white-label platform wants future agent runtimes to inherit connector access.",
+        "Use miosa connectors defaults applicable --workspace <id> --project <id> --target agent --json before launching an agent runtime to see which inherited connectors should be attached.",
+        "Use miosa connectors defaults materialize --workspace <id> --project <id> --resource-type sandbox --resource-id <id> --target agent --json to apply inherited connector defaults to a concrete runtime.",
+        "Use miosa connectors triggers create <connector> --project <id> --destination-path <path> --event-type <type> --provider-adapter github|slack --json to register signed inbound provider event forwarding definitions.",
+        "Use miosa connectors triggers deliveries --trigger <id> --json to inspect inbound provider forwarding attempts and failures.",
+        "Use miosa connectors token <connector> --subject app --project <id> --environment <env> --json when app code needs a project-scoped runtime provider token.",
         "Use sandbox connector bindings for agent CLIs and provider SDKs that expect normal env vars like ANTHROPIC_API_KEY or OPENAI_API_KEY.",
         "Sandbox connector bindings inject miosa-tok-* placeholders; the egress proxy swaps the real secret at the network boundary.",
       ],
@@ -233,6 +243,7 @@ const manifest: CapabilitiesManifest = {
       notes: [
         "Prefer Docker Deploy for production apps: miosa deploy --docker-deploy --json.",
         "Default URL should work independently of custom-domain DNS state.",
+        "Use miosa deploy connectors attach <deployment-id> <connector> --env <PROVIDER_API_KEY> --json for brokered provider credentials in production runtimes.",
         "Use miosa deploy metrics <app-id> --json to inspect runtime instances, health timestamps, restarts, and usage.",
       ],
     },
@@ -373,6 +384,13 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
+            "miosa connectors oauth start github --external-user-id <user-id> --json",
+          purpose:
+            "Start a provider OAuth consent flow when a user-scoped connector needs delegated access before runtime binding.",
+          json: true,
+        },
+        {
+          command:
             "miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --timeout 1h --json",
           purpose:
             "Create a persistent sandbox for agent-side development and preview.",
@@ -398,6 +416,13 @@ const manifest: CapabilitiesManifest = {
             "miosa sandbox connectors attach <sandbox-id> anthropic/workspace-claude --env ANTHROPIC_API_KEY --json",
           purpose:
             "Optional BYOK path: bind the tenant connector to the sandbox as a brokered env placeholder.",
+          json: true,
+        },
+        {
+          command:
+            "miosa computers connectors attach <computer-id> anthropic/workspace-claude --env ANTHROPIC_API_KEY --json",
+          purpose:
+            "Optional BYOK path: bind the tenant connector to a persistent computer/desktop agent runtime.",
           json: true,
         },
         {
@@ -444,14 +469,49 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa connectors token anthropic/workspace-claude --subject app --json",
+            "miosa connectors project-links create anthropic/workspace-claude --project <project-id> --environment production --scope messages:create --json",
           purpose:
-            "Request a runtime token for service-level app/provider calls.",
+            "Authorize a connector for a project/environment before app code or agents request it.",
           json: true,
         },
         {
           command:
-            "miosa connectors token github/acme --subject user:<user-id> --installation-id <installation-id> --scope repo:read --json",
+            "miosa connectors defaults create anthropic/workspace-claude --project <project-id> --default-scope project --target agent --scope messages:create --json",
+          purpose:
+            "Make the connector an inherited default for future agent runtimes in this project.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors defaults materialize --workspace <workspace-id> --project <project-id> --resource-type sandbox --resource-id <sandbox-id> --target agent --json",
+          purpose:
+            "Apply inherited connector defaults to a concrete sandbox/computer/deployment after creating the runtime.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors triggers create slack/workspace --project <project-id> --destination-path /api/miosa/connect/slack --event-type app_mention --provider-adapter slack --json",
+          purpose:
+            "Register the inbound provider-event destination that will wake the customer's app or agent workflow.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors triggers deliveries --trigger <trigger-id> --json",
+          purpose:
+            "Inspect delivery attempts after provider events hit /api/v1/connect/inbound.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors token anthropic/workspace-claude --subject app --project <project-id> --environment production --scope messages:create --json",
+          purpose:
+            "Request a project-scoped runtime token for service-level app/provider calls.",
+          json: true,
+        },
+        {
+          command:
+            "miosa connectors token github/acme --subject user:<user-id> --installation-id <installation-id> --project <project-id> --environment production --scope repo:read --json",
           purpose:
             "Request a user-subject provider token when delegated user access is required.",
           json: true,
@@ -825,6 +885,41 @@ const manifest: CapabilitiesManifest = {
         "session not found",
         "AUTH error",
       ],
+    },
+    {
+      id: "osa_project_lifecycle",
+      title: "OSA Project Lifecycle",
+      goal: "Define an OSA agent as files, compile its runtime profile, publish it, and dispatch through MIOSA runtimes.",
+      status: "beta",
+      steps: [
+        {
+          command: "miosa osa init my-agent --json",
+          purpose: "Create a filesystem-first OSA project using agent/ and root evals/.",
+          json: true,
+        },
+        {
+          command: "miosa osa info my-agent --json",
+          purpose: "Inspect the agent surface, including runtimeProfile from agent/agent.ts, and write .miosa/osa-manifest.json.",
+          json: true,
+        },
+        {
+          command: "miosa osa build my-agent --json",
+          purpose: "Build runtime artifacts consumed by publish/deploy/run.",
+          json: true,
+        },
+        {
+          command: "miosa osa publish my-agent --workspace <workspace-id> --json",
+          purpose: "Register the OSA project manifest and runtime profile with MIOSA.",
+          json: true,
+        },
+        {
+          command: "miosa osa run \"summarize this repo\" --project my-agent --sandbox <sandbox-id> --json",
+          purpose: "Dispatch one OSA task using the compiled runtime profile, with flags overriding agent.ts for that run.",
+          json: true,
+        },
+      ],
+      success_signals: ["manifest sourceRoot agent", "manifest runtimeProfile present", "project id returned", "run request includes runtime_profile"],
+      failure_signals: ["agent.root.missing", "OSA_BUILD_FAILED", "AUTH error"],
     },
     {
       id: "operational_debugging",

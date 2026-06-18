@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { readFileSync, writeFileSync } from "node:fs";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 import { apiPath, client, unwrap } from "./enterprise-util.js";
@@ -33,6 +34,66 @@ type DeviceRecord = {
   preview_url?: string;
   timeout_remaining_ms?: number;
   region?: string;
+};
+
+type DeviceCommandOptions = {
+  json?: boolean;
+};
+
+type DeviceExecOptions = DeviceCommandOptions & {
+  command?: string;
+  timeoutMs?: string;
+  cwd?: string;
+  env?: string[];
+};
+
+type DeviceFilesListOptions = DeviceCommandOptions & {
+  path?: string;
+};
+
+type DeviceFilesReadOptions = DeviceCommandOptions & {
+  path: string;
+  output?: string;
+  decode?: boolean;
+};
+
+type DeviceFilesWriteOptions = DeviceCommandOptions & {
+  path: string;
+  content?: string;
+  contentBase64?: string;
+  file?: string;
+};
+
+type DeviceExposeOptions = DeviceCommandOptions & {
+  port: string;
+};
+
+type DeviceDoctorOptions = DeviceCommandOptions & {
+  port?: string;
+};
+
+type DeviceExtendOptions = DeviceCommandOptions & {
+  timeoutSec: string;
+};
+
+type DeviceBootstrapOptions = DeviceCommandOptions & {
+  runtime: string;
+  cwd?: string;
+  connector?: string[];
+  env?: string[];
+  mcp?: string[];
+  installCommand?: string;
+  skipProbe?: boolean;
+};
+
+const RUNTIME_BINARIES: Record<string, string[]> = {
+  "claude-code": ["claude-code", "claude"],
+  claude: ["claude"],
+  codex: ["codex"],
+  hermes: ["hermes"],
+  osa: ["osa"],
+  pi: ["pi"],
+  custom: [],
 };
 
 const DEVICE_CATALOG: DeviceCatalogEntry[] = [
@@ -192,8 +253,13 @@ export function register(program: Command): void {
     .action((opts: { type?: string; json?: boolean }) =>
       runDeviceAction(async () => {
         const filter = normalizeKindFilter(opts.type ?? "all");
-        const { devices: records, errors } = await listDevices(filter);
-        const output = { devices: records, errors };
+        const records = unwrapList(
+          await client().apiGet(
+            apiPath(`/devices${queryString({ kind: apiKindFilter(filter) })}`),
+          ),
+          ["devices"],
+        ).map(normalizeDevice);
+        const output = { devices: records };
         if (isJsonMode(opts)) {
           console.log(JSON.stringify(output, null, 2));
           return;
@@ -225,48 +291,408 @@ export function register(program: Command): void {
           ]);
         }
 
-        if (errors.length > 0) {
-          console.log();
-          console.log(chalk.yellow("Partial inventory errors:"));
-          for (const error of errors) {
-            console.log(`- ${error.source}: ${error.message}`);
-          }
+      }),
+    );
+
+  devices
+    .command("show <id>")
+    .description("Show one hosted device")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(await client().apiGet(apiPath(`/devices/${encodeURIComponent(id)}`)));
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("capabilities <id>")
+    .description("Show what a device supports")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiGet(apiPath(`/devices/${encodeURIComponent(id)}/capabilities`)),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("exec <id>")
+    .description("Run a command inside a sandbox/computer device")
+    .requiredOption("-c, --command <command>", "Command to run")
+    .option("--timeout-ms <ms>", "Command timeout in milliseconds")
+    .option("--cwd <path>", "Working directory")
+    .option("--env <KEY=VALUE>", "Environment variable. Repeatable.", collect, [])
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceExecOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/exec`), {
+            command: opts.command,
+            timeout_ms: opts.timeoutMs ? Number.parseInt(opts.timeoutMs, 10) : undefined,
+            cwd: opts.cwd,
+            env: parseEnv(opts.env ?? []),
+          }),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("doctor <id>")
+    .description("Run an agent-friendly health probe against a device")
+    .option("--port <port>", "Also verify a port can be exposed")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceDoctorOptions) =>
+      runDeviceAction(async () => {
+        const encoded = encodeURIComponent(id);
+        const checks: Array<{
+          name: string;
+          ok: boolean;
+          detail?: unknown;
+          error?: string;
+        }> = [];
+
+        await recordCheck(checks, "capabilities", async () =>
+          unwrap(await client().apiGet(apiPath(`/devices/${encoded}/capabilities`))),
+        );
+        await recordCheck(checks, "exec", async () =>
+          unwrap(
+            await client().apiPost(apiPath(`/devices/${encoded}/exec`), {
+              command: "pwd && uname -s",
+              timeout_ms: 30_000,
+            }),
+          ),
+        );
+        await recordCheck(checks, "files", async () =>
+          unwrapList(
+            await client().apiGet(
+              apiPath(`/devices/${encoded}/files${queryString({ path: "/workspace" })}`),
+            ),
+            ["entries", "files"],
+          ),
+        );
+
+        if (opts.port) {
+          await recordCheck(checks, "expose", async () =>
+            unwrap(
+              await client().apiPost(apiPath(`/devices/${encoded}/expose`), {
+                port: Number.parseInt(opts.port ?? "", 10),
+              }),
+            ),
+          );
+        }
+
+        const output = {
+          device_id: id,
+          ok: checks.every((check) => check.ok),
+          checks,
+        };
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(output, null, 2));
+          return;
+        }
+
+        console.log(chalk.bold(`Device doctor ${id}`));
+        for (const check of checks) {
+          const status = check.ok ? chalk.green("ok") : chalk.red("fail");
+          console.log(`${status.padEnd(12)} ${check.name}`);
+          if (!check.ok && check.error) console.log(chalk.red(`  ${check.error}`));
         }
       }),
     );
-}
 
-async function listDevices(
-  filter: DeviceFilter,
-): Promise<{ devices: DeviceRecord[]; errors: Array<{ source: string; message: string; retryable: boolean }> }> {
-  const records: DeviceRecord[] = [];
-  const errors: Array<{ source: string; message: string; retryable: boolean }> = [];
+  devices
+    .command("bootstrap <id>")
+    .description("Prepare a device for an agent runtime and write a MIOSA runtime manifest")
+    .requiredOption("--runtime <runtime>", "osa, claude-code, claude, codex, hermes, pi, or custom")
+    .option("--cwd <path>", "Runtime working directory", "/workspace")
+    .option("--connector <uid>", "Required connector UID. Repeatable.", collect, [])
+    .option("--env <KEY=VALUE>", "Runtime env default. Repeatable.", collect, [])
+    .option("--mcp <name=url>", "Runtime MCP server hint. Repeatable.", collect, [])
+    .option("--install-command <command>", "Optional command to install/bootstrap the runtime")
+    .option("--skip-probe", "Do not run a binary/runtime probe after writing manifest")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceBootstrapOptions) =>
+      runDeviceAction(async () => {
+        const runtime = normalizeRuntime(opts.runtime);
+        const cwd = opts.cwd ?? "/workspace";
+        const manifestPath = `${cwd.replace(/\/$/, "")}/.miosa/runtime-bootstrap.json`;
+        const manifest = {
+          version: 1,
+          runtime,
+          cwd,
+          expected_binaries: RUNTIME_BINARIES[runtime] ?? [],
+          connectors: opts.connector ?? [],
+          env: parseEnv(opts.env ?? []) ?? {},
+          mcp: parseMcp(opts.mcp ?? []),
+          created_by: "miosa-cli",
+        };
 
-  if (filter === "all" || filter === "sandbox_worker") {
-    try {
-      const sandboxes = unwrapList(
-        await client().apiGet(apiPath("/sandboxes")),
-        ["sandboxes"],
-      );
-      records.push(...sandboxes.map(normalizeSandbox));
-    } catch (err) {
-      errors.push(deviceListError("sandboxes", err));
-    }
-  }
+        const steps: Array<{ name: string; ok: boolean; detail?: unknown; error?: string }> = [];
 
-  if (filter === "all" || filter === "computer") {
-    try {
-      const computers = unwrapList(
-        await client().apiGet(apiPath("/computers")),
-        ["computers"],
-      );
-      records.push(...computers.map(normalizeComputer));
-    } catch (err) {
-      errors.push(deviceListError("computers", err));
-    }
-  }
+        await recordCheck(steps, "write_manifest", async () =>
+          unwrap(
+            await client().apiPost(
+              apiPath(`/devices/${encodeURIComponent(id)}/files/write`),
+              {
+                path: manifestPath,
+                content: `${JSON.stringify(manifest, null, 2)}\n`,
+              },
+            ),
+          ),
+        );
 
-  return { devices: records, errors };
+        if (opts.installCommand) {
+          await recordCheck(steps, "install", async () =>
+            unwrap(
+              await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/exec`), {
+                command: opts.installCommand,
+                cwd,
+                timeout_ms: 600_000,
+              }),
+            ),
+          );
+        }
+
+        if (!opts.skipProbe) {
+          await recordCheck(steps, "probe", async () =>
+            unwrap(
+              await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/exec`), {
+                command: runtimeProbeCommand(runtime),
+                cwd,
+                timeout_ms: 60_000,
+              }),
+            ),
+          );
+        }
+
+        const output = {
+          device_id: id,
+          ok: steps.every((step) => step.ok),
+          runtime,
+          manifest_path: manifestPath,
+          steps,
+        };
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(output, null, 2));
+          return;
+        }
+
+        console.log(chalk.bold(`Bootstrapped ${runtime} on ${id}`));
+        console.log(`${chalk.bold("manifest")} ${manifestPath}`);
+        for (const step of steps) {
+          const status = step.ok ? chalk.green("ok") : chalk.red("fail");
+          console.log(`${status.padEnd(12)} ${step.name}`);
+          if (!step.ok && step.error) console.log(chalk.red(`  ${step.error}`));
+        }
+      }),
+    );
+
+  const files = devices
+    .command("files")
+    .description("Read, write, and list files inside a device");
+
+  files
+    .command("list <id>")
+    .description("List files inside a device")
+    .option("--path <path>", "Directory path", "/workspace")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceFilesListOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrapList(
+          await client().apiGet(
+            apiPath(
+              `/devices/${encodeURIComponent(id)}/files${queryString({ path: opts.path })}`,
+            ),
+          ),
+          ["entries", "files"],
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        renderTable(raw, [
+          { header: "PATH", key: (row) => optionalString(row, "path") ?? "" },
+          { header: "TYPE", key: (row) => optionalString(row, "type") ?? "-" },
+          { header: "SIZE", key: (row) => String(optionalNumber(row, "size") ?? "-") },
+        ]);
+      }),
+    );
+
+  files
+    .command("read <id>")
+    .description("Read a file from a device")
+    .requiredOption("--path <path>", "File path")
+    .option("-o, --output <path>", "Write decoded bytes to a local file")
+    .option("--decode", "Print decoded text instead of the JSON/base64 envelope")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceFilesReadOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap<ApiRecord>(
+          await client().apiGet(
+            apiPath(
+              `/devices/${encodeURIComponent(id)}/files/read${queryString({ path: opts.path })}`,
+            ),
+          ),
+        );
+        if (opts.output) {
+          writeFileSync(opts.output, decodeFileContent(raw));
+          if (!isJsonMode(opts)) console.log(chalk.green(`Wrote ${opts.output}`));
+          else console.log(JSON.stringify({ output: opts.output }, null, 2));
+          return;
+        }
+        if (opts.decode) {
+          console.log(decodeFileContent(raw).toString("utf8"));
+          return;
+        }
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  files
+    .command("write <id>")
+    .description("Write a file into a device")
+    .requiredOption("--path <path>", "Destination file path")
+    .option("--content <text>", "Text content to write")
+    .option("--content-base64 <base64>", "Base64 content to write")
+    .option("--file <path>", "Read local file bytes and upload as base64")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceFilesWriteOptions) =>
+      runDeviceAction(async () => {
+        const body = writeFileBody(opts);
+        const raw = unwrap(
+          await client().apiPost(
+            apiPath(`/devices/${encodeURIComponent(id)}/files/write`),
+            body,
+          ),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("expose <id>")
+    .description("Expose a device port through MIOSA routing")
+    .requiredOption("--port <port>", "Port to expose")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceExposeOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/expose`), {
+            port: Number.parseInt(opts.port, 10),
+          }),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("browser <id>")
+    .description("Return browser/desktop connection details for a computer-backed device")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiGet(apiPath(`/devices/${encodeURIComponent(id)}/browser`)),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("pause <id>")
+    .description("Pause a device session when supported")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      postDeviceLifecycle(id, "pause", opts),
+    );
+
+  devices
+    .command("stop <id>")
+    .description("Stop a device session when supported")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      postDeviceLifecycle(id, "stop", opts),
+    );
+
+  devices
+    .command("resume <id>")
+    .description("Resume a device session when supported")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      postDeviceLifecycle(id, "resume", opts),
+    );
+
+  devices
+    .command("extend <id>")
+    .description("Extend a device timeout when supported")
+    .requiredOption("--timeout-sec <seconds>", "New timeout in seconds")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceExtendOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/extend`), {
+            timeout_sec: Number.parseInt(opts.timeoutSec, 10),
+          }),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
+
+  devices
+    .command("destroy <id>")
+    .alias("delete")
+    .description("Destroy/delete a device when supported")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: DeviceCommandOptions) =>
+      runDeviceAction(async () => {
+        const raw = unwrap(
+          await client().apiDelete(apiPath(`/devices/${encodeURIComponent(id)}`)),
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+        printObject(raw);
+      }),
+    );
 }
 
 function normalizeKindFilter(value: string): DeviceFilter {
@@ -278,6 +704,18 @@ function normalizeKindFilter(value: string): DeviceFilter {
   throw new Error(
     `Unsupported device type "${value}". Use: all, sandbox_worker, sandbox, computer`,
   );
+}
+
+function apiKindFilter(filter: DeviceFilter): string | undefined {
+  if (filter === "all") return undefined;
+  if (filter === "sandbox_worker") return "sandbox";
+  return filter;
+}
+
+function normalizeDevice(row: ApiRecord): DeviceRecord {
+  const kind = optionalString(row, "kind") ?? optionalString(row, "type") ?? "";
+  if (kind === "computer") return normalizeComputer(row);
+  return normalizeSandbox(row);
 }
 
 function normalizeSandbox(row: ApiRecord): DeviceRecord {
@@ -321,21 +759,6 @@ function unwrapList(payload: unknown, keys: string[]): ApiRecord[] {
   return [];
 }
 
-function deviceListError(
-  source: string,
-  err: unknown,
-): { source: string; message: string; retryable: boolean } {
-  const message = err instanceof Error ? err.message : String(err);
-  return {
-    source,
-    message,
-    retryable:
-      /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
-        message,
-      ),
-  };
-}
-
 function stringField(row: ApiRecord, key: string): string {
   const value = row[key];
   return typeof value === "string" ? value : String(value ?? "");
@@ -356,6 +779,139 @@ function optionalNumber(row: ApiRecord, key: string): number | undefined {
 
 function isRecord(value: unknown): value is ApiRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function queryString(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") search.set(key, value);
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+function printObject(value: unknown): void {
+  if (!isRecord(value)) {
+    console.log(String(value ?? ""));
+    return;
+  }
+  for (const [key, cell] of Object.entries(value)) {
+    const printable =
+      cell === null || cell === undefined
+        ? "-"
+        : typeof cell === "object"
+          ? JSON.stringify(cell)
+          : String(cell);
+    console.log(`${chalk.bold(key.padEnd(18))} ${printable}`);
+  }
+}
+
+function collect(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
+function parseEnv(entries: string[]): Record<string, string> | undefined {
+  if (entries.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const entry of entries) {
+    const index = entry.indexOf("=");
+    if (index <= 0) throw new Error(`Invalid --env value "${entry}". Use KEY=VALUE.`);
+    out[entry.slice(0, index)] = entry.slice(index + 1);
+  }
+  return out;
+}
+
+function parseMcp(entries: string[]): Array<{ name: string; url: string }> {
+  return entries.map((entry) => {
+    const index = entry.indexOf("=");
+    if (index <= 0) throw new Error(`Invalid --mcp value "${entry}". Use name=url.`);
+    return { name: entry.slice(0, index), url: entry.slice(index + 1) };
+  });
+}
+
+function normalizeRuntime(value: string): string {
+  const runtime = value.trim().toLowerCase();
+  if (!(runtime in RUNTIME_BINARIES)) {
+    throw new Error(
+      `Unsupported runtime "${value}". Use: osa, claude-code, claude, codex, hermes, pi, custom`,
+    );
+  }
+  return runtime;
+}
+
+function runtimeProbeCommand(runtime: string): string {
+  const binaries = RUNTIME_BINARIES[runtime] ?? [];
+  if (binaries.length === 0) {
+    return "printf 'custom runtime manifest written\\n'";
+  }
+  const checks = binaries
+    .map((binary) => `command -v ${shellWord(binary)} >/dev/null 2>&1`)
+    .join(" || ");
+  const display = binaries.join(" or ");
+  return `${checks} && printf 'runtime available: ${display}\\n' || { printf 'runtime missing: ${display}\\n' >&2; exit 127; }`;
+}
+
+function shellWord(value: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value;
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+function decodeFileContent(row: ApiRecord): Buffer {
+  const content = optionalString(row, "content") ?? "";
+  const encoding = optionalString(row, "encoding") ?? "base64";
+  return encoding === "base64"
+    ? Buffer.from(content, "base64")
+    : Buffer.from(content, "utf8");
+}
+
+function writeFileBody(opts: DeviceFilesWriteOptions): ApiRecord {
+  const provided = [opts.content, opts.contentBase64, opts.file].filter(
+    (value) => value !== undefined,
+  );
+  if (provided.length !== 1) {
+    throw new Error("Use exactly one of --content, --content-base64, or --file");
+  }
+  return {
+    path: opts.path,
+    content: opts.content,
+    content_base64:
+      opts.contentBase64 ??
+      (opts.file ? readFileSync(opts.file).toString("base64") : undefined),
+  };
+}
+
+async function recordCheck(
+  checks: Array<{ name: string; ok: boolean; detail?: unknown; error?: string }>,
+  name: string,
+  fn: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    checks.push({ name, ok: true, detail: await fn() });
+  } catch (err) {
+    checks.push({
+      name,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function postDeviceLifecycle(
+  id: string,
+  action: "pause" | "stop" | "resume",
+  opts: DeviceCommandOptions,
+): Promise<void> {
+  return runDeviceAction(async () => {
+    const raw = unwrap(
+      await client().apiPost(apiPath(`/devices/${encodeURIComponent(id)}/${action}`), {}),
+    );
+    if (isJsonMode(opts)) {
+      console.log(JSON.stringify(raw, null, 2));
+      return;
+    }
+    printObject(raw);
+  });
 }
 
 async function runDeviceAction(fn: () => Promise<void>): Promise<void> {
