@@ -438,6 +438,44 @@ miosa agent ls
 miosa agent history <session-id> --computer my-mac
 ```
 
+### `miosa osa`
+
+Manage filesystem-defined OSA Projects. This is separate from `miosa agent`:
+`miosa osa` defines, builds, publishes, and deploys an agent project, while
+`miosa agent` runs task/session control against an existing Computer.
+
+`agent/agent.ts` compiles into a MIOSA runtime profile. That profile separates
+model routing, harness engine, runtime target, sandbox backend, resources, and
+policy. CLI flags such as `--provider`, `--model`, `--sandbox`, or `--computer`
+override the file config for one command; otherwise the OSA project is the
+source of truth.
+
+```bash
+miosa osa init my-agent
+miosa osa info my-agent --json
+miosa osa build my-agent --json
+miosa osa eval my-agent --strict --json
+miosa osa publish my-agent --workspace <workspace-id> --json
+miosa osa deploy my-agent --workspace <workspace-id> --wait --json
+miosa osa run "summarize this repo" --project my-agent --sandbox <sandbox-id> --json
+```
+
+New OSA projects use the filesystem-first `agent/` layout:
+
+```text
+agent/
+  instructions.md
+  agent.ts        # model + harness + runtime + sandbox + policy
+  skills/
+  tools/
+  sandbox/
+  channels/
+  connections/
+  subagents/
+  schedules/
+evals/
+```
+
 ### `miosa completion <shell>`
 
 Print shell completion for `bash`, `zsh`, or `fish`.

@@ -161,6 +161,7 @@ const commandModules = [
   "../commands/capabilities.js",
   "../commands/devices.js",
   "../commands/app.js",
+  "../commands/osa.js",
   "../commands/command-overview.js",
   "../commands/hosts.js",
   "../commands/host.js",
