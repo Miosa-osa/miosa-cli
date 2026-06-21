@@ -205,6 +205,7 @@ const commandModules = [
   "../commands/backups.js",
   "../commands/checkpoints.js",
   "../commands/cleanup.js",
+  "../commands/cloud.js",
   "../commands/workspaces.js",
   "../commands/services.js",
   "../commands/containers.js",
