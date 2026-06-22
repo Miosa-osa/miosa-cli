@@ -2,6 +2,12 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.0.82] - 2026-06-22
+
+### Added
+- `miosa computers viewer-password <computer-id>` shows external desktop viewer-password status.
+- `miosa computers rotate-viewer-password <computer-id>` rotates and prints the raw external desktop viewer password once.
+
 ## [1.0.54] - 2026-06-10
 
 ### Changed

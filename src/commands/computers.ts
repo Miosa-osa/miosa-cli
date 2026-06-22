@@ -243,6 +243,98 @@ export function register(program: Command): void {
       }),
     );
 
+  computers!
+    .command("viewer-password <computer-id>")
+    .alias("password")
+    .description("Show external desktop viewer-password status")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap<Record<string, unknown>>(
+          await client().apiGet<unknown>(
+            apiPath(`/computers/${enc(id)}/viewer-password`),
+          ),
+        );
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        printBanner({ subtitle: "External desktop viewer password" });
+        console.log(
+          kvPanel([
+            { icon: icon.info, label: "computer", value: chalk.dim(id) },
+            {
+              label: "password_set",
+              value: raw["password_set"] ? chalk.green("yes") : chalk.yellow("no"),
+            },
+            ...(raw["viewer_password_set_at"] || raw["password_set_at"]
+              ? [
+                  {
+                    label: "set_at",
+                    value: chalk.dim(
+                      String(raw["viewer_password_set_at"] ?? raw["password_set_at"]),
+                    ),
+                  },
+                ]
+              : []),
+          ]),
+        );
+        console.log();
+        console.log(
+          hintBlock("Use", [
+            `miosa computers rotate-viewer-password ${id}`,
+            "Authenticated platform desktop links do not need this password.",
+          ]),
+        );
+        console.log();
+      }),
+    );
+
+  computers!
+    .command("rotate-viewer-password <computer-id>")
+    .alias("rotate-password")
+    .description("Rotate and print the external desktop viewer password once")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap<Record<string, unknown>>(
+          await client().apiPost<unknown>(
+            apiPath(`/computers/${enc(id)}/viewer-password/rotate`),
+            {},
+          ),
+        );
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        const password = String(raw["viewer_password"] ?? raw["password"] ?? "");
+        printBanner({ subtitle: "Rotated external viewer password" });
+        console.log(
+          kvPanel([
+            { icon: icon.ok, label: "computer", value: chalk.dim(id) },
+            {
+              label: "viewer_password",
+              value: password ? chalk.bold(password) : chalk.dim("not returned"),
+            },
+            ...(raw["rotated_at"]
+              ? [{ label: "rotated_at", value: chalk.dim(String(raw["rotated_at"])) }]
+              : []),
+          ]),
+        );
+        console.log();
+        console.log(
+          chalk.yellow(
+            "This password is for raw external desktop viewer links. Store it now; it may not be returned again.",
+          ),
+        );
+        console.log();
+      }),
+    );
+
   // Workspace-aware create (skipped in resourceCommands via skipCommands).
   addDataOption(
     computers!

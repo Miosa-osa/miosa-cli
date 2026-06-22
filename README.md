@@ -364,6 +364,25 @@ miosa ssh my-mac
 miosa ssh my-mac --cmd "ls -la"
 ```
 
+### `miosa computers viewer-password <computer-id> [--json]`
+
+Show whether a Computer's raw external desktop viewer password is set.
+Authenticated MIOSA platform desktop links do not need this password.
+
+```bash
+miosa computers viewer-password comp_123
+```
+
+### `miosa computers rotate-viewer-password <computer-id> [--json]`
+
+Rotate and print the raw external desktop viewer password once. Use this when
+sharing a direct `*.computer.miosa.ai/desktop/index.html` viewer link outside
+the authenticated platform UI.
+
+```bash
+miosa computers rotate-viewer-password comp_123
+```
+
 ### `miosa exec <host> <cmd> [args...] [--cwd dir] [--env KEY=VAL] [--timeout 30s]`
 
 Run a command non-interactively and stream output. Exits with the remote exit code.
