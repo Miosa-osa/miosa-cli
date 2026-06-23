@@ -1070,7 +1070,7 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes/sbx_123/expose",
         method: "POST",
       })
-      .reply(200, JSON.stringify({ data: { url: "https://3000-sbx.sandbox.miosa.app" } }), {
+      .reply(200, JSON.stringify({ data: { url: "https://3000-sbx.sandbox.miosa.ai" } }), {
         headers: { "content-type": "application/json" },
       });
 
@@ -1100,7 +1100,7 @@ describe("miosa sandbox exec", () => {
     expect(JSON.parse(logged.join("\n"))).toMatchObject({
       status: "running",
       port: 3000,
-      preview_url: "https://3000-sbx.sandbox.miosa.app",
+      preview_url: "https://3000-sbx.sandbox.miosa.ai",
     });
   });
 
@@ -1233,12 +1233,12 @@ describe("miosa sandbox exec", () => {
       })
       .reply(
         200,
-        JSON.stringify({ data: { url: "https://3000-41026070.sandbox.miosa.app" } }),
+        JSON.stringify({ data: { url: "https://3000-41026070.sandbox.miosa.ai" } }),
         { headers: { "content-type": "application/json" } },
       );
 
     mock
-      .get("https://3000-41026070.sandbox.miosa.app")
+      .get("https://3000-41026070.sandbox.miosa.ai")
       .intercept({ path: "/", method: "GET" })
       .reply(503, "not ready");
 

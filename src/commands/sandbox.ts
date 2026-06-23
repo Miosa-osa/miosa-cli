@@ -176,10 +176,14 @@ export function register(program: Command): void {
             return;
           }
 
-          const raw = unwrap(
-            await client().apiGet<unknown>(apiPath(`/sandboxes/${enc(id)}`)),
-          );
-          const sb = (raw ?? {}) as Record<string, unknown>;
+          const sb =
+            opts.port != null
+              ? await showSandboxWithPreview(id, opts.port, opts.probePath)
+              : ((unwrap(
+                  await client().apiGet<unknown>(
+                    apiPath(`/sandboxes/${enc(id)}`),
+                  ),
+                ) ?? {}) as Record<string, unknown>);
 
           printBanner({ subtitle: "Sandbox" });
 
@@ -216,6 +220,24 @@ export function register(program: Command): void {
             rows.push({
               label: "URL",
               value: chalk.cyan(str(sb["public_url"])),
+            });
+          }
+          const preview = asRecord(sb["preview"]);
+          if (preview?.["url"]) {
+            rows.push({
+              label: "Preview URL",
+              value: chalk.cyan(str(preview["url"])),
+            });
+            rows.push({
+              label: "URL class",
+              value: str(preview["url_class"] ?? "temporary_preview"),
+            });
+            rows.push({
+              label: "Embeddable",
+              value:
+                preview["stable_for_embedding"] === true
+                  ? chalk.green("yes")
+                  : chalk.yellow("temporary"),
             });
           }
           if (sb["created_at"]) {
@@ -1234,6 +1256,7 @@ export function register(program: Command): void {
             return;
           }
           console.log(result.url);
+          printPreviewContractHint(result);
           if (!result.ready) {
             console.error(
               chalk.yellow(
@@ -3008,6 +3031,10 @@ interface SandboxDeployResult {
   sandbox_id: string;
   port: number;
   preview_url: string;
+  preview_url_info?: Record<string, unknown>;
+  preview_url_class: string;
+  stable_for_embedding: boolean;
+  recommended_next_action: string;
   preview_ready: boolean;
   persistent: boolean;
   always_on: boolean;
@@ -3057,6 +3084,10 @@ interface SandboxPublishResult {
   release_id: string | null;
   version_id: string | null;
   url: string | null;
+  url_info?: Record<string, unknown>;
+  url_class: string;
+  stable_for_embedding: boolean;
+  recommended_next_action: string;
   state: string | null;
   deployment_product: string | null;
   docker_deploy_host_id: string | null;
@@ -3074,6 +3105,10 @@ interface ProbeResult {
 
 interface PreviewResult {
   url: string;
+  url_class: string;
+  stable_for_embedding: boolean;
+  recommended_next_action: string;
+  url_info?: Record<string, unknown>;
   ready: boolean;
   status: number | null;
   latency_ms: number | null;
@@ -3099,6 +3134,9 @@ async function showSandboxWithPreview(
   } catch (err) {
     preview = {
       url: "",
+      url_class: "temporary_preview",
+      stable_for_embedding: false,
+      recommended_next_action: "create_alias_or_publish",
       ready: false,
       status: null,
       latency_ms: null,
@@ -3111,6 +3149,11 @@ async function showSandboxWithPreview(
     preview: {
       url: preview?.url || null,
       port,
+      url_info: preview?.url_info ?? null,
+      url_class: preview?.url_class ?? "temporary_preview",
+      stable_for_embedding: preview?.stable_for_embedding ?? false,
+      recommended_next_action:
+        preview?.recommended_next_action ?? "create_alias_or_publish",
       route_ready: Boolean(preview?.url),
       tls_ready: preview?.ready ?? false,
       last_status: preview?.status ?? null,
@@ -3131,7 +3174,7 @@ async function previewSandbox(
       port,
       title: "app preview",
     }),
-  );
+  ) as Record<string, unknown>;
   const url = extractUrl(exposed);
   if (!url) throw new UserError("Sandbox expose did not return a preview URL.");
 
@@ -3141,11 +3184,38 @@ async function previewSandbox(
 
   return {
     url,
+    url_class:
+      stringField(exposed, "url_class") ??
+      stringField(exposed, "class") ??
+      "temporary_preview",
+    stable_for_embedding: booleanField(exposed, "stable_for_embedding") ?? false,
+    recommended_next_action:
+      stringField(exposed, "recommended_next_action") ??
+      "create_alias_or_publish",
+    url_info: objectField(exposed, "url_info") ?? undefined,
     ready: edge.ok,
     status: edge.status,
     latency_ms: edge.latency_ms ?? null,
     error: edge.error,
   };
+}
+
+function printPreviewContractHint(result: {
+  url_class?: string;
+  stable_for_embedding?: boolean;
+  recommended_next_action?: string;
+}): void {
+  const urlClass = result.url_class ?? "temporary_preview";
+  if (result.stable_for_embedding === true) {
+    console.error(chalk.dim(`URL class: ${urlClass}, stable for embedding.`));
+    return;
+  }
+  console.error(chalk.yellow(`URL class: ${urlClass}, temporary preview.`));
+  console.error(
+    chalk.dim(
+      `For durable client use, next action: ${result.recommended_next_action ?? "create_alias_or_publish"}.`,
+    ),
+  );
 }
 
 async function waitSandboxReady(
@@ -3428,10 +3498,21 @@ async function deploySandbox(
       apiPath(`/sandboxes/${enc(sandboxId)}/expose`),
       { port: resolvedPort, title: "app preview" },
     );
-    const previewUrl = extractUrl(unwrap(exposed));
+    const exposeData = unwrap(exposed) as Record<string, unknown>;
+    const previewUrl = extractUrl(exposeData);
     if (!previewUrl) {
       throw new UserError("Sandbox expose did not return a preview URL.");
     }
+    const previewUrlInfo = objectField(exposeData, "url_info") ?? undefined;
+    const previewUrlClass =
+      stringField(exposeData, "url_class") ??
+      stringField(exposeData, "class") ??
+      "temporary_preview";
+    const stableForEmbedding =
+      booleanField(exposeData, "stable_for_embedding") ?? false;
+    const recommendedNextAction =
+      stringField(exposeData, "recommended_next_action") ??
+      "create_alias_or_publish";
 
     if (opts.wait) deployStep(opts, "Checking public preview readiness");
     const edge = opts.wait
@@ -3460,6 +3541,10 @@ async function deploySandbox(
       sandbox_id: sandboxId,
       port: resolvedPort,
       preview_url: previewUrl,
+      preview_url_info: previewUrlInfo,
+      preview_url_class: previewUrlClass,
+      stable_for_embedding: stableForEmbedding,
+      recommended_next_action: recommendedNextAction,
       preview_ready: edge.ok,
       persistent: true,
       always_on: Boolean(opts.alwaysOn),
@@ -3590,6 +3675,29 @@ async function publishSandbox(
     extractUrl(deployment) ??
     stringField(data, "url") ??
     null;
+  let urlInfo =
+    objectField(response, "url_info") ??
+    objectField(deployment, "url_info") ??
+    objectField(data, "url_info") ??
+    null;
+  let urlClass =
+    stringField(response, "url_class") ??
+    stringField(response, "class") ??
+    stringField(deployment, "url_class") ??
+    stringField(deployment, "class") ??
+    stringField(data, "url_class") ??
+    stringField(data, "class") ??
+    "durable_deployment";
+  let stableForEmbedding =
+    booleanField(response, "stable_for_embedding") ??
+    booleanField(deployment, "stable_for_embedding") ??
+    booleanField(data, "stable_for_embedding") ??
+    true;
+  let recommendedNextAction =
+    stringField(response, "recommended_next_action") ??
+    stringField(deployment, "recommended_next_action") ??
+    stringField(data, "recommended_next_action") ??
+    "attach_custom_domain";
   let deploymentProduct =
     stringField(response, "deployment_product") ??
     stringField(data, "deployment_product") ??
@@ -3608,6 +3716,15 @@ async function publishSandbox(
     const waited = await waitForDeploymentReady(c, deploymentId, opts.timeout);
     state = stringField(waited, "state") ?? state;
     url = extractUrl(waited) ?? url;
+    urlInfo = objectField(waited, "url_info") ?? urlInfo;
+    urlClass =
+      stringField(waited, "url_class") ??
+      stringField(waited, "class") ??
+      urlClass;
+    stableForEmbedding =
+      booleanField(waited, "stable_for_embedding") ?? stableForEmbedding;
+    recommendedNextAction =
+      stringField(waited, "recommended_next_action") ?? recommendedNextAction;
     deploymentProduct =
       stringField(waited, "deployment_product") ??
       stringField(asRecord(waited["metadata"]), "deployment_product") ??
@@ -3619,6 +3736,10 @@ async function publishSandbox(
 
     response["state"] = state;
     if (url) response["url"] = url;
+    if (urlInfo) response["url_info"] = urlInfo;
+    response["url_class"] = urlClass;
+    response["stable_for_embedding"] = stableForEmbedding;
+    response["recommended_next_action"] = recommendedNextAction;
     data["deployment"] = waited;
     data["promotion_pending"] = false;
     data["app_consistency_pending"] = false;
@@ -3643,6 +3764,10 @@ async function publishSandbox(
     release_id: releaseId,
     version_id: versionId,
     url,
+    url_info: urlInfo ?? undefined,
+    url_class: urlClass,
+    stable_for_embedding: stableForEmbedding,
+    recommended_next_action: recommendedNextAction,
     state,
     deployment_product: deploymentProduct,
     docker_deploy_host_id: dockerDeployHostId,
@@ -3728,6 +3853,15 @@ async function doctorSandbox(
     exposeData = { error: err instanceof Error ? err.message : String(err) };
   }
   const previewUrl = extractUrl(exposeData);
+  const urlClass =
+    stringField(exposeData, "url_class") ??
+    stringField(exposeData, "class") ??
+    "temporary_preview";
+  const stableForEmbedding =
+    booleanField(exposeData, "stable_for_embedding") ?? false;
+  const recommendedNextAction =
+    stringField(exposeData, "recommended_next_action") ??
+    "create_alias_or_publish";
   const edge = previewUrl
     ? await probePublicPreview(previewUrl, probePath)
     : { ok: false, status: null, error: "No preview URL returned" };
@@ -3747,6 +3881,10 @@ async function doctorSandbox(
     edge_probe: edge,
     preview_ready: edge.ok,
     preview_url: previewUrl,
+    url_info: objectField(exposeData, "url_info") ?? null,
+    url_class: urlClass,
+    stable_for_embedding: stableForEmbedding,
+    recommended_next_action: recommendedNextAction,
     expose: exposeData,
   };
 }
@@ -3766,6 +3904,10 @@ function renderDoctorReport(report: Record<string, unknown>): void {
   if (report["preview_url"]) {
     console.log(
       `  ${chalk.bold("Preview URL")}   ${chalk.cyan(String(report["preview_url"]))}`,
+    );
+    console.log(`  ${chalk.bold("URL class")}     ${report["url_class"]}`);
+    console.log(
+      `  ${chalk.bold("Embeddable")}    ${report["stable_for_embedding"] === true ? chalk.green("yes") : chalk.yellow("temporary")}`,
     );
   }
   console.log();
@@ -5007,6 +5149,21 @@ function stringField(
 ): string | null {
   const value = row?.[key];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function booleanField(
+  row: Record<string, unknown> | null | undefined,
+  key: string,
+): boolean | null {
+  const value = row?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function objectField(
+  row: Record<string, unknown> | null | undefined,
+  key: string,
+): Record<string, unknown> | null {
+  return asRecord(row?.[key]);
 }
 
 function isSandboxTarget(value: string): boolean {
