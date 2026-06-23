@@ -346,6 +346,15 @@ export function register(program: Command): void {
         "Workspace to assign the computer to",
       )
       .option(
+        "--template <template-type>",
+        "Computer template type, for example miosa-desktop",
+      )
+      .option(
+        "--template-type <template-type>",
+        "Alias for --template",
+      )
+      .option("--size <size>", "Computer size, for example small")
+      .option(
         "--external-workspace <id>",
         "Your internal workspace ID (attribution)",
       )
@@ -368,6 +377,9 @@ export function register(program: Command): void {
         opts: DataOptions & {
           name?: string;
           workspace?: string;
+          template?: string;
+          templateType?: string;
+          size?: string;
           externalWorkspace?: string;
           externalProject?: string;
           agentProfile?: string;
@@ -382,6 +394,10 @@ export function register(program: Command): void {
             : {};
           if (opts.name) base["name"] = opts.name;
           if (opts.workspace) base["workspace_id"] = opts.workspace;
+          if (opts.templateType || opts.template) {
+            base["template_type"] = opts.templateType ?? opts.template;
+          }
+          if (opts.size) base["size"] = opts.size;
           if (opts.externalWorkspace)
             base["external_workspace_id"] = opts.externalWorkspace;
           if (opts.externalProject)
