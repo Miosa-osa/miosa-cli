@@ -162,7 +162,7 @@ describe("miosa devices", () => {
       })
       .reply(
         200,
-        JSON.stringify({ data: { port: 3000, url: "https://3000-sbx.sandbox.miosa.app" } }),
+        JSON.stringify({ data: { port: 3000, url: "https://3000-sbx.sandbox.miosa.ai" } }),
         { headers: { "content-type": "application/json" } },
       );
 

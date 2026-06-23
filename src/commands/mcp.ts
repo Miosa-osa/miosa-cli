@@ -2992,7 +2992,18 @@ async function dispatchTool(
       );
       const data = unwrapData(result) as Record<string, unknown>;
       const url = data["url"] ?? data["preview_url"] ?? "";
-      return ok(`Preview URL: ${url}`);
+      const urlClass = data["url_class"] ?? data["class"] ?? "temporary_preview";
+      const stable = data["stable_for_embedding"] === true;
+      const nextAction =
+        data["recommended_next_action"] ?? "create_alias_or_publish";
+      return ok(
+        [
+          `preview_url: ${url}`,
+          `url_class: ${urlClass}`,
+          `stable_for_embedding: ${stable}`,
+          `recommended_next_action: ${nextAction}`,
+        ].join("\n"),
+      );
     }
 
     // ── Sandbox deploy ────────────────────────────────────────────────────
@@ -3011,8 +3022,19 @@ async function dispatchTool(
       const data = unwrapData(result) as Record<string, unknown>;
       const deployId = data["id"] ?? data["deployment_id"] ?? "unknown";
       const url = data["url"] ?? data["preview_url"] ?? "";
+      const urlClass =
+        data["url_class"] ?? data["class"] ?? "durable_deployment";
+      const stable = data["stable_for_embedding"] !== false;
+      const nextAction =
+        data["recommended_next_action"] ?? "attach_custom_domain";
       return ok(
-        `Deployed sandbox ${sid} (deployment id=${deployId}, url=${url}).`,
+        [
+          `deployment_id: ${deployId}`,
+          `url: ${url}`,
+          `url_class: ${urlClass}`,
+          `stable_for_embedding: ${stable}`,
+          `recommended_next_action: ${nextAction}`,
+        ].join("\n"),
       );
     }
 
