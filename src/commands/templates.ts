@@ -10,6 +10,10 @@ import { handleError, isJsonMode, printJson } from "./util.js";
 interface SandboxTemplate {
   id: string;
   name: string;
+  product?: string;
+  default_size?: string;
+  readiness?: string;
+  sizes?: Array<{ size?: string; state?: string } & Record<string, unknown>>;
   state?: string;
   status?: string;
   image?: string;
@@ -86,12 +90,12 @@ function fmtBuildState(state: string | undefined): string {
 export function register(program: Command): void {
   const templates = program
     .command("templates")
-    .description("Manage sandbox templates");
+    .description("Inspect platform templates and manage sandbox templates");
 
   // list
   templates
     .command("list")
-    .description("List sandbox templates")
+    .description("List platform templates with readiness")
     .option("--json", "Output raw JSON")
     .action(async (opts: { json?: boolean }) => {
       try {
@@ -100,7 +104,7 @@ export function register(program: Command): void {
         const json = isJsonMode(opts);
         const spinner = json ? null : spin("Fetching templates...");
         const rows = unwrapTemplates(
-          await client.apiGet("/api/v1/sandbox-templates"),
+          await client.apiGet("/api/v1/templates"),
         );
         spinner?.stop();
 
@@ -116,31 +120,41 @@ export function register(program: Command): void {
 
         renderTable(rows, [
           { header: "ID", key: (t) => t.id.slice(0, 12), width: 14 },
-          { header: "NAME", key: "name", width: 28 },
           {
-            header: "STATE",
-            key: (t) => fmtTemplateState(templateState(t)),
-            width: 12,
+            header: "PRODUCT",
+            key: (t) => t.product ?? chalk.dim("-"),
+            width: 18,
+          },
+          { header: "NAME", key: (t) => t.name ?? t.id, width: 26 },
+          {
+            header: "READINESS",
+            key: (t) => fmtTemplateState(t.readiness ?? templateState(t)),
+            width: 16,
+          },
+          {
+            header: "DEFAULT",
+            key: (t) => t.default_size ?? chalk.dim("-"),
+            width: 10,
+          },
+          {
+            header: "SIZES",
+            key: (t) => {
+              const sizes = Array.isArray(t.sizes) ? t.sizes : [];
+              if (sizes.length === 0) return chalk.dim("-");
+              const text = sizes
+                .map((s) => `${s.size ?? "?"}:${s.state ?? "?"}`)
+                .join(", ");
+              return text.length > 42 ? `${text.slice(0, 39)}...` : text;
+            },
+            width: 44,
           },
           {
             header: "IMAGE",
             key: (t) => {
               const image = templateImage(t);
-              return image
-                ? image.length > 32
-                  ? `${image.slice(0, 29)}...`
-                  : image
-                : chalk.dim("-");
+              return image ? image.slice(0, 24) : chalk.dim("-");
             },
-            width: 34,
-          },
-          {
-            header: "CREATED",
-            key: (t) => {
-              const createdAt = templateCreatedAt(t);
-              return createdAt ? createdAt.slice(0, 10) : chalk.dim("-");
-            },
-            width: 12,
+            width: 26,
           },
         ]);
       } catch (err) {
