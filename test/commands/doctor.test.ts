@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { detectMcpInstall } = await import("../../src/commands/doctor.js");
+const { checkMcpJson, detectMcpInstall } = await import("../../src/commands/doctor.js");
 
 const tempDirs: string[] = [];
 
@@ -73,5 +73,57 @@ describe("miosa doctor MCP detection", () => {
     expect(detected.installed).toBe(true);
     expect(detected.detail).toBe("v0.2.1");
     expect(detected.source).toBe("python-scripts");
+  });
+
+  it("treats local miosa mcp serve config as configured", async () => {
+    const dir = makeTempDir();
+    const config = path.join(dir, ".claude.json");
+    fs.writeFileSync(
+      config,
+      JSON.stringify({
+        mcpServers: {
+          miosa: {
+            command: "miosa",
+            args: ["mcp", "serve"],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const detected = await checkMcpJson([config]);
+
+    expect(detected.found).toBe(true);
+    expect(detected.configured).toBe(true);
+    expect(detected.commands[0]).toMatchObject({
+      command: "miosa",
+      args: ["--version"],
+      source: config,
+    });
+  });
+
+  it("does not let an empty project config mask a configured user config", async () => {
+    const dir = makeTempDir();
+    const emptyProjectConfig = path.join(dir, "project-mcp.json");
+    const configuredUserConfig = path.join(dir, "claude.json");
+    fs.writeFileSync(emptyProjectConfig, JSON.stringify({ mcpServers: {} }), "utf8");
+    fs.writeFileSync(
+      configuredUserConfig,
+      JSON.stringify({
+        mcpServers: {
+          miosa: {
+            command: "miosa",
+            args: ["mcp", "serve"],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const detected = await checkMcpJson([emptyProjectConfig, configuredUserConfig]);
+
+    expect(detected.found).toBe(true);
+    expect(detected.configured).toBe(true);
+    expect(detected.paths).toEqual([emptyProjectConfig, configuredUserConfig]);
   });
 });

@@ -40,6 +40,7 @@ interface McpJsonCheck {
   found: boolean;
   configured: boolean;
   commands: McpCommandCandidate[];
+  paths: string[];
 }
 
 interface McpCommandCandidate {
@@ -133,6 +134,8 @@ function collectMcpCommands(value: unknown): McpCommandCandidate[] {
       found.push({ command, args: ["--version"], source });
     } else if (command && /miosa_mcp/i.test(serialized)) {
       found.push({ command, args: [...args, "--version"], source });
+    } else if (command === "miosa" && args[0] === "mcp" && args[1] === "serve") {
+      found.push({ command, args: ["--version"], source });
     }
 
     for (const child of Object.values(record)) walk(child, source);
@@ -222,34 +225,42 @@ export async function detectMcpInstall(options: {
   return { installed: false, detail: "not installed" };
 }
 
-async function checkMcpJson(): Promise<McpJsonCheck> {
-  const candidates = [
+export async function checkMcpJson(
+  candidatePaths: string[] = [
     path.join(os.homedir(), ".claude", "mcp.json"),
     path.join(os.homedir(), ".claude.json"),
     path.join(process.cwd(), ".claude", "mcp.json"),
-  ];
+  ],
+): Promise<McpJsonCheck> {
+  let found = false;
+  const paths: string[] = [];
+  const commands: McpCommandCandidate[] = [];
 
-  for (const candidate of candidates) {
+  for (const candidate of candidatePaths) {
     if (!fs.existsSync(candidate)) continue;
+    found = true;
+    paths.push(candidate);
+
     try {
       const raw = fs.readFileSync(candidate, "utf8");
       const parsed = JSON.parse(raw) as unknown;
-      // Check if miosa or miosa-mcp appears anywhere in the config
-      const text = JSON.stringify(parsed);
-      const configured = /miosa/i.test(text);
-      return {
-        found: true,
-        configured,
-        commands: collectMcpCommands(parsed).map((cmd) => ({
+      commands.push(
+        ...collectMcpCommands(parsed).map((cmd) => ({
           ...cmd,
           source: candidate,
         })),
-      };
+      );
     } catch {
-      return { found: true, configured: false, commands: [] };
+      continue;
     }
   }
-  return { found: false, configured: false, commands: [] };
+
+  return {
+    found,
+    configured: commands.length > 0,
+    commands,
+    paths,
+  };
 }
 
 export function register(program: Command): void {
@@ -400,11 +411,11 @@ export function register(program: Command): void {
             name: ".claude/mcp.json",
             ok: mcpJson.configured,
             detail: mcpJson.configured
-              ? "configured"
+              ? `configured (${mcpJson.paths.join(", ")})`
               : "found but miosa not configured",
             fix: mcpJson.configured
               ? undefined
-              : "Add miosa-mcp to your .claude/mcp.json servers block",
+              : "Run: miosa mcp install --client claude",
             warn: !mcpJson.configured,
             section: "Project",
           });
@@ -413,7 +424,7 @@ export function register(program: Command): void {
             name: ".claude/mcp.json",
             ok: false,
             detail: "not found",
-            fix: "Create ~/.claude/mcp.json with miosa-mcp server config",
+            fix: "Run: miosa mcp install --client claude",
             warn: true,
             section: "Project",
           });
