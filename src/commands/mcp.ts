@@ -3549,6 +3549,7 @@ const MCP_REMOTE_URL = "https://api.miosa.ai/api/v1/mcp";
 const MCP_SERVER_NAME = "miosa";
 
 type SupportedClient = "claude" | "cursor" | "gemini" | "manual";
+type InstallMode = "local" | "remote";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -3679,6 +3680,70 @@ function wireClaudeCode(
   return { ok: true };
 }
 
+function wireClaudeCodeLocal(
+  scope: "local" | "user" | "project",
+): { ok: true } | { ok: false; reason: string } {
+  // `claude mcp remove` first so re-running install replaces cleanly.
+  spawnSync("claude", ["mcp", "remove", MCP_SERVER_NAME, "--scope", scope], {
+    stdio: "ignore",
+  });
+
+  const result = spawnSync(
+    "claude",
+    ["mcp", "add", "--scope", scope, MCP_SERVER_NAME, "miosa", "mcp", "serve"],
+    { stdio: "pipe", encoding: "utf8" },
+  );
+
+  if (result.error) {
+    return {
+      ok: false,
+      reason: `Could not run \`claude\` CLI: ${result.error.message}`,
+    };
+  }
+  if (typeof result.status === "number" && result.status !== 0) {
+    return {
+      ok: false,
+      reason: result.stderr?.trim() || `claude mcp add exited ${result.status}`,
+    };
+  }
+  return { ok: true };
+}
+
+function printLocalSnippet(client: SupportedClient): void {
+  console.log();
+  console.log(chalk.bold("Manual local MCP install snippet"));
+  console.log(chalk.dim("  Requires `miosa login` or MIOSA_API_KEY in the MCP environment."));
+  console.log();
+
+  if (client === "cursor") {
+    console.log(chalk.dim("  Add to ~/.cursor/mcp.json:"));
+    console.log();
+    console.log(
+      JSON.stringify(
+        {
+          mcpServers: {
+            miosa: {
+              command: "miosa",
+              args: ["mcp", "serve"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  if (client === "gemini") {
+    console.log(`  ${chalk.cyan(`gemini mcp add ${MCP_SERVER_NAME} miosa mcp serve`)}`);
+    return;
+  }
+
+  // claude / manual
+  console.log(`  ${chalk.cyan(`claude mcp add --scope user ${MCP_SERVER_NAME} miosa mcp serve`)}`);
+}
+
 function printManualSnippet(
   client: SupportedClient,
   apiKey: string,
@@ -3739,6 +3804,7 @@ function printManualSnippet(
 async function runInstall(opts: {
   client: SupportedClient;
   scope: "local" | "user" | "project";
+  mode: InstallMode;
   remoteUrl: string;
 }): Promise<void> {
   const config = loadConfig();
@@ -3746,8 +3812,47 @@ async function runInstall(opts: {
 
   console.log(
     chalk.bold("MIOSA MCP installer"),
-    chalk.dim(`— wiring ${opts.client} → ${opts.remoteUrl}`),
+    chalk.dim(
+      opts.mode === "local"
+        ? `— wiring ${opts.client} → local miosa mcp serve`
+        : `— wiring ${opts.client} → ${opts.remoteUrl}`,
+    ),
   );
+
+  if (opts.mode === "local") {
+    if (opts.client === "claude") {
+      const wired = wireClaudeCodeLocal(opts.scope);
+      if (wired.ok) {
+        console.log();
+        console.log(
+          chalk.green("✓"),
+          `MCP server '${MCP_SERVER_NAME}' added to Claude Code (${opts.scope} scope).`,
+        );
+        console.log();
+        console.log(chalk.dim("Verify:"));
+        console.log(`  ${chalk.cyan("claude mcp list")}`);
+        console.log();
+        console.log(chalk.dim("Try in a fresh Claude Code session:"));
+        console.log(
+          chalk.dim(
+            `  "Create a MIOSA sandbox, run \`python -c 'print(2+2)'\`, then destroy it."`,
+          ),
+        );
+        return;
+      }
+      console.log();
+      console.log(
+        chalk.yellow("!"),
+        `Could not auto-wire Claude Code: ${wired.reason}`,
+      );
+      console.log(chalk.yellow("  Falling back to manual snippet:"));
+      printLocalSnippet("claude");
+      return;
+    }
+
+    printLocalSnippet(opts.client);
+    return;
+  }
 
   const apiKey = await runDeviceFlow(config.endpoint, clientName);
 
@@ -3808,7 +3913,7 @@ export function register(program: Command): void {
   mcp
     .command("install")
     .description(
-      "Install the hosted MIOSA MCP server (https://api.miosa.ai/api/v1/mcp) into your AI client. Opens a browser to log in and wire your account.",
+      "Install MIOSA MCP into your AI client. Defaults to the local `miosa mcp serve` stdio server.",
     )
     .option(
       "-c, --client <client>",
@@ -3822,10 +3927,15 @@ export function register(program: Command): void {
     )
     .option(
       "--url <url>",
-      "Override the hosted MCP URL (default: https://api.miosa.ai/api/v1/mcp)",
+      "Hosted MCP URL used with --remote (default: https://api.miosa.ai/api/v1/mcp)",
       MCP_REMOTE_URL,
     )
-    .action(async (opts: { client: string; scope: string; url: string }) => {
+    .option(
+      "--remote",
+      "Install the hosted HTTP MCP server instead of the local stdio server",
+      false,
+    )
+    .action(async (opts: { client: string; scope: string; url: string; remote?: boolean }) => {
       const client = (
         ["claude", "cursor", "gemini", "manual"].includes(opts.client)
           ? opts.client
@@ -3835,7 +3945,12 @@ export function register(program: Command): void {
         ["local", "user", "project"].includes(opts.scope) ? opts.scope : "user"
       ) as "local" | "user" | "project";
       try {
-        await runInstall({ client, scope, remoteUrl: opts.url });
+        await runInstall({
+          client,
+          scope,
+          mode: opts.remote ? "remote" : "local",
+          remoteUrl: opts.url,
+        });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error(chalk.red(`Error: ${msg}`));

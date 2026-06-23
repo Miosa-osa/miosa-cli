@@ -15,6 +15,7 @@ import {
   type DataOptions,
   type JsonOptions,
 } from "./enterprise-util.js";
+import { parseEnvPairs } from "./util.js";
 
 const actions = ["pull", "open-terminal", "run", "expose"] as const;
 
@@ -136,6 +137,72 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => getAndPrint(`/workspaces/${enc(id)}/computers`, opts)),
+    );
+
+  const env = workspaces
+    .command("env")
+    .description(
+      "Manage workspace-inherited runtime env for sandboxes, computers, agents, and deployments",
+    );
+
+  env
+    .command("list <workspace-id>")
+    .description("List env vars inherited by a workspace")
+    .option("--target <target>", "all, sandbox, computer, agent, or deployment")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions & { target?: string }) =>
+      runAction(() => {
+        const params = new URLSearchParams({
+          scope: "workspace",
+          workspace_id: id,
+        });
+        if (opts.target) params.set("target", opts.target);
+        return getAndPrint(`/api/v1/runtime-env?${params.toString()}`, opts);
+      }),
+    );
+
+  env
+    .command("set <workspace-id> <pairs...>")
+    .description("Set workspace-inherited runtime env vars as KEY=VALUE")
+    .option("--target <target>", "all, sandbox, computer, agent, or deployment", "all")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        pairs: string[],
+        opts: JsonOptions & { target?: string },
+      ) =>
+        runAction(async () => {
+          const values = parseEnvPairs(pairs);
+          const results: unknown[] = [];
+          for (const [name, value] of Object.entries(values)) {
+            results.push(
+              unwrap(
+                await client().apiPost<unknown>("/api/v1/runtime-env", {
+                  scope: "workspace",
+                  workspace_id: id,
+                  target: opts.target ?? "all",
+                  name,
+                  value,
+                }),
+              ),
+            );
+          }
+          printValue(results, opts);
+        }),
+    );
+
+  env
+    .command("unset <ids...>")
+    .description("Delete inherited workspace env vars by runtime-env ID")
+    .option("--json", "Output as JSON")
+    .action((ids: string[], opts: JsonOptions) =>
+      runAction(async () => {
+        for (const id of ids) {
+          await client().apiDelete<unknown>(`/api/v1/runtime-env/${enc(id)}`);
+        }
+        printValue({ ok: true, deleted: ids.length }, opts);
+      }),
     );
 
   // ── Open-computer host workspaces (/opencomputers/hosts/:id/workspaces) ─

@@ -1003,6 +1003,59 @@ describe("miosa sandbox exec", () => {
     });
   });
 
+  it("normalizes duplicated sandbox preview host labels before printing JSON", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/e7a0d0dd/expose",
+        method: "POST",
+        body: JSON.stringify({ port: 4177, title: "app preview" }),
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: {
+            url: "https://4177-e7a0d0dd.sandbox.sandbox.preview.miosa.app",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://4177-e7a0d0dd.sandbox.preview.miosa.app")
+      .intercept({ path: "/", method: "GET" })
+      .reply(200, "<html>ok</html>", {
+        headers: { "content-type": "text/html" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "preview",
+      "e7a0d0dd",
+      "--port",
+      "4177",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.url).toBe(
+      "https://4177-e7a0d0dd.sandbox.preview.miosa.app",
+    );
+    expect(parsed.url).not.toContain("sandbox.sandbox");
+  });
+
   it("recovers a partial Next.js sandbox by name with concrete commands", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();

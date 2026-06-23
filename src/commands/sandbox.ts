@@ -4886,9 +4886,33 @@ function extractUrl(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   for (const key of ["url", "preview_url", "public_url"]) {
-    if (typeof row[key] === "string" && row[key]) return row[key];
+    if (typeof row[key] === "string" && row[key]) {
+      return normalizePreviewUrl(row[key]);
+    }
   }
   return null;
+}
+
+function normalizePreviewUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hostname = parsed.hostname.replace(
+      ".sandbox.sandbox.preview.",
+      ".sandbox.preview.",
+    );
+    const normalized = parsed.toString();
+    if (
+      parsed.pathname === "/" &&
+      !parsed.search &&
+      !parsed.hash &&
+      !url.endsWith("/")
+    ) {
+      return normalized.replace(/\/$/, "");
+    }
+    return normalized;
+  } catch {
+    return url.replace(".sandbox.sandbox.preview.", ".sandbox.preview.");
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
