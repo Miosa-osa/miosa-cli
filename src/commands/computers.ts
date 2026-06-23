@@ -640,6 +640,69 @@ export function register(program: Command): void {
     );
 
   computers!
+    .command("embed <computer-id>")
+    .description("Get a passwordless desktop embed URL for a Computer")
+    .option("--open", "Open the embed URL in your browser")
+    .option("--print-url", "Print only the embed URL")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        opts: JsonOptions & { open?: boolean; printUrl?: boolean },
+      ) =>
+        runAction(async () => {
+          const raw = unwrap<Record<string, unknown>>(
+            await client().apiGet<unknown>(
+              apiPath(`/computers/${enc(id)}/embed`),
+            ),
+          );
+          const embedUrl = String(raw["embed_url"] ?? raw["desktop_url"] ?? "");
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(raw, null, 2));
+            return;
+          }
+
+          if (opts.printUrl) {
+            console.log(embedUrl);
+            return;
+          }
+
+          if (opts.open && embedUrl) {
+            openUrl(embedUrl);
+          }
+
+          printBanner({ subtitle: "Computer desktop embed" });
+          console.log(
+            kvPanel([
+              { icon: icon.ok, label: "computer", value: chalk.dim(id) },
+              { label: "auth", value: chalk.green("query token") },
+              {
+                label: "password_required",
+                value: raw["auth"] &&
+                  typeof raw["auth"] === "object" &&
+                  (raw["auth"] as Record<string, unknown>)["password_required"] === false
+                  ? chalk.green("no")
+                  : chalk.yellow("unknown"),
+              },
+              { label: "embed_url", value: chalk.cyan(embedUrl || "not returned") },
+              ...(raw["expires_at"]
+                ? [{ label: "expires_at", value: chalk.dim(String(raw["expires_at"])) }]
+                : []),
+            ]),
+          );
+          console.log();
+          console.log(
+            hintBlock("Use", [
+              `miosa computers embed ${id} --open`,
+              `miosa computers embed ${id} --print-url`,
+            ]),
+          );
+          console.log();
+        }),
+    );
+
+  computers!
     .command("vnc <computer-id>")
     .description("Open the VNC viewer for a Computer in your browser")
     .option("--print-url", "Print the URL instead of opening a browser")
