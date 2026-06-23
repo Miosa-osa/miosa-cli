@@ -3679,7 +3679,7 @@ async function waitForDeploymentReady(
 
   const lastState = last ? String(last["state"] ?? "unknown") : "unknown";
   throw new UserError(
-    `Deployment still building after ${timeoutSec}s — it may still finish. Re-check with \`miosa sandbox show ${deploymentId}\` or \`miosa deploy logs\`.`,
+    `Deployment still building after ${timeoutSec}s — it may still finish. Re-check with \`miosa deploy show ${deploymentId}\` or \`miosa deploy logs ${deploymentId}\`.`,
     `Last state: ${lastState}`,
   );
 }
