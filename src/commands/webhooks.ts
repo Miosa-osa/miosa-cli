@@ -22,6 +22,14 @@ export function register(program: Command): void {
 
   const webhooks = program.commands.find((cmd) => cmd.name() === "webhooks");
   webhooks!
+    .command("events")
+    .description("List supported webhook event types and signing metadata")
+    .option("--json", "Output as JSON")
+    .action((opts: JsonOptions) =>
+      runAction(() => getAndPrint("/webhooks/events", opts)),
+    );
+
+  webhooks!
     .command("deliveries <webhook-id>")
     .description("List webhook deliveries")
     .option("--json", "Output as JSON")
