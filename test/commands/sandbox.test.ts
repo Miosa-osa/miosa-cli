@@ -943,6 +943,107 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).toHaveBeenCalledWith(1);
   });
 
+  it("passes always_on when sandbox deploy creates an always-on preview sandbox", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-deploy-always-on-"));
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ scripts: { dev: "node server.js" } }),
+    );
+    fs.writeFileSync(path.join(dir, "server.js"), "console.log('ok');\n");
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          name: "robert-package-live",
+          always_on: true,
+        }),
+      })
+      .reply(201, JSON.stringify({ data: { id: "sbx_always_on" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_always_on",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { id: "sbx_always_on", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_always_on/files",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox file transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_always_on/exec",
+        method: "POST",
+      })
+      .reply(
+        502,
+        JSON.stringify({
+          error: {
+            code: "SANDBOX_FILE_AGENT_UNAVAILABLE",
+            message: "Sandbox exec transport is unavailable",
+            retryable: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "deploy",
+      dir,
+      "--name",
+      "robert-package-live",
+      "--always-on",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.partial_resource).toMatchObject({
+      type: "sandbox",
+      id: "sbx_always_on",
+    });
+    expect(parsed.partial_resource.recovery_command).toContain("--always-on");
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
   it("starts services through the service up alias", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();

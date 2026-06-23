@@ -1079,6 +1079,10 @@ export function register(program: Command): void {
       "miosa-sandbox",
     )
     .option("--name <name>", "Name for a new sandbox")
+    .option(
+      "--always-on",
+      "Create a new sandbox that keeps running instead of timing out",
+    )
     .option("--port <port>", "Preview port", parseIntegerOption)
     .option("--publish-port <port>", "Alias for --port", parseIntegerOption)
     .option("--start <command>", "Start command to run inside /workspace")
@@ -1102,6 +1106,19 @@ export function register(program: Command): void {
       "Wait until the public preview returns a good HTTP status",
     )
     .option(
+      "--publish",
+      "Publish the workspace to a durable deployment after preview succeeds",
+    )
+    .option("--slug <slug>", "Deployment slug to use with --publish")
+    .option("--static", "Publish as a static deployment when using --publish")
+    .option(
+      "--deployment-type <type>",
+      "Deployment runtime type for --publish: miosa_deploy, docker_deploy, dynamic, static",
+    )
+    .option("--domain <domain>", "Custom domain to attach when using --publish")
+    .option("--build-command <cmd>", "Build command to run before publish")
+    .option("--run-command <cmd>", "Run command for durable dynamic publish")
+    .option(
       "--timeout <duration>",
       "Wait timeout, e.g. 180s or 3m",
       parseDurationSec,
@@ -1116,6 +1133,7 @@ export function register(program: Command): void {
           sandbox?: string;
           template?: string;
           name?: string;
+          alwaysOn?: boolean;
           port?: number;
           publishPort?: number;
           start?: string;
@@ -1125,6 +1143,13 @@ export function register(program: Command): void {
           revision?: string;
           depth?: number;
           wait?: boolean;
+          publish?: boolean;
+          slug?: string;
+          static?: boolean;
+          deploymentType?: string;
+          domain?: string;
+          buildCommand?: string;
+          runCommand?: string;
           timeout: number;
           probePath?: string;
           json?: boolean;
@@ -1143,12 +1168,28 @@ export function register(program: Command): void {
           console.log(
             `  ${chalk.bold("Preview")}  ${chalk.cyan(result.preview_url)}`,
           );
+          if (result.deployment?.url) {
+            console.log(
+              `  ${chalk.bold("Durable")} ${chalk.cyan(result.deployment.url)}`,
+            );
+          }
           console.log(
             `  ${chalk.bold("Ready")}    ${
               result.preview_ready
                 ? chalk.green("yes")
                 : chalk.yellow("not verified")
             }`,
+          );
+          console.log();
+          console.log(
+            chalk.yellow(
+              "  This is a timed sandbox preview. Persistent keeps disk; always-on keeps the app running.",
+            ),
+          );
+          console.log(
+            chalk.dim(
+              `  For a durable client link, publish it: miosa sandbox publish ${result.sandbox_id} --path /workspace --slug <slug> --wait`,
+            ),
           );
           console.log();
         } catch (err) {
@@ -2941,6 +2982,7 @@ interface SandboxDeployOptions {
   sandbox?: string;
   template?: string;
   name?: string;
+  alwaysOn?: boolean;
   port?: number;
   publishPort?: number;
   start?: string;
@@ -2950,6 +2992,13 @@ interface SandboxDeployOptions {
   revision?: string;
   depth?: number;
   wait?: boolean;
+  publish?: boolean;
+  slug?: string;
+  static?: boolean;
+  deploymentType?: string;
+  domain?: string;
+  buildCommand?: string;
+  runCommand?: string;
   timeout: number;
   probePath?: string;
   json?: boolean;
@@ -2960,6 +3009,9 @@ interface SandboxDeployResult {
   port: number;
   preview_url: string;
   preview_ready: boolean;
+  persistent: boolean;
+  always_on: boolean;
+  deployment?: SandboxPublishResult | null;
   internal_status?: number | null;
   edge_status?: number | null;
   latency_ms?: number | null;
@@ -3300,6 +3352,7 @@ async function deploySandbox(
           source: opts.source,
           revision: opts.revision,
           depth: opts.depth,
+          alwaysOn: opts.alwaysOn,
         },
       );
     }
@@ -3384,12 +3437,33 @@ async function deploySandbox(
     const edge = opts.wait
       ? await waitForPublicPreview(previewUrl, resolvedProbePath, opts.timeout)
       : { ok: false, status: null };
+    const deployment = opts.publish
+      ? await publishSandbox(sandboxId, {
+          path: remoteWorkdir,
+          name: opts.name,
+          slug: opts.slug,
+          environment: "production",
+          buildCommand: opts.buildCommand,
+          runCommand: opts.runCommand,
+          domain: opts.domain,
+          deploymentType: opts.static
+            ? "static"
+            : (opts.deploymentType ?? "dynamic"),
+          port: resolvedPort,
+          wait: opts.wait,
+          timeout: opts.timeout,
+          json: opts.json,
+        })
+      : null;
 
     return {
       sandbox_id: sandboxId,
       port: resolvedPort,
       preview_url: previewUrl,
       preview_ready: edge.ok,
+      persistent: true,
+      always_on: Boolean(opts.alwaysOn),
+      deployment,
       internal_status: internal.status,
       edge_status: edge.status,
       latency_ms: edge.latency_ms ?? null,
@@ -3971,10 +4045,16 @@ async function createSandboxForDeploy(
   c: ReturnType<typeof client>,
   template: string,
   name?: string,
-  source?: { source?: string; revision?: string; depth?: number },
+  source?: {
+    source?: string;
+    revision?: string;
+    depth?: number;
+    alwaysOn?: boolean;
+  },
 ): Promise<string> {
   const body: Record<string, unknown> = { template_id: template };
   if (name) body["name"] = name;
+  if (source?.alwaysOn) body["always_on"] = true;
   if (source?.source) body["source"] = source.source;
   if (source?.revision) body["revision"] = source.revision;
   if (source?.depth != null) body["depth"] = source.depth;
@@ -4396,6 +4476,7 @@ function recoveryCommandForSandboxDeploy(
   if (opts.port != null) parts.push("--port", String(opts.port));
   if (opts.publishPort != null)
     parts.push("--publish-port", String(opts.publishPort));
+  if (opts.alwaysOn) parts.push("--always-on");
   if (opts.installCommand)
     parts.push("--install-command", shellQuote(opts.installCommand));
   if (opts.install === false) parts.push("--no-install");
