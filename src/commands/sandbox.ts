@@ -642,7 +642,7 @@ export function register(program: Command): void {
     )
     .option(
       "--provider <name>",
-      "AI provider: claude (default), claude-code, codex, hermes, osa, pi",
+      "AI provider: claude (default, Claude Code), codex, claude-code, hermes, osa, pi",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -701,9 +701,9 @@ export function register(program: Command): void {
         runAction(async () => {
           const provider = opts.provider ?? "claude";
           const allowedProviders = [
-            "claude",
             "claude-code",
             "codex",
+            "claude",
             "hermes",
             "osa",
             "pi",

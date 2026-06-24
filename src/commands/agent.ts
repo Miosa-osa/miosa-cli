@@ -564,7 +564,7 @@ function buildRun(agent: Command): void {
     .option("--host <id>", "OpenComputers host ID target")
     .option(
       "--provider <name>",
-      "Agent provider for Sandbox/Computer targets: claude, claude-code, codex, hermes, osa, pi, custom",
+      "Agent provider for Sandbox/Computer targets: claude (default, Claude Code), codex, claude-code, hermes, osa, pi, custom",
     )
     .option("--model <name>", "Provider/model override")
     .option("--cwd <path>", "Working directory for Sandbox/Computer targets")

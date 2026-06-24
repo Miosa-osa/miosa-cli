@@ -60,6 +60,40 @@ function colorStatus(status: string): string {
   return chalk.dim(status || "—");
 }
 
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseEnvPairs(pairs: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const pair of pairs) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) {
+      throw new Error(`Invalid --env value: ${pair}. Use KEY=VALUE.`);
+    }
+    env[pair.slice(0, idx)] = pair.slice(idx + 1);
+  }
+  return env;
+}
+
+async function waitForComputerAgentRun(
+  runId: string,
+  timeoutSec: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    const run = unwrap<Record<string, unknown>>(
+      await client().apiGet<unknown>(apiPath(`/agent-runs/${enc(runId)}`)),
+    );
+    const status = String(run["status"] ?? "").toLowerCase();
+    if (["succeeded", "failed", "canceled", "cancelled"].includes(status)) {
+      return run;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error(`Timed out waiting for agent run ${runId}`);
+}
+
 export function register(program: Command): void {
   resourceCommands({
     program,
@@ -333,6 +367,108 @@ export function register(program: Command): void {
         );
         console.log();
       }),
+    );
+
+  computers!
+    .command("prompt <computer-id> <instruction...>")
+    .description("Run an in-Computer AI agent with the given instruction")
+    .option(
+      "--provider <name>",
+      "AI provider: claude (default, Claude Code), codex, claude-code, hermes, osa, pi",
+    )
+    .option("--model <name>", "Provider-specific model name")
+    .option("--cwd <path>", "Working directory inside the Computer")
+    .option(
+      "--env <KEY=VALUE>",
+      "Environment variable for the Agent Run. Repeatable.",
+      collectOption,
+      [],
+    )
+    .option("--timeout <sec>", "Exec timeout in seconds")
+    .option("--wait", "Wait for Agent Run completion")
+    .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        words: string[],
+        opts: {
+          provider?: string;
+          model?: string;
+          cwd?: string;
+          env?: string[];
+          timeout?: string;
+          wait?: boolean;
+          waitTimeout?: string;
+        } & JsonOptions,
+      ) =>
+        runAction(async () => {
+          const provider = opts.provider ?? "claude";
+          const allowedProviders = [
+            "claude-code",
+            "codex",
+            "claude",
+            "hermes",
+            "osa",
+            "pi",
+          ];
+          if (!allowedProviders.includes(provider)) {
+            throw new Error(
+              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+            );
+          }
+
+          const body: Record<string, unknown> = {
+            target_kind: "computer",
+            target_id: id,
+            computer_id: id,
+            provider,
+            prompt: words.join(" "),
+          };
+          if (opts.model) body["model"] = opts.model;
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.env && opts.env.length > 0) {
+            body["env"] = parseEnvPairs(opts.env);
+          }
+          if (opts.timeout != null) {
+            body["timeout"] = Number.parseInt(opts.timeout, 10);
+          }
+          if (opts.wait) body["wait"] = true;
+
+          let run = unwrap<Record<string, unknown>>(
+            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+          );
+
+          if (opts.wait) {
+            const runId = String(run["id"] ?? "");
+            const waitTimeout = Number.parseInt(
+              opts.waitTimeout ?? opts.timeout ?? "900",
+              10,
+            );
+            run = await waitForComputerAgentRun(runId, waitTimeout);
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(run, null, 2));
+            return;
+          }
+
+          printBanner({ subtitle: "Computer agent run" });
+          console.log(
+            kvPanel([
+              { label: "run", value: chalk.bold(String(run["id"] ?? "—")) },
+              { label: "computer", value: chalk.dim(id) },
+              { label: "provider", value: String(run["provider"] ?? provider) },
+              { label: "status", value: colorStatus(String(run["status"] ?? "")) },
+              { label: "exit", value: String(run["exit_code"] ?? "—") },
+            ]),
+          );
+          const output = String(run["output"] ?? "").trim();
+          const stderr = String(run["stderr"] ?? "").trim();
+          if (output) console.log(`\n${output}`);
+          if (stderr) console.error(`\n${chalk.red(stderr)}`);
+          console.log();
+        }),
     );
 
   // Workspace-aware create (skipped in resourceCommands via skipCommands).
