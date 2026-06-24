@@ -621,7 +621,7 @@ export function register(program: Command): void {
     )
     .option(
       "--provider <name>",
-      "Agent runtime: claude (default), claude-code, codex, pi, hermes, osa, custom",
+      "AI provider: claude (default, Claude Code), codex, claude-code, hermes, osa, pi, custom",
     )
     .option(
       "--runtime-command <command>",
