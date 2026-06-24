@@ -661,6 +661,11 @@ export function register(program: Command): void {
       "White-label project ID for billing attribution",
     )
     .option("--timeout <sec>", "Exec timeout in seconds", parseIntegerOption)
+    .option("--output-format <format>", "Claude Code output format: text, json, or stream-json")
+    .option("--resume-session <id>", "Claude Code session ID to resume")
+    .option("--agent-json", "Codex: emit JSONL agent events with --json")
+    .option("--output-schema <path>", "Codex: JSON Schema path inside the Sandbox")
+    .option("--image <path>", "Codex: image path inside the Sandbox")
     .option("--json", "Output as JSON")
     .action(
       (
@@ -680,6 +685,11 @@ export function register(program: Command): void {
           externalUser?: string;
           externalProject?: string;
           timeout?: number;
+          outputFormat?: string;
+          resumeSession?: string;
+          agentJson?: boolean;
+          outputSchema?: string;
+          image?: string;
         } & JsonOptions,
       ) =>
         runAction(async () => {
@@ -716,6 +726,11 @@ export function register(program: Command): void {
           if (opts.env && opts.env.length > 0) {
             body["env"] = parseEnvPairs(opts.env);
           }
+          if (opts.outputFormat) body["output_format"] = opts.outputFormat;
+          if (opts.resumeSession) body["resume_session_id"] = opts.resumeSession;
+          if (opts.agentJson) body["json"] = true;
+          if (opts.outputSchema) body["output_schema"] = opts.outputSchema;
+          if (opts.image) body["image"] = opts.image;
           if (opts.agentProfile) {
             body["agent_runtime_profile_id"] = opts.agentProfile;
           }

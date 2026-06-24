@@ -82,6 +82,11 @@ type AgentRunOptions = JsonOptions & {
   cwd?: string;
   env?: string[];
   timeout?: string;
+  outputFormat?: string;
+  resumeSession?: string;
+  agentJson?: boolean;
+  outputSchema?: string;
+  image?: string;
   agentProfile?: string;
   skipAgentProfile?: boolean;
   externalWorkspace?: string;
@@ -413,6 +418,11 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
   if (opts.cwd) body["cwd"] = opts.cwd;
   if (opts.env && opts.env.length > 0) body["env"] = parseEnvPairs(opts.env);
   if (opts.timeout) body["timeout"] = Number.parseInt(opts.timeout, 10);
+  if (opts.outputFormat) body["output_format"] = opts.outputFormat;
+  if (opts.resumeSession) body["resume_session_id"] = opts.resumeSession;
+  if (opts.agentJson) body["json"] = true;
+  if (opts.outputSchema) body["output_schema"] = opts.outputSchema;
+  if (opts.image) body["image"] = opts.image;
   if (opts.agentProfile) body["agent_runtime_profile_id"] = opts.agentProfile;
   if (opts.skipAgentProfile) body["skip_agent_runtime_profile"] = true;
   if (opts.externalWorkspace) body["external_workspace_id"] = opts.externalWorkspace;
@@ -570,6 +580,11 @@ function buildRun(agent: Command): void {
     .option("--cwd <path>", "Working directory for Sandbox/Computer targets")
     .option("--env <KEY=VALUE>", "Environment variable for Sandbox/Computer targets. Repeatable.", collectOption, [])
     .option("--timeout <sec>", "Timeout in seconds")
+    .option("--output-format <format>", "Claude Code output format: text, json, or stream-json")
+    .option("--resume-session <id>", "Claude Code session ID to resume")
+    .option("--agent-json", "Codex: emit JSONL agent events with --json")
+    .option("--output-schema <path>", "Codex: JSON Schema path inside the runtime")
+    .option("--image <path>", "Codex: image path inside the runtime")
     .option("--agent-profile <id>", "Agent runtime profile ID")
     .option("--skip-agent-profile", "Do not apply default agent runtime profile")
     .option("--external-workspace <id>", "White-label workspace/customer ID for billing attribution")

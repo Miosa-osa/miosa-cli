@@ -385,6 +385,11 @@ export function register(program: Command): void {
       [],
     )
     .option("--timeout <sec>", "Exec timeout in seconds")
+    .option("--output-format <format>", "Claude Code output format: text, json, or stream-json")
+    .option("--resume-session <id>", "Claude Code session ID to resume")
+    .option("--agent-json", "Codex: emit JSONL agent events with --json")
+    .option("--output-schema <path>", "Codex: JSON Schema path inside the Computer")
+    .option("--image <path>", "Codex: image path inside the Computer")
     .option("--wait", "Wait for Agent Run completion")
     .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
     .option("--json", "Output as JSON")
@@ -398,6 +403,11 @@ export function register(program: Command): void {
           cwd?: string;
           env?: string[];
           timeout?: string;
+          outputFormat?: string;
+          resumeSession?: string;
+          agentJson?: boolean;
+          outputSchema?: string;
+          image?: string;
           wait?: boolean;
           waitTimeout?: string;
         } & JsonOptions,
@@ -433,6 +443,11 @@ export function register(program: Command): void {
           if (opts.timeout != null) {
             body["timeout"] = Number.parseInt(opts.timeout, 10);
           }
+          if (opts.outputFormat) body["output_format"] = opts.outputFormat;
+          if (opts.resumeSession) body["resume_session_id"] = opts.resumeSession;
+          if (opts.agentJson) body["json"] = true;
+          if (opts.outputSchema) body["output_schema"] = opts.outputSchema;
+          if (opts.image) body["image"] = opts.image;
           if (opts.wait) body["wait"] = true;
 
           let run = unwrap<Record<string, unknown>>(
