@@ -374,7 +374,7 @@ export function register(program: Command): void {
     .description("Run an in-Computer AI agent with the given instruction")
     .option(
       "--provider <name>",
-      "AI provider: claude (default, Claude Code), codex, claude-code, hermes, osa, pi",
+      "AI provider: claude-code (default), codex, claude (alias), hermes, osa, pi",
     )
     .option("--model <name>", "Provider-specific model name")
     .option("--cwd <path>", "Working directory inside the Computer")
@@ -403,7 +403,7 @@ export function register(program: Command): void {
         } & JsonOptions,
       ) =>
         runAction(async () => {
-          const provider = opts.provider ?? "claude";
+          const provider = opts.provider ?? "claude-code";
           const allowedProviders = [
             "claude-code",
             "codex",

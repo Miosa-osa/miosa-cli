@@ -362,7 +362,7 @@ describe("miosa agent", () => {
           target_kind: "sandbox",
           target_id: "sbx_123",
           prompt: "build the page",
-          provider: "claude",
+          provider: "claude-code",
           execution_packet: {
             goal: "build ClinicIQ landing page",
             context: { customer: "ClinicIQ" },
@@ -382,7 +382,7 @@ describe("miosa agent", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "claude",
+            provider: "claude-code",
             status: "succeeded",
           },
         }),

@@ -1911,14 +1911,10 @@ async function dispatchTool(
     // ── Screenshot ────────────────────────────────────────────────────────
     if (name === "computer_screenshot") {
       if (!cid) return err("computer_id is required");
-      const result = await client.apiGet<unknown>(
+      const png = await client.apiGetBinary(
         `/api/v1/computers/${encodeURIComponent(cid)}/desktop/screenshot`,
       );
-      // The API returns { data: { image: "<base64>", format: "png" } }
-      const data = unwrapData(result) as Record<string, unknown>;
-      const b64 = typeof data["image"] === "string" ? data["image"] : null;
-      if (!b64) return err("Screenshot API returned no image data");
-      return image(Buffer.from(b64, "base64"));
+      return image(png);
     }
 
     // ── Pointer ───────────────────────────────────────────────────────────
