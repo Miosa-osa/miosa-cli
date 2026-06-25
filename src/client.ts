@@ -26,6 +26,7 @@ import type {
 } from "./types.js";
 import { AuthError, mapHttpError, NetworkError, UserError } from "./errors.js";
 import { isDebugMode } from "./cli-env.js";
+import { USER_AGENT } from "./version.js";
 
 export class MiosaClient {
   private readonly endpoint: string;
@@ -37,7 +38,7 @@ export class MiosaClient {
     if (!config.api_key) {
       throw new AuthError(
         "You are not logged in. Run: miosa login",
-        "Install with `brew install Miosa-osa/tap/miosa`, then run `miosa login`.",
+        "Run `miosa login` to authenticate.",
       );
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
@@ -51,7 +52,7 @@ export class MiosaClient {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
-      "User-Agent": `@miosa/cli/0.1.0`,
+      "User-Agent": USER_AGENT,
     };
 
     if (this.tenant) headers["X-MIOSA-Tenant"] = this.tenant;
