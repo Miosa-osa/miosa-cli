@@ -195,6 +195,7 @@ Examples:
             .map(({ name, preview }) => `${name}=${preview}`)
             .join("\n");
           fs.writeFileSync(outputPath, lines + "\n", { mode: 0o600 });
+          fs.chmodSync(outputPath, 0o600);
 
           // Ensure .gitignore includes the output file
           const gitignore = path.join(process.cwd(), ".gitignore");
