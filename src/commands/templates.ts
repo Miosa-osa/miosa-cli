@@ -1,107 +1,114 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { readFileSync } from "node:fs";
-import { loadConfig } from "../config.js";
-import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
+import { createClient, handleError, isJsonMode, printJson } from "./util.js";
 import { spin } from "../ui/spinner.js";
-import { handleError, isJsonMode, printJson } from "./util.js";
 
-interface SandboxTemplate {
-  id: string;
-  name: string;
+type ProductId =
+  | "sandbox"
+  | "computer"
+  | "docker_deploy_host"
+  | "managed_database"
+  | "deployment";
+
+interface TemplateSizeReadiness {
+  size?: string;
   state?: string;
-  status?: string;
-  image?: string;
-  image_id?: string;
-  dockerfile?: string;
-  created_at?: string;
-  inserted_at?: string;
-  updated_at?: string;
+  fast_ready?: boolean;
+  ready_nodes?: number;
+  checked_nodes?: number;
 }
 
-interface TemplateBuild {
+interface ProductTemplate {
   id: string;
-  template_id?: string;
-  state?: string;
-  started_at?: string;
-  finished_at?: string;
-  error?: string;
-  image_digest?: string;
+  name?: string;
+  product?: ProductId | string;
+  description?: string;
+  default_size?: string;
+  sdk_name?: string;
+  cli_name?: string;
+  installed_tools?: string[];
+  install_command?: string | null;
+  start_command?: string | null;
+  benchmark_lane?: { id?: string; command?: string; name?: string };
+  readiness_contract?: {
+    exec_ready?: boolean;
+    preview_ready?: boolean;
+    desktop_ready?: boolean;
+    app_ready?: boolean;
+    benchmark_command?: string;
+  };
+  sizes?: TemplateSizeReadiness[];
 }
 
-function unwrapTemplates(
-  raw:
-    | { data?: SandboxTemplate[]; templates?: SandboxTemplate[] }
-    | SandboxTemplate[],
-): SandboxTemplate[] {
+interface TemplateCatalog {
+  templates?: ProductTemplate[];
+  data?: { templates?: ProductTemplate[] };
+}
+
+function catalogTemplates(raw: TemplateCatalog | ProductTemplate[]): ProductTemplate[] {
   if (Array.isArray(raw)) return raw;
-  return raw.data ?? raw.templates ?? [];
+  return raw.data?.templates ?? raw.templates ?? [];
 }
 
-function unwrapTemplate(
-  raw: { data?: SandboxTemplate; template?: SandboxTemplate } | SandboxTemplate,
-): SandboxTemplate {
-  if ("data" in raw && raw.data) return raw.data;
-  if ("template" in raw && raw.template) return raw.template;
-  return raw as SandboxTemplate;
+function byProduct(
+  templates: ProductTemplate[],
+  product?: string,
+): ProductTemplate[] {
+  if (!product) return templates;
+  return templates.filter((template) => template.product === product);
 }
 
-function unwrapBuilds(
-  raw: { data?: TemplateBuild[]; builds?: TemplateBuild[] } | TemplateBuild[],
-): TemplateBuild[] {
-  if (Array.isArray(raw)) return raw;
-  return raw.data ?? raw.builds ?? [];
+function findTemplate(
+  templates: ProductTemplate[],
+  templateId: string,
+): ProductTemplate {
+  const match = templates.find((template) => template.id === templateId);
+  if (!match) throw new Error(`Template not found: ${templateId}`);
+  return match;
 }
 
-function fmtTemplateState(state: string | undefined): string {
+function stateLabel(state: string | undefined): string {
   if (!state) return chalk.dim("-");
-  if (state === "ready" || state === "active") return chalk.green(state);
-  if (state === "building" || state === "pending") return chalk.yellow(state);
-  if (state === "failed" || state === "error") return chalk.red(state);
+  if (state === "fast_ready") return chalk.green(state);
+  if (state === "partial_fast_ready") return chalk.yellow(state);
+  if (state === "cold_boot_only") return chalk.yellow(state);
+  if (state === "missing" || state === "unavailable") return chalk.red(state);
   return chalk.dim(state);
 }
 
-function templateState(template: SandboxTemplate): string | undefined {
-  return template.state ?? template.status;
+function sizeSummary(template: ProductTemplate): string {
+  const sizes = template.sizes ?? [];
+  if (sizes.length === 0) return chalk.dim("-");
+  return sizes
+    .map((size) => {
+      const name = size.size ?? "?";
+      const state = size.state ?? (size.fast_ready ? "fast_ready" : "unknown");
+      return `${name}:${state}`;
+    })
+    .join(", ");
 }
 
-function templateImage(template: SandboxTemplate): string | undefined {
-  return template.image ?? template.image_id;
-}
-
-function templateCreatedAt(template: SandboxTemplate): string | undefined {
-  return template.created_at ?? template.inserted_at;
-}
-
-function fmtBuildState(state: string | undefined): string {
-  if (!state) return chalk.dim("-");
-  if (state === "success" || state === "complete") return chalk.green(state);
-  if (state === "building" || state === "running" || state === "pending")
-    return chalk.yellow(state);
-  if (state === "failed" || state === "error") return chalk.red(state);
-  return chalk.dim(state);
+function readinessRows(template: ProductTemplate): TemplateSizeReadiness[] {
+  return template.sizes ?? [];
 }
 
 export function register(program: Command): void {
   const templates = program
     .command("templates")
-    .description("Manage sandbox templates");
+    .description("Discover canonical product templates and size readiness");
 
-  // list
   templates
     .command("list")
-    .description("List sandbox templates")
+    .description("List canonical templates for sandbox, computer, and appliance products")
+    .option("--product <product>", "Filter by product: sandbox, computer, docker_deploy_host")
     .option("--json", "Output raw JSON")
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (opts: { product?: string; json?: boolean }) => {
       try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
         const json = isJsonMode(opts);
-        const spinner = json ? null : spin("Fetching templates...");
-        const rows = unwrapTemplates(
-          await client.apiGet("/api/v1/sandbox-templates"),
-        );
+        const spinner = json ? null : spin("Fetching product templates...");
+        const raw = await createClient().apiGet<TemplateCatalog>("/api/v1/templates");
+        const rows = byProduct(catalogTemplates(raw), opts.product);
         spinner?.stop();
 
         if (json) {
@@ -110,167 +117,95 @@ export function register(program: Command): void {
         }
 
         if (rows.length === 0) {
-          console.log(chalk.dim("No templates found."));
+          console.log(chalk.dim("No product templates found."));
           return;
         }
 
         renderTable(rows, [
-          { header: "ID", key: (t) => t.id.slice(0, 12), width: 14 },
-          { header: "NAME", key: "name", width: 28 },
-          {
-            header: "STATE",
-            key: (t) => fmtTemplateState(templateState(t)),
-            width: 12,
-          },
-          {
-            header: "IMAGE",
-            key: (t) => {
-              const image = templateImage(t);
-              return image
-                ? image.length > 32
-                  ? `${image.slice(0, 29)}...`
-                  : image
-                : chalk.dim("-");
-            },
-            width: 34,
-          },
-          {
-            header: "CREATED",
-            key: (t) => {
-              const createdAt = templateCreatedAt(t);
-              return createdAt ? createdAt.slice(0, 10) : chalk.dim("-");
-            },
-            width: 12,
-          },
+          { header: "ID", key: (t) => t.id, width: 24 },
+          { header: "PRODUCT", key: (t) => t.product ?? "-", width: 18 },
+          { header: "DEFAULT", key: (t) => t.default_size ?? "-", width: 10 },
+          { header: "SDK", key: (t) => t.sdk_name ?? "-", width: 18 },
+          { header: "CLI", key: (t) => t.cli_name ?? "-", width: 18 },
+          { header: "SIZES", key: sizeSummary, width: 54 },
         ]);
       } catch (err) {
         handleError(err);
       }
     });
 
-  // get
   templates
-    .command("get <id>")
-    .description("Get sandbox template details")
+    .command("get <template-id>")
+    .description("Show one canonical product template")
     .option("--json", "Output raw JSON")
-    .action(async (id: string, opts: { json?: boolean }) => {
+    .action(async (templateId: string, opts: { json?: boolean }) => {
       try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
         const json = isJsonMode(opts);
-        const spinner = json ? null : spin("Fetching template...");
-        const tmpl = unwrapTemplate(
-          await client.apiGet(
-            `/api/v1/sandbox-templates/${encodeURIComponent(id)}`,
-          ),
-        );
+        const spinner = json ? null : spin("Fetching product template...");
+        const raw = await createClient().apiGet<TemplateCatalog>("/api/v1/templates");
+        const template = findTemplate(catalogTemplates(raw), templateId);
         spinner?.stop();
 
         if (json) {
-          printJson(tmpl);
+          printJson(template);
           return;
         }
 
         console.log();
-        console.log(`  ${chalk.bold("ID")}       ${tmpl.id}`);
-        console.log(`  ${chalk.bold("Name")}     ${tmpl.name}`);
-        console.log(
-          `  ${chalk.bold("State")}    ${fmtTemplateState(templateState(tmpl))}`,
-        );
-        const image = templateImage(tmpl);
-        if (image) console.log(`  ${chalk.bold("Image")}    ${image}`);
-        const createdAt = templateCreatedAt(tmpl);
-        if (createdAt) console.log(`  ${chalk.bold("Created")}  ${createdAt}`);
-        if (tmpl.updated_at)
-          console.log(`  ${chalk.bold("Updated")}  ${tmpl.updated_at}`);
+        console.log(`  ${chalk.bold("ID")}          ${template.id}`);
+        console.log(`  ${chalk.bold("Product")}     ${template.product ?? "-"}`);
+        console.log(`  ${chalk.bold("Name")}        ${template.name ?? "-"}`);
+        console.log(`  ${chalk.bold("Default")}     ${template.default_size ?? "-"}`);
+        console.log(`  ${chalk.bold("SDK")}         ${template.sdk_name ?? "-"}`);
+        console.log(`  ${chalk.bold("CLI")}         ${template.cli_name ?? "-"}`);
+        if (template.description) {
+          console.log(`  ${chalk.bold("Purpose")}     ${template.description}`);
+        }
+        if (template.installed_tools?.length) {
+          console.log(
+            `  ${chalk.bold("Tools")}       ${template.installed_tools.join(", ")}`,
+          );
+        }
+        if (template.install_command) {
+          console.log(`  ${chalk.bold("Install")}     ${template.install_command}`);
+        }
+        if (template.start_command) {
+          console.log(`  ${chalk.bold("Start")}       ${template.start_command}`);
+        }
+        if (template.benchmark_lane?.id) {
+          console.log(`  ${chalk.bold("Benchmark")}   ${template.benchmark_lane.id}`);
+        }
         console.log();
-        console.log(
-          chalk.dim(
-            `  Run "miosa templates builds ${tmpl.id}" to view build history.`,
-          ),
-        );
+        console.log(chalk.bold("  Size readiness"));
+        renderTable(readinessRows(template), [
+          { header: "SIZE", key: (r) => r.size ?? "-", width: 10 },
+          { header: "STATE", key: (r) => stateLabel(r.state), width: 18 },
+          {
+            header: "NODES",
+            key: (r) =>
+              r.checked_nodes === undefined
+                ? "-"
+                : `${r.ready_nodes ?? 0}/${r.checked_nodes}`,
+            width: 10,
+          },
+        ]);
         console.log();
       } catch (err) {
         handleError(err);
       }
     });
 
-  // create
   templates
-    .command("create")
-    .description("Create a sandbox template from a Dockerfile")
-    .requiredOption("--name <name>", "Template name")
-    .requiredOption(
-      "--dockerfile <path>",
-      "Path to Dockerfile to build the template from",
-    )
+    .command("readiness <template-id>")
+    .description("Show size readiness for one canonical product template")
     .option("--json", "Output raw JSON")
-    .action(
-      async (opts: { name: string; dockerfile: string; json?: boolean }) => {
-        try {
-          let dockerfileContent: string;
-          try {
-            dockerfileContent = readFileSync(opts.dockerfile, "utf8");
-          } catch (err) {
-            console.error(
-              chalk.red(
-                `Cannot read Dockerfile at ${opts.dockerfile}: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-            );
-            process.exit(1);
-          }
-
-          const config = loadConfig();
-          const client = new MiosaClient(config);
-          const spinner = spin(`Creating template ${opts.name}...`);
-          const tmpl = unwrapTemplate(
-            await client.apiPost("/api/v1/sandbox-templates", {
-              name: opts.name,
-              dockerfile: dockerfileContent,
-            }),
-          );
-          spinner.succeed(`Created template ${tmpl.name}`);
-
-          if (opts.json) {
-            console.log(JSON.stringify(tmpl, null, 2));
-            return;
-          }
-
-          console.log();
-          console.log(`  ${chalk.bold("ID")}     ${tmpl.id}`);
-          console.log(`  ${chalk.bold("Name")}   ${tmpl.name}`);
-          console.log(
-            `  ${chalk.bold("State")}  ${fmtTemplateState(tmpl.state)}`,
-          );
-          console.log();
-          console.log(
-            chalk.dim(
-              `  Run "miosa templates builds ${tmpl.id}" to track the build.`,
-            ),
-          );
-          console.log();
-        } catch (err) {
-          handleError(err);
-        }
-      },
-    );
-
-  // builds
-  templates
-    .command("builds <id>")
-    .description("List builds for a sandbox template")
-    .option("--json", "Output raw JSON")
-    .action(async (id: string, opts: { json?: boolean }) => {
+    .action(async (templateId: string, opts: { json?: boolean }) => {
       try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
         const json = isJsonMode(opts);
-        const spinner = json ? null : spin("Fetching builds...");
-        const rows = unwrapBuilds(
-          await client.apiGet(
-            `/api/v1/sandbox-templates/${encodeURIComponent(id)}/builds`,
-          ),
-        );
+        const spinner = json ? null : spin("Fetching template readiness...");
+        const raw = await createClient().apiGet<TemplateCatalog>("/api/v1/templates");
+        const template = findTemplate(catalogTemplates(raw), templateId);
+        const rows = readinessRows(template);
         spinner?.stop();
 
         if (json) {
@@ -278,87 +213,18 @@ export function register(program: Command): void {
           return;
         }
 
-        if (rows.length === 0) {
-          console.log(chalk.dim("No builds found."));
-          return;
-        }
-
         renderTable(rows, [
-          { header: "BUILD ID", key: (b) => b.id.slice(0, 12), width: 14 },
+          { header: "SIZE", key: (r) => r.size ?? "-", width: 10 },
+          { header: "STATE", key: (r) => stateLabel(r.state), width: 18 },
           {
-            header: "STATE",
-            key: (b) => fmtBuildState(b.state),
-            width: 12,
-          },
-          {
-            header: "STARTED",
-            key: (b) =>
-              b.started_at
-                ? b.started_at.slice(0, 19).replace("T", " ")
-                : chalk.dim("-"),
-            width: 20,
-          },
-          {
-            header: "FINISHED",
-            key: (b) =>
-              b.finished_at
-                ? b.finished_at.slice(0, 19).replace("T", " ")
-                : chalk.dim("-"),
-            width: 20,
-          },
-          {
-            header: "ERROR",
-            key: (b) =>
-              b.error
-                ? chalk.red(
-                    b.error.length > 30
-                      ? `${b.error.slice(0, 27)}...`
-                      : b.error,
-                  )
-                : chalk.dim("-"),
-            width: 32,
+            header: "NODES",
+            key: (r) =>
+              r.checked_nodes === undefined
+                ? "-"
+                : `${r.ready_nodes ?? 0}/${r.checked_nodes}`,
+            width: 10,
           },
         ]);
-      } catch (err) {
-        handleError(err);
-      }
-    });
-
-  // delete
-  templates
-    .command("delete <id>")
-    .description("Delete a sandbox template")
-    .option("-f, --force", "Skip confirmation prompt")
-    .option("--json", "Output raw JSON")
-    .action(async (id: string, opts: { force?: boolean; json?: boolean }) => {
-      try {
-        if (!opts.force) {
-          const { default: inquirer } = await import("inquirer");
-          const { ok } = await inquirer.prompt<{ ok: boolean }>([
-            {
-              type: "confirm",
-              name: "ok",
-              message: chalk.red(
-                `Delete template ${id}? This will remove the template and its build history.`,
-              ),
-              default: false,
-            },
-          ]);
-          if (!ok) {
-            console.log(chalk.dim("  Cancelled."));
-            process.exit(0);
-          }
-        }
-
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const spinner = spin("Deleting template...");
-        const result = await client.apiDelete(
-          `/api/v1/sandbox-templates/${encodeURIComponent(id)}`,
-        );
-        spinner.succeed("Template deleted");
-        if (opts.json)
-          console.log(JSON.stringify(result ?? { ok: true }, null, 2));
       } catch (err) {
         handleError(err);
       }

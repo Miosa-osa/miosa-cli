@@ -307,15 +307,29 @@ const manifest: CapabilitiesManifest = {
       notes: ["Real DNS is required for end-to-end verify tests."],
     },
     {
-      id: "template",
-      label: "Dockerfile Sandbox Template",
+      id: "product_template",
+      label: "Product Template Catalog",
+      purpose:
+        "Canonical discovery surface for sandbox, computer, and appliance templates, sizes, and readiness.",
+      status: "stable",
+      list: "miosa templates list --json",
+      show: "miosa templates get <template-id> --json",
+      notes: [
+        "Use this to choose product/template/size before creating resources.",
+        "Use miosa templates readiness <template-id> --json to see which sizes are fast-ready.",
+        "Use miosa sandbox-templates for tenant-owned sandbox template CRUD/builds.",
+      ],
+    },
+    {
+      id: "sandbox_template",
+      label: "Tenant Sandbox Template",
       purpose: "E2B-style custom sandbox environment built from a Dockerfile.",
       status: "beta",
-      list: "miosa templates list --json",
+      list: "miosa sandbox-templates list --json",
       create:
-        "miosa templates create --name <name> --dockerfile ./Dockerfile --json",
-      show: "miosa templates get <template-id> --json",
-      delete: "miosa templates delete <template-id> --force --json",
+        "miosa sandbox-templates create --name <name> --dockerfile ./Dockerfile --json",
+      show: "miosa sandbox-templates get <template-id> --json",
+      delete: "miosa sandbox-templates delete <template-id> --force --json",
       notes: [
         "This is the official custom environment path. Docker-in-sandbox is not assumed.",
       ],
@@ -629,12 +643,12 @@ const manifest: CapabilitiesManifest = {
       steps: [
         {
           command:
-            "miosa templates create --name <name> --dockerfile ./Dockerfile --json",
+            "miosa sandbox-templates create --name <name> --dockerfile ./Dockerfile --json",
           purpose: "Create template and trigger build.",
           json: true,
         },
         {
-          command: "miosa templates builds <template-id> --json",
+          command: "miosa sandbox-templates builds <template-id> --json",
           purpose: "Inspect template build status/log metadata.",
           json: true,
         },

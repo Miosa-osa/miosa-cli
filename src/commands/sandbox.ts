@@ -2587,6 +2587,45 @@ export function register(program: Command): void {
     .action((id: string, opts: JsonOptions) =>
       runAction(() => getAndPrint(`/sandbox-templates/${enc(id)}`, opts)),
     );
+
+  templates
+    .command("create")
+    .description("Create a tenant-owned Sandbox template from a Dockerfile")
+    .requiredOption("--name <name>", "Template name")
+    .requiredOption("--dockerfile <path>", "Path to Dockerfile")
+    .option("--json", "Output as JSON")
+    .action(
+      (opts: { name: string; dockerfile: string } & JsonOptions) =>
+        runAction(async () => {
+          const dockerfile = fs.readFileSync(opts.dockerfile, "utf8");
+          const value = unwrap(
+            await client().apiPost<unknown>(apiPath("/sandbox-templates"), {
+              name: opts.name,
+              dockerfile,
+            }),
+          );
+          printValue(value, opts);
+        }),
+    );
+
+  templates
+    .command("builds <template-id>")
+    .description("List builds for a tenant-owned Sandbox template")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() =>
+        getAndPrint(`/sandbox-templates/${enc(id)}/builds`, opts),
+      ),
+    );
+
+  templates
+    .command("delete <template-id>")
+    .description("Delete a tenant-owned Sandbox template")
+    .option("-f, --force", "Accepted for compatibility")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => deleteAndPrint(`/sandbox-templates/${enc(id)}`, opts)),
+    );
 }
 
 function registerSandboxConnectorCommands(sandbox: Command): void {
