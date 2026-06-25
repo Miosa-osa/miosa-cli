@@ -4,3 +4,7 @@ dist/
 *.d.ts.map
 coverage/
 .env
+
+# Local agent / tooling state + scratch (never commit)
+.claude/
+bench-results/
