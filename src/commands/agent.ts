@@ -407,7 +407,7 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
     target_kind: targetKind,
     target_id: targetId,
     prompt: instruction,
-    provider: opts.provider ?? "claude",
+    provider: opts.provider ?? "claude-code",
   };
   if (opts.model) body["model"] = opts.model;
   if (opts.cwd) body["cwd"] = opts.cwd;
@@ -564,7 +564,7 @@ function buildRun(agent: Command): void {
     .option("--host <id>", "OpenComputers host ID target")
     .option(
       "--provider <name>",
-      "Agent provider for Sandbox/Computer targets: claude, claude-code, codex, hermes, osa, pi, custom",
+      "Agent provider for Sandbox/Computer targets: claude-code (default), codex, claude (alias), hermes, osa, pi, custom",
     )
     .option("--model <name>", "Provider/model override")
     .option("--cwd <path>", "Working directory for Sandbox/Computer targets")
