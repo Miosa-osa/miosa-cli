@@ -117,7 +117,6 @@ describe("miosa dev", () => {
       expect.objectContaining({
         env: expect.objectContaining({ PORT: "4000" }),
         stdio: "inherit",
-        shell: true,
       }),
     );
   });
@@ -188,7 +187,7 @@ describe("miosa dev", () => {
     expect(childProcess.spawn).toHaveBeenCalledWith(
       "node",
       ["server.js"],
-      expect.objectContaining({ stdio: "inherit", shell: true }),
+      expect.objectContaining({ stdio: "inherit" }),
     );
   });
 
