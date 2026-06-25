@@ -19,6 +19,7 @@ import {
 } from "./enterprise-util.js";
 import { isJsonMode } from "../cli-env.js";
 import { loadConfig } from "../config.js";
+import { parseEnvPairs } from "./util.js";
 import {
   formatDuration,
   hintBlock,
@@ -58,6 +59,43 @@ function colorStatus(status: string): string {
   if (s === "error" || s === "failed" || s === "stopped")
     return chalk.red(status);
   return chalk.dim(status || "—");
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
+function isTerminalAgentRunStatus(status: unknown): boolean {
+  return (
+    typeof status === "string" &&
+    ["succeeded", "failed", "canceled", "cancelled"].includes(status.toLowerCase())
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForComputerAgentRun(
+  runId: string,
+  timeoutSec: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutSec * 1000;
+
+  while (true) {
+    const run = unwrap<Record<string, unknown>>(
+      await client().apiGet<unknown>(apiPath(`/agent-runs/${enc(runId)}`)),
+    );
+
+    if (isTerminalAgentRunStatus(run["status"])) return run;
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for agent run ${runId}`);
+    }
+
+    await sleep(Math.min(2_000, Math.max(0, deadline - Date.now())));
+  }
 }
 
 export function register(program: Command): void {
@@ -241,6 +279,200 @@ export function register(program: Command): void {
         );
         console.log();
       }),
+    );
+
+  computers!
+    .command("viewer-password <computer-id>")
+    .alias("password")
+    .description("Show external desktop viewer-password status")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap<Record<string, unknown>>(
+          await client().apiGet<unknown>(
+            apiPath(`/computers/${enc(id)}/viewer-password`),
+          ),
+        );
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        printBanner({ subtitle: "External desktop viewer password" });
+        console.log(
+          kvPanel([
+            { icon: icon.info, label: "computer", value: chalk.dim(id) },
+            {
+              label: "password_set",
+              value: raw["password_set"] ? chalk.green("yes") : chalk.yellow("no"),
+            },
+            ...(raw["viewer_password_set_at"] || raw["password_set_at"]
+              ? [
+                  {
+                    label: "set_at",
+                    value: chalk.dim(
+                      String(raw["viewer_password_set_at"] ?? raw["password_set_at"]),
+                    ),
+                  },
+                ]
+              : []),
+          ]),
+        );
+        console.log();
+        console.log(
+          hintBlock("Use", [
+            `miosa computers rotate-viewer-password ${id}`,
+            "Authenticated platform desktop links do not need this password.",
+          ]),
+        );
+        console.log();
+      }),
+    );
+
+  computers!
+    .command("rotate-viewer-password <computer-id>")
+    .alias("rotate-password")
+    .description("Rotate and print the external desktop viewer password once")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(async () => {
+        const raw = unwrap<Record<string, unknown>>(
+          await client().apiPost<unknown>(
+            apiPath(`/computers/${enc(id)}/viewer-password/rotate`),
+            {},
+          ),
+        );
+
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(raw, null, 2));
+          return;
+        }
+
+        const password = String(raw["viewer_password"] ?? raw["password"] ?? "");
+        printBanner({ subtitle: "Rotated external viewer password" });
+        console.log(
+          kvPanel([
+            { icon: icon.ok, label: "computer", value: chalk.dim(id) },
+            {
+              label: "viewer_password",
+              value: password ? chalk.bold(password) : chalk.dim("not returned"),
+            },
+            ...(raw["rotated_at"]
+              ? [{ label: "rotated_at", value: chalk.dim(String(raw["rotated_at"])) }]
+              : []),
+          ]),
+        );
+        console.log();
+        console.log(
+          chalk.yellow(
+            "This password is for raw external desktop viewer links. Store it now; it may not be returned again.",
+          ),
+        );
+        console.log();
+      }),
+    );
+
+  computers!
+    .command("prompt <computer-id> <instruction...>")
+    .description("Run an in-Computer AI agent with the given instruction")
+    .option(
+      "--provider <name>",
+      "AI provider: claude-code (default), codex, claude (alias), hermes, osa, pi",
+    )
+    .option("--model <name>", "Provider-specific model name")
+    .option("--cwd <path>", "Working directory inside the Computer")
+    .option(
+      "--env <KEY=VALUE>",
+      "Environment variable for the Agent Run. Repeatable.",
+      collectOption,
+      [],
+    )
+    .option("--timeout <sec>", "Exec timeout in seconds")
+    .option("--wait", "Wait for Agent Run completion")
+    .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
+    .option("--json", "Output as JSON")
+    .action(
+      (
+        id: string,
+        words: string[],
+        opts: {
+          provider?: string;
+          model?: string;
+          cwd?: string;
+          env?: string[];
+          timeout?: string;
+          wait?: boolean;
+          waitTimeout?: string;
+        } & JsonOptions,
+      ) =>
+        runAction(async () => {
+          const provider = opts.provider ?? "claude-code";
+          const allowedProviders = [
+            "claude-code",
+            "codex",
+            "claude",
+            "hermes",
+            "osa",
+            "pi",
+          ];
+          if (!allowedProviders.includes(provider)) {
+            throw new Error(
+              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+            );
+          }
+
+          const body: Record<string, unknown> = {
+            target_kind: "computer",
+            target_id: id,
+            computer_id: id,
+            provider,
+            prompt: words.join(" "),
+          };
+          if (opts.model) body["model"] = opts.model;
+          if (opts.cwd) body["cwd"] = opts.cwd;
+          if (opts.env && opts.env.length > 0) {
+            body["env"] = parseEnvPairs(opts.env);
+          }
+          if (opts.timeout != null) {
+            body["timeout"] = Number.parseInt(opts.timeout, 10);
+          }
+          if (opts.wait) body["wait"] = true;
+
+          let run = unwrap<Record<string, unknown>>(
+            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+          );
+
+          if (opts.wait) {
+            const runId = String(run["id"] ?? "");
+            const waitTimeout = Number.parseInt(
+              opts.waitTimeout ?? opts.timeout ?? "900",
+              10,
+            );
+            run = await waitForComputerAgentRun(runId, waitTimeout);
+          }
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(run, null, 2));
+            return;
+          }
+
+          printBanner({ subtitle: "Computer agent run" });
+          console.log(
+            kvPanel([
+              { label: "run", value: chalk.bold(String(run["id"] ?? "—")) },
+              { label: "computer", value: chalk.dim(id) },
+              { label: "provider", value: String(run["provider"] ?? provider) },
+              { label: "status", value: colorStatus(String(run["status"] ?? "")) },
+              { label: "exit", value: String(run["exit_code"] ?? "—") },
+            ]),
+          );
+          const output = String(run["output"] ?? "").trim();
+          const stderr = String(run["stderr"] ?? "").trim();
+          if (output) console.log(`\n${output}`);
+          if (stderr) console.error(`\n${chalk.red(stderr)}`);
+          console.log();
+        }),
     );
 
   // Workspace-aware create (skipped in resourceCommands via skipCommands).
