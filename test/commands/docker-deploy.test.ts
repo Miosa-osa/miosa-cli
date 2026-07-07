@@ -93,7 +93,7 @@ describe("miosa docker-deploy", () => {
     ]);
 
     const output = logged.join("\n");
-    expect(output).toContain("Docker Deploy host");
+    expect(output).toContain("App Engine host");
     expect(output).toContain("dr-smith.deploy.miosa.ai");
   });
 
@@ -125,7 +125,7 @@ describe("miosa docker-deploy", () => {
     ]);
 
     const output = logged.join("\n");
-    expect(output).toContain("Docker Deploy host");
+    expect(output).toContain("App Engine host");
     expect(output).toContain("Appliance:");
     expect(output).toContain("starting");
   });
@@ -195,7 +195,7 @@ describe("miosa docker-deploy", () => {
     await program.parseAsync(["node", "miosa", "docker-deploy", "templates"]);
 
     const output = logged.join("\n");
-    expect(output).toContain("Docker Deploy template");
+    expect(output).toContain("App Engine template");
     expect(output).toContain("compose-full-stack");
   });
 
@@ -245,13 +245,24 @@ describe("miosa docker-deploy", () => {
       metadata: {
         deployment_product: "docker_deploy",
         runtime: {
-          ip: "172.16.74.246",
-          port: 23906,
+          ip: "172.16.74.200",
+          port: 20000,
         },
         docker_deploy: {
           host_id: readyHost.id,
           status: "running",
         },
+      },
+      docker_deploy_app: {
+        id: "app_row_123",
+        docker_deploy_host_id: readyHost.id,
+        app_id: "dokploy_app_123",
+        container_id: "container_123",
+        status: "running",
+        runtime_ip: "172.16.74.246",
+        runtime_port: 23906,
+        public_url: "https://docker-site.example.com",
+        last_health_status: "healthy",
       },
     };
 
@@ -299,17 +310,94 @@ describe("miosa docker-deploy", () => {
       ok: boolean;
       deployment_product: string;
       host_ready: boolean;
+      docker_deploy_app: { container_id: string; status: string };
       route: { ip: string; port: number };
       public_probe: { ok: boolean; status: number; body_kind: string };
     };
     expect(parsed.ok).toBe(true);
     expect(parsed.deployment_product).toBe("docker_deploy");
     expect(parsed.host_ready).toBe(true);
+    expect(parsed.docker_deploy_app).toMatchObject({
+      container_id: "container_123",
+      status: "running",
+    });
     expect(parsed.route).toEqual({ ip: "172.16.74.246", port: 23906 });
     expect(parsed.public_probe).toMatchObject({
       ok: true,
       status: 200,
       body_kind: "html",
     });
+  });
+
+  it("fails doctor when a Docker Deploy deployment has no app truth row", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const deployment = {
+      id: "dep_no_app",
+      name: "docker-site",
+      slug: "docker-site",
+      state: "running",
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: readyHost.id,
+      public_url: "https://docker-site.example.com",
+      metadata: {
+        deployment_product: "docker_deploy",
+        runtime: {
+          ip: "172.16.74.246",
+          port: 23906,
+        },
+      },
+      docker_deploy_app: null,
+    };
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_no_app",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: deployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/docker-deploy/hosts/${readyHost.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ host: readyHost }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "doctor",
+      "dep_no_app",
+      "--no-probe",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      checks: Array<{ id: string; ok: boolean }>;
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "app_truth_row", ok: false }),
+    );
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "app_container_running", ok: false }),
+    );
+    expect(process.exitCode).toBe(1);
+    process.exitCode = previousExitCode;
   });
 });

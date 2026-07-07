@@ -67,6 +67,18 @@ interface DockerDeployCheck {
   recovery?: string[];
 }
 
+interface DockerDeployAppTruth {
+  id?: string | null;
+  docker_deploy_host_id?: string | null;
+  app_id?: string | null;
+  container_id?: string | null;
+  status?: string | null;
+  runtime_ip?: string | null;
+  runtime_port?: number | string | null;
+  public_url?: string | null;
+  last_health_status?: string | null;
+}
+
 function unwrapHosts(payload: unknown): DockerDeployHost[] {
   if (Array.isArray(payload)) return payload as DockerDeployHost[];
   if (payload && typeof payload === "object") {
@@ -109,7 +121,7 @@ function hostReady(host: DockerDeployHost): boolean {
 
 function printHost(host: DockerDeployHost): void {
   console.log();
-  console.log(chalk.bold("Docker Deploy host"));
+  console.log(chalk.bold("App Engine host"));
   console.log();
   console.log(`  ID:          ${host.id}`);
   console.log(`  Workspace:   ${host.workspace_id}`);
@@ -171,7 +183,9 @@ function deploymentProduct(deployment: Deployment): string {
 
 function deploymentHostId(deployment: Deployment): string | null {
   const metadata = asRecord(deployment.metadata);
+  const app = deploymentDockerDeployApp(deployment);
   return (
+    stringField(app, "docker_deploy_host_id") ??
     deployment.docker_deploy_host_id ??
     stringField(metadata, "docker_deploy_host_id") ??
     stringField(asRecord(metadata["docker_deploy"]), "host_id")
@@ -182,15 +196,26 @@ function deploymentRuntime(deployment: Deployment): {
   ip: string | null;
   port: number | null;
 } {
+  const app = deploymentDockerDeployApp(deployment);
   const runtime = asRecord(asRecord(deployment.metadata)["runtime"]);
   return {
-    ip: stringField(runtime, "ip"),
-    port: numberField(runtime, "port"),
+    ip: stringField(app, "runtime_ip") ?? stringField(runtime, "ip"),
+    port: numberField(app, "runtime_port") ?? numberField(runtime, "port"),
   };
 }
 
 function deploymentPublicUrl(deployment: Deployment): string | null {
-  return deployment.public_url ?? deployment.auto_subdomain ?? null;
+  return (
+    stringField(deploymentDockerDeployApp(deployment), "public_url") ??
+    deployment.public_url ??
+    deployment.auto_subdomain ??
+    null
+  );
+}
+
+function deploymentDockerDeployApp(deployment: Deployment): DockerDeployAppTruth | null {
+  const raw = asRecord(deployment as unknown as Record<string, unknown>)["docker_deploy_app"];
+  return raw && typeof raw === "object" ? (raw as DockerDeployAppTruth) : null;
 }
 
 function classifyBody(contentType: string | null, body: string): DockerDeployProbe["body_kind"] {
@@ -274,12 +299,12 @@ export function register(program: Command): void {
   const root = program
     .command("docker-deploy")
     .alias("docker")
-    .description("Manage MIOSA Docker Deploy appliance hosts");
+    .description("Manage MIOSA App Engine appliance hosts");
 
   root
     .command("hosts")
     .alias("list")
-    .description("List Docker Deploy appliance hosts")
+    .description("List App Engine appliance hosts")
     .option("--workspace <id>", "Filter by workspace ID")
     .option("--json", "Output raw JSON")
     .action(async (opts: { workspace?: string; json?: boolean }) => {
@@ -297,7 +322,7 @@ export function register(program: Command): void {
         }
 
         console.log();
-        console.log(`${chalk.bold(String(hosts.length))} Docker Deploy host(s)`);
+        console.log(`${chalk.bold(String(hosts.length))} App Engine host(s)`);
         console.log();
         renderTable(hosts, [
           { header: "ID", key: (h) => shortId(h.id), width: 10 },
@@ -315,7 +340,7 @@ export function register(program: Command): void {
 
   root
     .command("templates")
-    .description("List Docker Deploy starter templates")
+    .description("List App Engine starter templates")
     .option("--json", "Output raw JSON")
     .action(async (opts: { json?: boolean }) => {
       try {
@@ -329,7 +354,7 @@ export function register(program: Command): void {
         }
 
         console.log();
-        console.log(`${chalk.bold(String(templates.length))} Docker Deploy template(s)`);
+        console.log(`${chalk.bold(String(templates.length))} App Engine template(s)`);
         console.log();
         renderTable(templates, [
           { header: "ID", key: (t) => t.id, width: 24 },
@@ -345,8 +370,8 @@ export function register(program: Command): void {
 
   root
     .command("template")
-    .description("Show one Docker Deploy starter template")
-    .argument("<template-id>", "Docker Deploy template ID")
+    .description("Show one App Engine starter template")
+    .argument("<template-id>", "App Engine template ID")
     .option("--json", "Output raw JSON")
     .action(async (templateId: string, opts: { json?: boolean }) => {
       try {
@@ -369,7 +394,7 @@ export function register(program: Command): void {
 
   root
     .command("ensure")
-    .description("Provision or return the workspace Docker Deploy host")
+    .description("Provision or return the workspace App Engine host")
     .option("--workspace <id>", "Workspace ID")
     .option("--external-workspace <id>", "External workspace/customer ID")
     .option("--wait", "Wait until the appliance is active and healthy")
@@ -414,8 +439,8 @@ export function register(program: Command): void {
 
   root
     .command("show")
-    .description("Show one Docker Deploy appliance host")
-    .argument("<host-id>", "Docker Deploy host ID")
+    .description("Show one App Engine appliance host")
+    .argument("<host-id>", "App Engine host ID")
     .option("--json", "Output raw JSON")
     .action(async (hostId: string, opts: { json?: boolean }) => {
       try {
@@ -438,7 +463,7 @@ export function register(program: Command): void {
 
   root
     .command("doctor")
-    .description("Verify a Docker Deploy deployment, host, route, and public URL")
+    .description("Verify a App Engine deployment, host, route, and public URL")
     .argument("<deployment-id>", "Deployment/app ID to verify")
     .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
     .option("--timeout <seconds>", "Public probe timeout in seconds", parsePositiveInt, 20)
@@ -457,6 +482,7 @@ export function register(program: Command): void {
           ["deployment"],
         ) as unknown as Deployment;
         const product = deploymentProduct(deployment);
+        const app = deploymentDockerDeployApp(deployment);
         const hostId = deploymentHostId(deployment);
         const runtime = deploymentRuntime(deployment);
         const publicUrl = deploymentPublicUrl(deployment);
@@ -490,8 +516,8 @@ export function register(program: Command): void {
             id: "host_linked",
             ok: Boolean(hostId),
             message: hostId
-              ? `Deployment links to Docker Deploy host ${hostId}.`
-              : "Deployment has no Docker Deploy host id.",
+              ? `Deployment links to App Engine host ${hostId}.`
+              : "Deployment has no App Engine host id.",
             recovery: ["Run miosa docker-deploy ensure --wait --json."],
           },
           {
@@ -499,7 +525,7 @@ export function register(program: Command): void {
             ok: Boolean(host && hostReady(host)),
             message: host
               ? `Host status=${host.status}, appliance=${host.appliance_status ?? "unknown"}.`
-              : "Docker Deploy host could not be loaded.",
+              : "App Engine host could not be loaded.",
             recovery: hostId
               ? [`miosa docker-deploy show ${hostId} --json`, `miosa docker-deploy ensure --wait --json`]
               : ["miosa docker-deploy ensure --wait --json"],
@@ -511,6 +537,31 @@ export function register(program: Command): void {
               ? `Route points to ${runtime.ip}:${runtime.port}.`
               : "Deployment runtime route is missing ip/port metadata.",
             recovery: ["Re-publish with miosa sandbox publish --docker-deploy --wait --json."],
+          },
+          {
+            id: "app_truth_row",
+            ok: Boolean(app),
+            message: app
+              ? `App Engine app row exists with status=${app.status ?? "unknown"}.`
+              : "Deployment has no App Engine app row.",
+            recovery: ["Re-publish with --docker-deploy --wait, then re-run doctor."],
+          },
+          {
+            id: "app_container_running",
+            ok: Boolean(
+              app &&
+                app.status === "running" &&
+                stringField(app, "container_id") &&
+                numberField(app, "runtime_port") &&
+                stringField(app, "runtime_ip"),
+            ),
+            message: app
+              ? `App status=${app.status ?? "unknown"}, container=${app.container_id ?? "missing"}, route=${app.runtime_ip ?? "missing"}:${app.runtime_port ?? "missing"}.`
+              : "Cannot verify app container because the app row is missing.",
+            recovery: [
+              "Check the appliance container list.",
+              "Re-run miosa docker-deploy doctor <deployment-id> --json after the publish job completes.",
+            ],
           },
         ];
 
@@ -535,11 +586,14 @@ export function register(program: Command): void {
           deployment_product: product,
           docker_deploy_host_id: hostId,
           host_ready: Boolean(host && hostReady(host)),
+          docker_deploy_app: app,
           route: runtime,
           public_url: publicUrl,
           public_probe: probe,
           checks,
         };
+
+        if (!result.ok) process.exitCode = 1;
 
         if (isJsonMode(opts) || opts.json) {
           printJson(result);
@@ -547,11 +601,12 @@ export function register(program: Command): void {
         }
 
         console.log();
-        console.log(chalk.bold("Docker Deploy doctor"));
+        console.log(chalk.bold("App Engine doctor"));
         console.log();
         console.log(`  Deployment: ${result.deployment_id}`);
         console.log(`  Product:    ${result.deployment_product}`);
         console.log(`  Host:       ${result.docker_deploy_host_id ?? "—"}`);
+        console.log(`  Container:  ${app?.container_id ?? "—"}`);
         console.log(`  Route:      ${runtime.ip && runtime.port ? `${runtime.ip}:${runtime.port}` : "—"}`);
         console.log(`  URL:        ${result.public_url ?? "—"}`);
         console.log();
@@ -559,7 +614,6 @@ export function register(program: Command): void {
           console.log(`  ${check.ok ? chalk.green("✓") : chalk.red("✗")} ${check.id}: ${check.message}`);
         }
         console.log();
-        if (!result.ok) process.exitCode = 1;
       } catch (err) {
         handleError(err);
       }

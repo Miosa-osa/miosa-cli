@@ -108,7 +108,7 @@ describe("miosa computers", () => {
         path: "/api/v1/computers/cmp_123/files/download?path=%2Fworkspace%2Freport.txt",
         method: "GET",
       })
-      .reply(200, "computer artifact", {
+      .reply(200, "computer file", {
         headers: { "content-type": "text/plain" },
       });
     pool
@@ -142,13 +142,13 @@ describe("miosa computers", () => {
       "/workspace/report.txt",
     ]);
 
-    expect(fs.readFileSync(output, "utf8")).toBe("computer artifact");
+    expect(fs.readFileSync(output, "utf8")).toBe("computer file");
     const outputs = logged.map((entry) => JSON.parse(entry));
     expect(outputs[0]).toMatchObject({
       computer_id: "cmp_123",
       remote_path: "/workspace/report.txt",
       output,
-      bytes: 17,
+      bytes: 13,
     });
     expect(outputs[1]).toEqual({ success: true });
   });
