@@ -611,21 +611,21 @@ export function register(program: Command): void {
 
   registerSandboxConnectorCommands(sandbox);
 
-  // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
-  // Implemented through Agent Runs so callers get a stable run response while
+  // run-agent - invoke an in-Sandbox AI runner CLI.
+  // Implemented through Runs so callers get a stable run response while
   // execution still happens inside the remote filesystem.
   sandbox
-    .command("prompt <sandbox-id> <instruction...>")
+    .command("run-agent <sandbox-id> <instruction...>")
     .description(
       "Run an in-Sandbox AI agent runtime with the given instruction",
     )
     .option(
-      "--provider <name>",
-      "Agent runtime: claude (default), claude-code, codex, pi, hermes, osa, custom",
+      "--runner <name>",
+      "Runner: claude (default), claude-code, codex, pi, hermes, osa, custom",
     )
     .option(
       "--runtime-command <command>",
-      "Executable command for --provider custom, e.g. 'hermes-agent run'",
+      "Executable command for --runner custom, e.g. 'hermes-agent run'",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -639,7 +639,7 @@ export function register(program: Command): void {
     .option("--cwd <path>", "Working directory inside the Sandbox")
     .option(
       "--env <KEY=VALUE>",
-      "Environment variable for the Agent Run. Repeatable.",
+      "Environment variable for the run. Repeatable.",
       collectOption,
       [],
     )
@@ -667,7 +667,7 @@ export function register(program: Command): void {
         id: string,
         words: string[],
         opts: {
-          provider?: string;
+          runner?: string;
           runtimeCommand?: string;
           model?: string;
           connector?: string;
@@ -683,21 +683,21 @@ export function register(program: Command): void {
         } & JsonOptions,
       ) =>
         runAction(async () => {
-          const provider = opts.provider ?? "claude";
-          if (!isSupportedPromptProvider(provider)) {
-            const allowedProviders = supportedPromptProviders();
+          const runner = opts.runner ?? "claude";
+          if (!isSupportedRunAgentRunner(runner)) {
+            const allowedRunners = supportedRunAgentRunners();
             throw new Error(
-              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+              `Unsupported runner "${runner}". Use: ${allowedRunners.join(", ")}`,
             );
           }
-          if (opts.runtimeCommand && provider !== "custom") {
+          if (opts.runtimeCommand && runner !== "custom") {
             throw new Error(
-              "--runtime-command can only be used with --provider custom",
+              "--runtime-command can only be used with --runner custom",
             );
           }
           if (opts.connector || opts.preflight) {
             await preflightSandboxConnector(id, {
-              provider,
+              provider: runner,
               connector: opts.connector,
               model: opts.model,
               cwd: opts.cwd,
@@ -707,8 +707,8 @@ export function register(program: Command): void {
           const body: Record<string, unknown> = {
             target_kind: "sandbox",
             target_id: id,
-            provider,
-            prompt: instruction,
+            runner,
+            instruction,
           };
           if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
@@ -734,7 +734,7 @@ export function register(program: Command): void {
           if (opts.timeout != null) body["timeout"] = opts.timeout;
 
           const run = unwrap(
-            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+            await client().apiPost<unknown>(apiPath("/runs"), body),
           ) as Record<string, unknown>;
 
           if (isJsonMode(opts)) {
@@ -747,7 +747,7 @@ export function register(program: Command): void {
             kvPanel([
               { label: "Run", value: chalk.bold(str(run["id"])) },
               { label: "Target", value: `${str(run["target_kind"])} ${id}` },
-              { label: "Provider", value: str(run["provider"]) },
+              { label: "Runner", value: str(run["runner"]) },
               { label: "Status", value: statusColor(str(run["status"])) },
               { label: "Exit", value: str(run["exit_code"]) },
             ]),
@@ -1307,7 +1307,7 @@ export function register(program: Command): void {
     .option("--run-command <cmd>", "Run command for dynamic/server deployments")
     .option(
       "--docker-deploy",
-      "Publish onto the workspace Docker Deploy runtime instead of standard app hosting",
+      "Publish onto the workspace App Engine runtime instead of standard app hosting",
     )
     .option("--domain <domain>", "Custom domain to attach")
     .option(
@@ -5082,7 +5082,7 @@ function commandInCwd(command: string, cwd?: string): string {
   return `cd ${shellQuote(cwd)} && ${command}`;
 }
 
-function supportedPromptProviders(): string[] {
+function supportedRunAgentRunners(): string[] {
   return [
     "claude",
     "claude-code",
@@ -5094,15 +5094,15 @@ function supportedPromptProviders(): string[] {
   ];
 }
 
-function runtimeCommandForProvider(
-  provider: string,
+function runtimeCommandForRunner(
+  runner: string,
   runtimeCommand?: string,
 ): string | null {
-  const normalized = provider.trim().toLowerCase();
+  const normalized = runner.trim().toLowerCase();
   if (normalized === "custom") {
     if (!runtimeCommand?.trim()) {
       throw new Error(
-        "--provider custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
+        "--runner custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
       );
     }
     return runtimeCommand.trim();
@@ -5120,8 +5120,8 @@ function runtimeCommandForProvider(
   return builtIns[normalized] ?? null;
 }
 
-function isSupportedPromptProvider(provider: string): boolean {
-  return supportedPromptProviders().includes(provider.trim().toLowerCase());
+function isSupportedRunAgentRunner(runner: string): boolean {
+  return supportedRunAgentRunners().includes(runner.trim().toLowerCase());
 }
 
 function backgroundCommand(command: string): string {
@@ -5283,11 +5283,11 @@ function openUrl(url: string): void {
   child.unref();
 }
 
-// ── Sandbox render helpers ────────────────────────────────────────────────
+// Sandbox render helpers
 
 /** Coerce an unknown API field to a display string. */
 function str(v: unknown): string {
-  if (v === null || v === undefined) return chalk.dim("—");
+  if (v === null || v === undefined) return chalk.dim("-");
   return String(v);
 }
 

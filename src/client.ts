@@ -138,7 +138,7 @@ export class MiosaClient {
     return this.get<T>(path);
   }
 
-  /** Generic binary GET for file/artifact download routes. */
+  /** Generic binary GET for file download routes. */
   async apiGetBinary(path: string): Promise<Buffer> {
     let res: Dispatcher.ResponseData;
     try {

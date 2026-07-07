@@ -71,7 +71,7 @@ describe("miosa agent", () => {
 
     pool
       .intercept({
-        path: `/api/v1/computers/${computer.id}/cua/sessions`,
+        path: `/api/v1/computers/${computer.id}/control/sessions`,
         method: "POST",
         body: JSON.stringify({ goal: "run the tests" }),
       })
@@ -91,7 +91,7 @@ describe("miosa agent", () => {
     expect(logged.join("\n")).toContain("Resume:");
   });
 
-  it("honors MIOSA_JSON for agent output", async () => {
+  it("honors MIOSA_JSON for computer control session output", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -106,7 +106,7 @@ describe("miosa agent", () => {
 
     pool
       .intercept({
-        path: `/api/v1/computers/${computer.id}/cua/sessions`,
+        path: `/api/v1/computers/${computer.id}/control/sessions`,
         method: "POST",
         body: JSON.stringify({ goal: "run the tests" }),
       })
@@ -142,7 +142,7 @@ describe("miosa agent", () => {
 
     pool
       .intercept({
-        path: `/api/v1/computers/${computer.id}/cua/sessions/${session.id}/resume`,
+        path: `/api/v1/computers/${computer.id}/control/sessions/${session.id}/resume`,
         method: "POST",
         body: JSON.stringify({}),
       })
@@ -152,7 +152,7 @@ describe("miosa agent", () => {
 
     pool
       .intercept({
-        path: `/api/v1/computers/${computer.id}/cua/sessions/${session.id}/task`,
+        path: `/api/v1/computers/${computer.id}/control/sessions/${session.id}/task`,
         method: "POST",
         body: JSON.stringify({ instruction: "continue the fix" }),
       })
@@ -182,7 +182,7 @@ describe("miosa agent", () => {
     expect(logged.join("\n")).toContain("Task submitted");
   });
 
-  it("runs one prompt against a sandbox through Agent Runs", async () => {
+  it("runs one prompt against a sandbox through runs", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -191,13 +191,13 @@ describe("miosa agent", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs",
+        path: "/api/v1/runs",
         method: "POST",
         body: JSON.stringify({
           target_kind: "sandbox",
           target_id: "sbx_123",
-          prompt: "build the page",
-          provider: "codex",
+          instruction: "build the page",
+          runner: "codex",
           env: { FEATURE_FLAG: "on" },
           agent_runtime_profile_id: "prof_123",
           external_workspace_id: "clinic-iq",
@@ -212,7 +212,7 @@ describe("miosa agent", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "codex",
+            runner: "codex",
             status: "succeeded",
           },
         }),
@@ -234,7 +234,7 @@ describe("miosa agent", () => {
       "page",
       "--sandbox",
       "sbx_123",
-      "--provider",
+      "--runner",
       "codex",
       "--env",
       "FEATURE_FLAG=on",
@@ -251,11 +251,11 @@ describe("miosa agent", () => {
     expect(JSON.parse(logged.join("\n"))).toMatchObject({
       id: "run_123",
       target_kind: "sandbox",
-      provider: "codex",
+      runner: "codex",
     });
   });
 
-  it("can wait for a sandbox Agent Run to finish", async () => {
+  it("can wait for a sandbox run to finish", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -264,13 +264,13 @@ describe("miosa agent", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs",
+        path: "/api/v1/runs",
         method: "POST",
         body: JSON.stringify({
           target_kind: "sandbox",
           target_id: "sbx_123",
-          prompt: "build the page",
-          provider: "codex",
+          instruction: "build the page",
+          runner: "codex",
         }),
       })
       .reply(
@@ -280,7 +280,7 @@ describe("miosa agent", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "codex",
+            runner: "codex",
             status: "running",
           },
         }),
@@ -288,7 +288,7 @@ describe("miosa agent", () => {
       );
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123",
+        path: "/api/v1/runs/run_123",
         method: "GET",
       })
       .reply(
@@ -298,7 +298,7 @@ describe("miosa agent", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "codex",
+            runner: "codex",
             status: "succeeded",
             output: "done",
           },
@@ -321,7 +321,7 @@ describe("miosa agent", () => {
       "page",
       "--sandbox",
       "sbx_123",
-      "--provider",
+      "--runner",
       "codex",
       "--wait",
       "--wait-timeout",
@@ -331,13 +331,13 @@ describe("miosa agent", () => {
     expect(JSON.parse(logged.join("\n"))).toMatchObject({
       id: "run_123",
       target_kind: "sandbox",
-      provider: "codex",
+      runner: "codex",
       status: "succeeded",
       output: "done",
     });
   });
 
-  it("passes execution packet, output contract, approval policy, and capabilities to Agent Runs", async () => {
+  it("passes execution packet, expected outputs, approval policy, and capabilities to runs", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -356,20 +356,20 @@ describe("miosa agent", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs",
+        path: "/api/v1/runs",
         method: "POST",
         body: JSON.stringify({
           target_kind: "sandbox",
           target_id: "sbx_123",
-          prompt: "build the page",
-          provider: "claude-code",
+          instruction: "build the page",
+          runner: "claude-code",
           execution_packet: {
             goal: "build ClinicIQ landing page",
             context: { customer: "ClinicIQ" },
           },
-          output_contract: {
-            artifacts: [{ path: "/workspace/report.html", kind: "html" }],
-            preview_port: 3000,
+          expected_outputs: {
+            files: [{ path: "/workspace/report.html", kind: "html" }],
+            previews: [{ port: 3000 }],
           },
           approval_policy: { publish: "manual" },
           capability_requirements: ["filesystem", "shell"],
@@ -382,7 +382,7 @@ describe("miosa agent", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "claude-code",
+            runner: "claude-code",
             status: "succeeded",
           },
         }),
@@ -406,8 +406,8 @@ describe("miosa agent", () => {
       "sbx_123",
       "--execution-packet-file",
       packetFile,
-      "--output-contract",
-      '{"artifacts":[{"path":"/workspace/report.html","kind":"html"}],"preview_port":3000}',
+      "--expected-outputs",
+      '{"files":[{"path":"/workspace/report.html","kind":"html"}],"previews":[{"port":3000}]}',
       "--approval-policy",
       '{"publish":"manual"}',
       "--capability",

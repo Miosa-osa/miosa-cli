@@ -381,7 +381,7 @@ export function register(program: Command): void {
             Promise.race([
               safeGet<AgentSessionRow>(
                 client,
-                `/api/v1/computers/${encodeURIComponent(id)}/cua/sessions`,
+                `/api/v1/computers/${encodeURIComponent(id)}/control/sessions`,
               ),
               new Promise<AgentSessionRow[]>((resolve) =>
                 setTimeout(() => resolve([]), 3000),

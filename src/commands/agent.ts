@@ -1,17 +1,17 @@
 /**
- * miosa agent — first-class CUA (Computer Use Agent) session management.
+ * miosa agent - first-class computer control session management.
  *
- * Routes map to: /api/v1/computers/:computer_id/cua/sessions[/:session_id/...]
+ * Routes map to: /api/v1/computers/:computer_id/control/sessions[/:session_id/...]
  *
  * Subcommands:
- *   start     POST   /computers/:id/cua/sessions
- *   ls        GET    /computers/:id/cua/sessions  (all computers when no --computer)
- *   get       GET    /computers/:id/cua/sessions/:session_id
- *   task      POST   /computers/:id/cua/sessions/:session_id/task
- *   pause     POST   /computers/:id/cua/sessions/:session_id/pause
- *   resume    POST   /computers/:id/cua/sessions/:session_id/resume
- *   stop      DELETE /computers/:id/cua/sessions/:session_id
- *   history   GET    /computers/:id/cua/sessions/:session_id/events
+ *   start     POST   /computers/:id/control/sessions
+ *   ls        GET    /computers/:id/control/sessions  (all computers when no --computer)
+ *   get       GET    /computers/:id/control/sessions/:session_id
+ *   task      POST   /computers/:id/control/sessions/:session_id/task
+ *   pause     POST   /computers/:id/control/sessions/:session_id/pause
+ *   resume    POST   /computers/:id/control/sessions/:session_id/resume
+ *   stop      DELETE /computers/:id/control/sessions/:session_id
+ *   history   GET    /computers/:id/control/sessions/:session_id/events
  */
 
 import type { Command } from "commander";
@@ -25,7 +25,7 @@ import { spin } from "../ui/spinner.js";
 import { handleError, isJsonMode, parseEnvPairs } from "./util.js";
 
 // ---------------------------------------------------------------------------
-// Domain types — match backend CUA session shape
+// Domain types - match backend computer control session shape
 // ---------------------------------------------------------------------------
 
 interface AgentSession {
@@ -77,7 +77,7 @@ type AgentRunOptions = JsonOptions & {
   sandbox?: string;
   computer?: string;
   host?: string;
-  provider?: string;
+  runner?: string;
   model?: string;
   cwd?: string;
   env?: string[];
@@ -89,8 +89,8 @@ type AgentRunOptions = JsonOptions & {
   externalProject?: string;
   executionPacket?: string;
   executionPacketFile?: string;
-  outputContract?: string;
-  outputContractFile?: string;
+  expectedOutputs?: string;
+  expectedOutputsFile?: string;
   approvalPolicy?: string;
   approvalPolicyFile?: string;
   capability?: string[];
@@ -250,7 +250,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForAgentRun(
+async function waitForRun(
   c: MiosaClient,
   id: string,
   timeoutSec: number,
@@ -259,11 +259,11 @@ async function waitForAgentRun(
 
   while (true) {
     const run = unwrapData(
-      await c.apiGet<unknown>(apiV1(`/agent-runs/${enc(id)}`)),
+      await c.apiGet<unknown>(apiV1(`/runs/${enc(id)}`)),
     );
     if (isTerminalStatus(run["status"])) return run;
     if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for agent run ${id}`);
+      throw new Error(`Timed out waiting for run ${id}`);
     }
     await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
   }
@@ -321,7 +321,7 @@ async function startAgentSession(
   if (opts.maxTurns != null) body["max_turns"] = parseInt(opts.maxTurns, 10);
 
   const payload = await c.apiPost<unknown>(
-    apiV1(`/computers/${enc(computer.id)}/cua/sessions`),
+    apiV1(`/computers/${enc(computer.id)}/control/sessions`),
     body,
   );
 
@@ -357,7 +357,7 @@ async function resumeAgentSession(
 
   const payload = await c.apiPost<unknown>(
     apiV1(
-      `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/resume`,
+      `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/resume`,
     ),
     {},
   );
@@ -365,7 +365,7 @@ async function resumeAgentSession(
   if (instruction) {
     await c.apiPost<unknown>(
       apiV1(
-        `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/task`,
+        `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/task`,
       ),
       { instruction },
     );
@@ -380,7 +380,7 @@ async function resumeAgentSession(
   if (instruction) console.log(chalk.dim(`Task submitted to ${sessionId}.`));
 }
 
-async function runPromptTarget(instruction: string, opts: AgentRunOptions): Promise<void> {
+async function runInstructionTarget(instruction: string, opts: AgentRunOptions): Promise<void> {
   const targets = [opts.sandbox, opts.computer, opts.host].filter(Boolean);
   if (targets.length !== 1) {
     throw new UserError(
@@ -406,8 +406,8 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
   const body: Record<string, unknown> = {
     target_kind: targetKind,
     target_id: targetId,
-    prompt: instruction,
-    provider: opts.provider ?? "claude-code",
+    instruction,
+    runner: opts.runner ?? "claude-code",
   };
   if (opts.model) body["model"] = opts.model;
   if (opts.cwd) body["cwd"] = opts.cwd;
@@ -423,10 +423,10 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
     opts.executionPacketFile,
     "execution-packet",
   );
-  const outputContract = readJsonValue(
-    opts.outputContract,
-    opts.outputContractFile,
-    "output-contract",
+  const expectedOutputs = readJsonValue(
+    opts.expectedOutputs,
+    opts.expectedOutputsFile,
+    "expected-outputs",
   );
   const approvalPolicy = readJsonValue(
     opts.approvalPolicy,
@@ -434,15 +434,15 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
     "approval-policy",
   );
   if (executionPacket !== undefined) body["execution_packet"] = executionPacket;
-  if (outputContract !== undefined) body["output_contract"] = outputContract;
+  if (expectedOutputs !== undefined) body["expected_outputs"] = expectedOutputs;
   if (approvalPolicy !== undefined) body["approval_policy"] = approvalPolicy;
   if (opts.capability?.length) body["capability_requirements"] = opts.capability;
 
-  let run = unwrapData(await c.apiPost<unknown>(apiV1("/agent-runs"), body));
+  let run = unwrapData(await c.apiPost<unknown>(apiV1("/runs"), body));
   const runId = str(run["id"]);
   if (opts.wait) {
-    if (!runId) throw new Error("Agent run response did not include an id.");
-    run = await waitForAgentRun(
+    if (!runId) throw new Error("Run response did not include an id.");
+    run = await waitForRun(
       c,
       runId,
       Number.parseInt(opts.waitTimeout ?? opts.timeout ?? "900", 10),
@@ -454,7 +454,7 @@ async function runPromptTarget(instruction: string, opts: AgentRunOptions): Prom
     return;
   }
 
-  console.log(chalk.green(`Agent run ${str(run["status"] || "created")}: ${str(run["id"])}`));
+  console.log(chalk.green(`Run ${str(run["status"] || "created")}: ${str(run["id"])}`));
   console.log(chalk.dim(`Target: ${targetKind} ${targetId}`));
   const output = str(run["output"]).trim();
   const stderr = str(run["stderr"]).trim();
@@ -486,10 +486,10 @@ async function runOpenComputerHostPrompt(
     opts.executionPacketFile,
     "execution-packet",
   );
-  const outputContract = readJsonValue(
-    opts.outputContract,
-    opts.outputContractFile,
-    "output-contract",
+  const expectedOutputs = readJsonValue(
+    opts.expectedOutputs,
+    opts.expectedOutputsFile,
+    "expected-outputs",
   );
   const approvalPolicy = readJsonValue(
     opts.approvalPolicy,
@@ -497,7 +497,7 @@ async function runOpenComputerHostPrompt(
     "approval-policy",
   );
   if (executionPacket !== undefined) body["execution_packet"] = executionPacket;
-  if (outputContract !== undefined) body["output_contract"] = outputContract;
+  if (expectedOutputs !== undefined) body["expected_outputs"] = expectedOutputs;
   if (approvalPolicy !== undefined) body["approval_policy"] = approvalPolicy;
   if (opts.capability?.length) body["capability_requirements"] = opts.capability;
   if (opts.timeout) {
@@ -557,14 +557,14 @@ function buildRun(agent: Command): void {
   agent
     .command("run <instruction...>")
     .description(
-      "Dispatch one prompt to a Sandbox, Computer, or OpenComputers host",
+      "Dispatch one instruction to a Sandbox, Computer, or OpenComputers host",
     )
     .option("--sandbox <id>", "Sandbox ID target")
     .option("--computer <name-or-id>", "Computer name or ID target")
     .option("--host <id>", "OpenComputers host ID target")
     .option(
-      "--provider <name>",
-      "Agent provider for Sandbox/Computer targets: claude-code (default), codex, claude (alias), hermes, osa, pi, custom",
+      "--runner <name>",
+      "Runner for Sandbox/Computer targets: claude-code (default), codex, claude (alias), hermes, osa, pi, custom",
     )
     .option("--model <name>", "Provider/model override")
     .option("--cwd <path>", "Working directory for Sandbox/Computer targets")
@@ -577,12 +577,12 @@ function buildRun(agent: Command): void {
     .option("--external-project <id>", "White-label project ID for billing attribution")
     .option("--execution-packet <json>", "Execution packet JSON for product context, plan, and acceptance criteria")
     .option("--execution-packet-file <file>", "Read execution packet JSON from a file")
-    .option("--output-contract <json>", "Output contract JSON declaring expected artifacts/previews")
-    .option("--output-contract-file <file>", "Read output contract JSON from a file")
+    .option("--expected-outputs <json>", "Expected outputs JSON declaring files/previews/messages")
+    .option("--expected-outputs-file <file>", "Read expected outputs JSON from a file")
     .option("--approval-policy <json>", "Approval policy JSON for publish/writeback/destructive actions")
     .option("--approval-policy-file <file>", "Read approval policy JSON from a file")
     .option("--capability <name>", "Required runtime capability. Repeatable.", collectOption, [])
-    .option("--wait", "Wait for Sandbox/Computer Agent Run completion")
+    .option("--wait", "Wait for Sandbox/Computer run completion")
     .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
     .option("--json", "Output as JSON")
     .action(async (instruction: string[], opts: AgentRunOptions, command: Command) => {
@@ -594,11 +594,11 @@ function buildRun(agent: Command): void {
             (mergedOpts as Record<string, unknown>)[key] = value;
           }
         }
-        const prompt = instruction.join(" ").trim();
-        if (!prompt) {
+        const runInstruction = instruction.join(" ").trim();
+        if (!runInstruction) {
           throw new UserError("No agent instruction provided.");
         }
-        await runPromptTarget(prompt, mergedOpts);
+        await runInstructionTarget(runInstruction, mergedOpts);
       } catch (err) {
         handleError(err);
       }
@@ -625,7 +625,7 @@ function buildLs(agent: Command): void {
           const computer = await resolveComputer(c, opts.computer);
           spinner.text = `Loading sessions on ${computer.name}…`;
           const payload = await c.apiGet<unknown>(
-            apiV1(`/computers/${enc(computer.id)}/cua/sessions`),
+            apiV1(`/computers/${enc(computer.id)}/control/sessions`),
           );
           sessions = listOf<AgentSession>(payload, ["sessions"]).map((s) => ({
             ...s,
@@ -643,7 +643,7 @@ function buildLs(agent: Command): void {
           const settled = await Promise.allSettled(
             computers.map(async (computer) => {
               const payload = await c.apiGet<unknown>(
-                apiV1(`/computers/${enc(computer.id)}/cua/sessions`),
+                apiV1(`/computers/${enc(computer.id)}/control/sessions`),
               );
               return listOf<AgentSession>(payload, ["sessions"]).map((s) => ({
                 ...s,
@@ -717,7 +717,7 @@ function buildGet(agent: Command): void {
 
           const payload = await c.apiGet<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}`,
             ),
           );
           const session = dataOf<AgentSession>(payload);
@@ -789,7 +789,7 @@ function buildTask(agent: Command): void {
 
           const payload = await c.apiPost<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/task`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/task`,
             ),
             { instruction },
           );
@@ -823,7 +823,7 @@ function buildPause(agent: Command): void {
 
           const payload = await c.apiPost<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/pause`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/pause`,
             ),
             {},
           );
@@ -857,7 +857,7 @@ function buildResume(agent: Command): void {
 
           const payload = await c.apiPost<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/resume`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/resume`,
             ),
             {},
           );
@@ -891,7 +891,7 @@ function buildStop(agent: Command): void {
 
           const payload = await c.apiDelete<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}`,
             ),
           );
 
@@ -928,7 +928,7 @@ function buildHistory(agent: Command): void {
 
           const ticketPayload = await c.apiPost<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/sse-ticket`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/sse-ticket`,
             ),
             {},
           );
@@ -942,7 +942,7 @@ function buildHistory(agent: Command): void {
 
           const payload = await c.apiGet<unknown>(
             apiV1(
-              `/computers/${enc(computer.id)}/cua/sessions/${enc(sessionId)}/events?${search.toString()}`,
+              `/computers/${enc(computer.id)}/control/sessions/${enc(sessionId)}/events?${search.toString()}`,
             ),
           );
 
@@ -987,7 +987,7 @@ export function register(program: Command): void {
   const agent = program
     .command("agent")
     .description(
-      "Manage AI agent (CUA) sessions on Computers — start, monitor, and control agent runs",
+      "Manage AI computer control sessions on Computers - start, monitor, and control agent runs",
     )
     .argument("[computer]", "Computer name or ID")
     .argument("[instruction...]", "Goal/instruction for the agent")

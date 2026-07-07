@@ -1,13 +1,13 @@
 {
   "name": "@miosa/cli",
-  "version": "1.0.92",
+  "version": "1.0.94",
   "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
     "miosa": "dist/bin/miosa.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "build:linux": "bun build src/bin/miosa.ts --compile --target=bun-linux-x64 --outfile dist/miosa-linux-x64",
     "dev": "tsx src/bin/miosa.ts",
     "test": "vitest run",

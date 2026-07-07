@@ -46,8 +46,8 @@ contract.
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
 
-For production app hosting, MIOSA recommends Docker Deploy. It runs apps on the
-workspace Docker Deploy runtime, which is the preferred path for teams deploying
+For production app hosting, MIOSA recommends App Engine. It runs apps on the
+workspace App Engine runtime, which is the preferred path for teams deploying
 many apps because it gives better runtime packing and lower resource overhead
 than one-off app runtimes.
 
@@ -108,7 +108,7 @@ miosa deploy
 miosa deploy redeploy
 ```
 
-For apps built inside a sandbox, promote the sandbox workspace through Docker Deploy:
+For apps built inside a sandbox, promote the sandbox workspace through App Engine:
 
 ```bash
 miosa sandbox publish <sandbox-id> \

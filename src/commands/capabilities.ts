@@ -173,13 +173,13 @@ const manifest: CapabilitiesManifest = {
       notes: [
         "For app templates, prefer --template <id> --auto-start --publish-port <port> --wait --json.",
         "Next.js starter template: miosa sandbox create --template nextjs --auto-start --publish-port 3000 --wait --json.",
-        "For AI agents, run the coding agent inside the sandbox with miosa sandbox prompt or sandbox exec; do not build locally then upload unless exact-repo upload is explicitly required.",
-        "Use miosa sandbox write-file, sandbox exec, sandbox connectors, and sandbox prompt as the agent's in-sandbox tool surface for creating and editing files.",
+        "For AI agents, run the coding agent inside the sandbox with miosa sandbox run-agent or sandbox exec; do not build locally then upload unless exact-repo upload is explicitly required.",
+        "Use miosa sandbox write-file, sandbox exec, sandbox connectors, and sandbox run-agent as the agent's in-sandbox tool surface for creating and editing files.",
         "Use miosa sandbox connectors attach <sandbox-id> <connector> --env <PROVIDER_API_KEY> --json to expose brokered provider credentials without putting raw keys in the VM.",
         "Built-in MIOSA-managed design research connector: miosa sandbox connectors attach <sandbox-id> refero/design-research --env REFERO_MCP_TOKEN --json.",
-        "Use miosa sandbox prompt <sandbox-id> --provider claude --connector <connector> --preflight --json -- <task> before agent work that depends on a provider key.",
+        "Use miosa sandbox run-agent <sandbox-id> --runner claude-code --connector <connector> --preflight --json -- <task> before agent work that depends on a provider key.",
         "Use sandbox deploy for preview readiness.",
-        "Use sandbox publish --docker-deploy to promote a sandbox-built app through the recommended workspace Docker Deploy runtime.",
+        "Use sandbox publish --docker-deploy to promote a sandbox-built app through the recommended workspace App Engine runtime.",
         "Use sandbox publish without --docker-deploy only when you explicitly need the standard MIOSA Deploy runtime.",
         "Use sandbox env and sandbox db attach for durable encrypted runtime env; do not hand-write .env files.",
         "Use miosa sandbox ports <sandbox-id> --json before previewing to detect port conflicts.",
@@ -190,16 +190,16 @@ const manifest: CapabilitiesManifest = {
       id: "device",
       label: "Agent Device",
       purpose:
-        "Product-level routing model for choosing between sandbox workers, Computers, local devices, and Docker Deploy hosts.",
+        "Product-level routing model for choosing between sandbox workers, Computers, local devices, and App Engine hosts.",
       status: "stable",
       list: "miosa devices list --json",
       show: "miosa devices catalog --json",
       notes: [
         "Use miosa devices catalog --json before launching a new agent workflow.",
         "Sandbox workers are the default for code/build/test/preview work because the agent writes and runs code inside the remote filesystem.",
-        "Computers are for browser, GUI, dashboard login, CUA, and shared desktop state.",
+        "Computers are for browser, GUI, dashboard login, desktop control, and shared desktop state.",
         "Local devices are for local discovery only; move execution into a sandbox or Computer when customer code needs isolation.",
-        "Docker Deploy hosts are deployment appliances for versioned app containers, not interactive coding workspaces.",
+        "App Engine hosts are deployment appliances for versioned app containers, not interactive coding workspaces.",
       ],
     },
     {
@@ -247,14 +247,14 @@ const manifest: CapabilitiesManifest = {
       show: "miosa apps show <app-id-or-slug> --json",
       delete: "miosa apps destroy <app-id-or-slug> --force --json",
       notes: [
-        "Prefer Docker Deploy for production apps: miosa deploy --docker-deploy --json.",
+        "Prefer App Engine for production apps: miosa deploy --docker-deploy --json.",
         "Default URL should work independently of custom-domain DNS state.",
         "Use miosa deploy metrics <app-id> --json to inspect runtime instances, health timestamps, restarts, and usage.",
       ],
     },
     {
       id: "docker_deploy",
-      label: "Docker Deploy",
+      label: "App Engine",
       purpose:
         "Recommended production runtime for sandbox-built apps; runs app containers on a workspace appliance host.",
       status: "beta",
@@ -383,7 +383,7 @@ const manifest: CapabilitiesManifest = {
         {
           command: "miosa devices catalog --json",
           purpose:
-            "Read the device taxonomy and routing guidance for sandbox workers, Computers, local devices, and Docker Deploy hosts.",
+            "Read the device taxonomy and routing guidance for sandbox workers, Computers, local devices, and App Engine hosts.",
           json: true,
         },
         {
@@ -402,19 +402,19 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox prompt <sandbox-id> --provider codex --cwd /workspace --json -- \"Build and test the requested change\"",
+            "miosa sandbox run-agent <sandbox-id> --runner codex --cwd /workspace --json -- \"Build and test the requested change\"",
           purpose:
-            "Run the coding agent inside the sandbox filesystem instead of building locally and uploading artifacts.",
+            "Run the coding agent inside the sandbox filesystem instead of building locally and downloading files manually.",
           json: true,
         },
       ],
       success_signals: [
         "devices catalog includes sandbox_worker and computer",
-        "sandbox prompt creates a durable /agent-runs record",
-        "agent output references files under /workspace",
+        "sandbox run-agent creates a durable /runs record",
+        "run output references files under /workspace",
       ],
       failure_signals: [
-        "Unsupported provider without --provider custom --runtime-command",
+        "Unsupported runner without --runner custom --runtime-command",
         "sandbox not running",
         "connector preflight fails before agent launch",
       ],
@@ -470,7 +470,7 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox prompt <sandbox-id> --provider claude --connector refero/design-research --preflight --cwd /workspace --json -- \"Research the UX references, then build the requested page and run the tests\"",
+            "miosa sandbox run-agent <sandbox-id> --runner claude-code --connector refero/design-research --preflight --cwd /workspace --json -- \"Research the UX references, then build the requested page and run the tests\"",
           purpose:
             "Preflight the managed connector, then run the agent CLI inside the sandbox workspace.",
           json: true,
@@ -480,7 +480,7 @@ const manifest: CapabilitiesManifest = {
         "connectors list includes refero/design-research with managed true when platform configured",
         "sandbox connector binding returns miosa-tok-* placeholder_token",
         "connector preflight returns bound true",
-        "sandbox prompt returns an agent run with exit_code 0 or structured agent output",
+        "sandbox run-agent returns a run with command output or structured messages",
       ],
       failure_signals: [
         "CONNECTOR_NOT_FOUND",
@@ -693,7 +693,7 @@ const manifest: CapabilitiesManifest = {
           command:
             "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --docker-deploy --wait --timeout 900 --json",
           purpose:
-            "Recommended: promote the working Next.js sandbox into the workspace Docker Deploy runtime.",
+            "Recommended: promote the working Next.js sandbox into the workspace App Engine runtime.",
           json: true,
           wait: true,
         },
@@ -701,14 +701,14 @@ const manifest: CapabilitiesManifest = {
           command:
             "miosa docker-deploy doctor <deployment-id> --probe-path / --json",
           purpose:
-            "Verify Docker Deploy product metadata, appliance host health, appliance route, and the public production URL.",
+            "Verify App Engine product metadata, appliance host health, appliance route, and the public production URL.",
           json: true,
         },
         {
           command:
             "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
           purpose:
-            "Use standard MIOSA Deploy only when Docker Deploy is not desired for this app.",
+            "Use standard MIOSA Deploy only when App Engine is not desired for this app.",
           json: true,
           wait: true,
         },
@@ -823,14 +823,14 @@ const manifest: CapabilitiesManifest = {
           command:
             "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --docker-deploy --wait --json",
           purpose:
-            "Recommended: create or update a durable app release from sandbox files on Docker Deploy.",
+            "Recommended: create or update a durable app release from sandbox files on App Engine.",
           json: true,
           wait: true,
         },
         {
           command: "miosa docker-deploy doctor <deployment-id> --json",
           purpose:
-            "Verify the deployment stayed on the Docker Deploy appliance path and the public URL returns the app.",
+            "Verify the deployment stayed on the App Engine appliance path and the public URL returns the app.",
           json: true,
         },
         {

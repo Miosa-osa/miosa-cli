@@ -14,7 +14,7 @@ import { parseSse } from "../client.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 
-interface AgentRunGroup {
+interface RunGroup {
   id: string;
   name?: string;
   status?: string;
@@ -24,19 +24,19 @@ interface AgentRunGroup {
   created_at?: string;
 }
 
-interface AgentRunGroupEvent {
+interface RunGroupActivity {
   id?: string;
-  agent_run_group_id?: string;
-  agent_run_id?: string;
+  run_group_id?: string;
+  run_id?: string;
   sequence?: number;
   type?: string;
   message?: string;
   created_at?: string;
 }
 
-interface AgentArtifact {
+interface RunFile {
   id: string;
-  agent_run_id?: string;
+  run_id?: string;
   path?: string;
   kind?: string;
   mime_type?: string;
@@ -44,34 +44,34 @@ interface AgentArtifact {
   created_at?: string;
 }
 
-function rows(raw: unknown): AgentRunGroup[] {
-  if (Array.isArray(raw)) return raw as AgentRunGroup[];
+function rows(raw: unknown): RunGroup[] {
+  if (Array.isArray(raw)) return raw as RunGroup[];
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
     for (const key of ["data", "groups", "items"]) {
-      if (Array.isArray(value[key])) return value[key] as AgentRunGroup[];
+      if (Array.isArray(value[key])) return value[key] as RunGroup[];
     }
   }
   return [];
 }
 
-function eventRows(raw: unknown): AgentRunGroupEvent[] {
-  if (Array.isArray(raw)) return raw as AgentRunGroupEvent[];
+function activityRows(raw: unknown): RunGroupActivity[] {
+  if (Array.isArray(raw)) return raw as RunGroupActivity[];
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
-    for (const key of ["data", "events", "items"]) {
-      if (Array.isArray(value[key])) return value[key] as AgentRunGroupEvent[];
+    for (const key of ["data", "activity", "items"]) {
+      if (Array.isArray(value[key])) return value[key] as RunGroupActivity[];
     }
   }
   return [];
 }
 
-function artifactRows(raw: unknown): AgentArtifact[] {
-  if (Array.isArray(raw)) return raw as AgentArtifact[];
+function fileRows(raw: unknown): RunFile[] {
+  if (Array.isArray(raw)) return raw as RunFile[];
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
-    for (const key of ["data", "artifacts", "items"]) {
-      if (Array.isArray(value[key])) return value[key] as AgentArtifact[];
+    for (const key of ["data", "files", "items"]) {
+      if (Array.isArray(value[key])) return value[key] as RunFile[];
     }
   }
   return [];
@@ -97,23 +97,23 @@ function colorStatus(status: string | undefined): string {
   }
 }
 
-function groupEventData(event: unknown): AgentRunGroupEvent {
+function groupActivityData(event: unknown): RunGroupActivity {
   if (!event || typeof event !== "object") return {};
   const value = event as Record<string, unknown>;
 
   if (value["type"] === "unknown" && typeof value["raw"] === "string") {
     try {
-      return JSON.parse(value["raw"]) as AgentRunGroupEvent;
+      return JSON.parse(value["raw"]) as RunGroupActivity;
     } catch {
       return { type: "unknown", message: value["raw"] };
     }
   }
 
   if (value["data"] && typeof value["data"] === "object") {
-    return value["data"] as AgentRunGroupEvent;
+    return value["data"] as RunGroupActivity;
   }
 
-  return value as AgentRunGroupEvent;
+  return value as RunGroupActivity;
 }
 
 function isTerminalStatus(status: unknown): boolean {
@@ -132,64 +132,64 @@ async function waitForGroup(
   id: string,
   timeoutSec: number,
   includeRuns: boolean,
-): Promise<AgentRunGroup> {
+): Promise<RunGroup> {
   const deadline = Date.now() + timeoutSec * 1000;
   const suffix = includeRuns ? "?include=runs" : "";
 
   while (true) {
     const data = unwrap(
       await client().apiGet<unknown>(
-        `/api/v1/agent-run-groups/${enc(id)}${suffix}`,
+        `/api/v1/run-groups/${enc(id)}${suffix}`,
       ),
-    ) as AgentRunGroup;
+    ) as RunGroup;
     if (isTerminalStatus(data.status)) return data;
     if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for agent run group ${id}`);
+      throw new Error(`Timed out waiting for run group ${id}`);
     }
     await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
   }
 }
 
-async function groupArtifacts(id: string): Promise<AgentArtifact[]> {
+async function groupFiles(id: string): Promise<RunFile[]> {
   const group = unwrap(
     await client().apiGet<unknown>(
-      `/api/v1/agent-run-groups/${enc(id)}?include=runs`,
+      `/api/v1/run-groups/${enc(id)}?include=runs`,
     ),
   ) as Record<string, unknown>;
   const runs = Array.isArray(group["runs"]) ? group["runs"] : [];
-  const artifacts: AgentArtifact[] = [];
+  const files: RunFile[] = [];
 
   for (const run of runs) {
     if (!run || typeof run !== "object") continue;
     const runId = str((run as Record<string, unknown>)["id"]);
     if (!runId) continue;
 
-    const rows = artifactRows(
+    const rows = fileRows(
       unwrap(
         await client().apiGet<unknown>(
-          `/api/v1/agent-runs/${enc(runId)}/artifacts`,
+          `/api/v1/runs/${enc(runId)}/files`,
         ),
       ),
     );
 
-    artifacts.push(
-      ...rows.map((artifact) => ({
-        ...artifact,
-        agent_run_id: artifact.agent_run_id ?? runId,
+    files.push(
+      ...rows.map((file) => ({
+        ...file,
+        run_id: file.run_id ?? runId,
       })),
     );
   }
 
-  return artifacts;
+  return files;
 }
 
-function localArtifactPath(downloadDir: string, artifact: AgentArtifact): string {
-  const runId = str(artifact.agent_run_id || "run");
-  const rawPath = str(artifact.path || artifact.id || "artifact");
+function localFilePath(downloadDir: string, file: RunFile): string {
+  const runId = str(file.run_id || "run");
+  const rawPath = str(file.path || file.id || "file");
   const normalized = path.normalize(rawPath.replace(/^\/+/, ""));
   const relativePath =
     normalized.startsWith("..") || path.isAbsolute(normalized)
-      ? str(artifact.id || "artifact")
+      ? str(file.id || "file")
       : normalized;
 
   return path.join(downloadDir, runId, relativePath);
@@ -216,12 +216,12 @@ function manifestFromOptions(opts: { manifest?: string; run?: string[] }): unkno
 
 export function register(program: Command): void {
   const command = program
-    .command("agent-run-groups")
-    .description("Create and operate grouped multi-agent runs");
+    .command("run-groups")
+    .description("Create and operate run groups");
 
   command
     .command("create")
-    .description("Create an Agent Run Group")
+    .description("Create a run group")
     .requiredOption("--name <name>", "Group name")
     .option("--description <text>", "Group description")
     .option("--workspace <id>", "Workspace ID")
@@ -254,19 +254,19 @@ export function register(program: Command): void {
           };
 
           Object.keys(body).forEach((key) => body[key] === undefined && delete body[key]);
-          const data = unwrap(await client().apiPost<unknown>("/api/v1/agent-run-groups", body));
+          const data = unwrap(await client().apiPost<unknown>("/api/v1/run-groups", body));
 
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(data, null, 2));
             return;
           }
-          console.log(chalk.green(`Created agent run group ${str((data as AgentRunGroup).id)}`));
+          console.log(chalk.green(`Created run group ${str((data as RunGroup).id)}`));
         }),
     );
 
   command
     .command("list")
-    .description("List Agent Run Groups")
+    .description("List run groups")
     .option("--workspace <id>", "Filter by workspace ID")
     .option("--project <id>", "Filter by project ID")
     .option("--status <status>", "Filter by status")
@@ -290,7 +290,7 @@ export function register(program: Command): void {
 
           const suffix = query.toString() ? `?${query.toString()}` : "";
           const data = rows(
-            unwrap(await client().apiGet<unknown>(`/api/v1/agent-run-groups${suffix}`)),
+            unwrap(await client().apiGet<unknown>(`/api/v1/run-groups${suffix}`)),
           );
 
           if (isJsonMode(opts)) {
@@ -298,7 +298,7 @@ export function register(program: Command): void {
             return;
           }
           if (data.length === 0) {
-            console.log(chalk.dim("No agent run groups found."));
+            console.log(chalk.dim("No run groups found."));
             return;
           }
           renderTable(data, [
@@ -313,14 +313,14 @@ export function register(program: Command): void {
 
   command
     .command("show <id>")
-    .description("Show one Agent Run Group")
+    .description("Show one run group")
     .option("--runs", "Include child runs")
     .option("--json", "Output as JSON")
     .action((id: string, opts: { runs?: boolean } & JsonOptions) =>
       runAction(async () => {
         const suffix = opts.runs ? "?include=runs" : "";
         const data = unwrap(
-          await client().apiGet<unknown>(`/api/v1/agent-run-groups/${enc(id)}${suffix}`),
+          await client().apiGet<unknown>(`/api/v1/run-groups/${enc(id)}${suffix}`),
         );
         console.log(JSON.stringify(data, null, 2));
       }),
@@ -328,7 +328,7 @@ export function register(program: Command): void {
 
   command
     .command("dispatch <id>")
-    .description("Dispatch a manifest of Agent Runs into a group")
+    .description("Dispatch a manifest of runs into a group")
     .option("--manifest <file>", "JSON array or { runs: [...] } file")
     .option("--run <json>", "One run JSON object; repeat for multiple runs", collect, [])
     .option("--async", "Queue entries and return immediately")
@@ -337,7 +337,7 @@ export function register(program: Command): void {
       runAction(async () => {
         const runs = manifestFromOptions(opts);
         const data = unwrap(
-          await client().apiPost<unknown>(`/api/v1/agent-run-groups/${enc(id)}/dispatch`, {
+          await client().apiPost<unknown>(`/api/v1/run-groups/${enc(id)}/dispatch`, {
             runs,
             async: opts.async || undefined,
           }),
@@ -348,45 +348,45 @@ export function register(program: Command): void {
 
   command
     .command("cancel <id>")
-    .description("Cancel an Agent Run Group and running children")
+    .description("Cancel a run group and running children")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(async () => {
         const data = unwrap(
-          await client().apiPost<unknown>(`/api/v1/agent-run-groups/${enc(id)}/cancel`, {}),
+          await client().apiPost<unknown>(`/api/v1/run-groups/${enc(id)}/cancel`, {}),
         );
         if (isJsonMode(opts)) {
           console.log(JSON.stringify(data, null, 2));
           return;
         }
-        console.log(chalk.green(`Canceled agent run group ${id}`));
+        console.log(chalk.green(`Canceled run group ${id}`));
       }),
     );
 
   command
-    .command("artifacts <id>")
-    .description("List or download artifacts from every child Agent Run in a group")
-    .option("--download-dir <dir>", "Download all artifacts into this directory")
+    .command("files <id>")
+    .description("List or download files from every child run in a group")
+    .option("--download-dir <dir>", "Download all files into this directory")
     .option("--json", "Output as JSON")
     .action((id: string, opts: { downloadDir?: string } & JsonOptions) =>
       runAction(async () => {
-        const artifacts = await groupArtifacts(id);
+        const files = await groupFiles(id);
 
         if (opts.downloadDir) {
-          const downloaded: Array<AgentArtifact & { output: string; bytes: number }> = [];
-          for (const artifact of artifacts) {
-            if (!artifact.id || !artifact.agent_run_id) continue;
-            const output = localArtifactPath(opts.downloadDir, artifact);
+          const downloaded: Array<RunFile & { output: string; bytes: number }> = [];
+          for (const file of files) {
+            if (!file.id || !file.run_id) continue;
+            const output = localFilePath(opts.downloadDir, file);
             fs.mkdirSync(path.dirname(output), { recursive: true });
             const bytes = await client().apiGetBinary(
               apiPath(
-                `/agent-runs/${enc(artifact.agent_run_id)}/artifacts/${enc(
-                  artifact.id,
+                `/runs/${enc(file.run_id)}/files/${enc(
+                  file.id,
                 )}/download`,
               ),
             );
             fs.writeFileSync(output, bytes);
-            downloaded.push({ ...artifact, output, bytes: bytes.length });
+            downloaded.push({ ...file, output, bytes: bytes.length });
           }
 
           if (isJsonMode(opts)) {
@@ -395,22 +395,22 @@ export function register(program: Command): void {
           }
           console.log(
             chalk.green(
-              `Downloaded ${downloaded.length} artifact${downloaded.length === 1 ? "" : "s"} to ${opts.downloadDir}`,
+              `Downloaded ${downloaded.length} file${downloaded.length === 1 ? "" : "s"} to ${opts.downloadDir}`,
             ),
           );
           return;
         }
 
         if (isJsonMode(opts)) {
-          console.log(JSON.stringify(artifacts, null, 2));
+          console.log(JSON.stringify(files, null, 2));
           return;
         }
-        if (artifacts.length === 0) {
-          console.log(chalk.dim("No agent run group artifacts found."));
+        if (files.length === 0) {
+          console.log(chalk.dim("No run group files found."));
           return;
         }
-        renderTable(artifacts, [
-          { header: "RUN", key: (row) => str(row.agent_run_id ?? "-"), width: 18 },
+        renderTable(files, [
+          { header: "RUN", key: (row) => str(row.run_id ?? "-"), width: 18 },
           { header: "ID", key: "id", width: 18 },
           { header: "KIND", key: "kind", width: 10 },
           { header: "MIME", key: "mime_type", width: 24 },
@@ -421,14 +421,14 @@ export function register(program: Command): void {
     );
 
   command
-    .command("events <id>")
-    .description("Show or stream Agent Run Group events")
-    .option("--stream", "Keep the connection open and stream new events")
-    .option("--limit <n>", "Stop after N streamed events")
+    .command("activity <id>")
+    .description("Show or stream run group activity")
+    .option("--stream", "Keep the connection open and stream new activity")
+    .option("--limit <n>", "Stop after N streamed activity entries")
     .option("--json", "Output as JSON")
     .action((id: string, opts: { stream?: boolean; limit?: string } & JsonOptions) =>
       runAction(async () => {
-        const path = `/api/v1/agent-run-groups/${enc(id)}/events`;
+        const path = `/api/v1/run-groups/${enc(id)}/activity`;
 
         if (opts.stream) {
           const limit = opts.limit ? Number(opts.limit) : undefined;
@@ -437,7 +437,7 @@ export function register(program: Command): void {
 
           for await (const event of parseSse(res.body)) {
             seen += 1;
-            const data = groupEventData(event);
+            const data = groupActivityData(event);
 
             if (isJsonMode(opts)) {
               console.log(JSON.stringify(data, null, 2));
@@ -446,7 +446,7 @@ export function register(program: Command): void {
                 [
                   chalk.dim(str(data.sequence ?? seen)),
                   colorStatus(data.type),
-                  str(data.agent_run_id),
+                  str(data.run_id),
                   str(data.message),
                 ]
                   .filter(Boolean)
@@ -459,19 +459,19 @@ export function register(program: Command): void {
           return;
         }
 
-        const data = eventRows(unwrap(await client().apiGet<unknown>(path)));
+        const data = activityRows(unwrap(await client().apiGet<unknown>(path)));
         if (isJsonMode(opts)) {
           console.log(JSON.stringify(data, null, 2));
           return;
         }
         if (data.length === 0) {
-          console.log(chalk.dim("No agent run group events found."));
+          console.log(chalk.dim("No run group activity found."));
           return;
         }
         renderTable(data, [
           { header: "SEQ", key: (row) => str(row.sequence ?? "-"), width: 8 },
           { header: "TYPE", key: (row) => colorStatus(row.type), width: 18 },
-          { header: "RUN", key: (row) => str(row.agent_run_id ?? "-"), width: 18 },
+          { header: "RUN", key: (row) => str(row.run_id ?? "-"), width: 18 },
           { header: "MESSAGE", key: (row) => str(row.message ?? ""), width: 42 },
         ]);
       }),
@@ -479,7 +479,7 @@ export function register(program: Command): void {
 
   command
     .command("wait <id>")
-    .description("Wait for an Agent Run Group to reach a terminal state")
+    .description("Wait for a run group to reach a terminal state")
     .option("--runs", "Include child runs in the final response")
     .option("--timeout <seconds>", "Maximum seconds to wait", "900")
     .option("--json", "Output as JSON")
@@ -496,7 +496,7 @@ export function register(program: Command): void {
             return;
           }
           console.log(
-            `${chalk.green("Agent run group finished")} ${id} ${colorStatus(data.status)}`,
+            `${chalk.green("Run group finished")} ${id} ${colorStatus(data.status)}`,
           );
         }),
     );
