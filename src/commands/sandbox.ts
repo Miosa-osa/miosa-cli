@@ -33,6 +33,7 @@ import {
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
+import { assertDeletableRemoteDir } from "./sandbox-delete-guard.js";
 import { handleError, isJsonMode } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -2011,17 +2012,25 @@ Note:
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         id: string,
         localDir: string,
         remoteDir: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(id, localDir, remoteDir, {
             delete: !!opts.delete,
+            force: !!(opts.force || opts.yes),
           });
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
@@ -2044,12 +2053,20 @@ Note:
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         localDir: string,
         remoteDir: string,
-        opts: { sandbox: string; delete?: boolean; json?: boolean },
+        opts: {
+          sandbox: string;
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(
@@ -2058,6 +2075,7 @@ Note:
             remoteDir,
             {
               delete: !!opts.delete,
+              force: !!(opts.force || opts.yes),
             },
           );
           if (isJsonMode(opts)) {
@@ -2083,12 +2101,19 @@ Note:
       "--delete",
       "Delete the remote directory contents before extracting directories",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         source: string,
         target: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           if (isSandboxTarget(source) && !isSandboxTarget(target)) {
@@ -2121,7 +2146,10 @@ Note:
               parsed.sandboxId,
               local,
               parsed.remotePath,
-              { delete: !!opts.delete },
+              {
+                delete: !!opts.delete,
+                force: !!(opts.force || opts.yes),
+              },
             );
             if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
@@ -2275,7 +2303,9 @@ Note:
             }
             if (opts.filename) query.set("filename", opts.filename);
             const bytes = await client().apiGetBinary(
-              apiPath(`/sandboxes/${enc(id)}/exports/download?${query.toString()}`),
+              apiPath(
+                `/sandboxes/${enc(id)}/exports/download?${query.toString()}`,
+              ),
             );
             fs.writeFileSync(opts.output, bytes);
           }
@@ -2298,7 +2328,10 @@ Note:
             kvPanel([
               { label: "Export", value: chalk.bold(str(exportData["id"])) },
               { label: "Sandbox", value: id },
-              { label: "Status", value: statusColor(str(exportData["status"])) },
+              {
+                label: "Status",
+                value: statusColor(str(exportData["status"])),
+              },
               {
                 label: "Archive",
                 value: str(exportData["archive_download_url"]),
@@ -4581,7 +4614,7 @@ async function uploadDirToSandbox(
   sandboxId: string,
   localDir: string,
   remoteDir: string,
-  opts: { delete: boolean },
+  opts: { delete: boolean; force?: boolean },
 ): Promise<{
   sandbox_id: string;
   local_dir: string;
@@ -4592,14 +4625,18 @@ async function uploadDirToSandbox(
   if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
     throw new UserError(`Local directory not found: ${sourceDir}`);
   }
+  const deleteTarget = opts.delete
+    ? await confirmRemoteDeleteDir(sandboxId, remoteDir, !!opts.force)
+    : null;
   const c = client();
   const archivePath = createDeployArchive(sourceDir);
   const remoteArchive = `/tmp/miosa-upload-${Date.now()}.tgz`;
   try {
     await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
-    const clean = opts.delete
-      ? `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`
-      : `mkdir -p ${shellQuote(remoteDir)}`;
+    const clean =
+      deleteTarget != null
+        ? `rm -rf ${shellQuote(deleteTarget)} && mkdir -p ${shellQuote(deleteTarget)}`
+        : `mkdir -p ${shellQuote(remoteDir)}`;
     await execSandbox(
       c,
       sandboxId,
@@ -4615,6 +4652,42 @@ async function uploadDirToSandbox(
     remote_dir: remoteDir,
     files_label: path.basename(sourceDir) || sourceDir,
   };
+}
+
+// --delete runs `rm -rf` inside the sandbox. Refuse protected roots, then
+// require an explicit confirmation (interactive prompt, or --force/--yes)
+// before anything is wiped. Returns the normalized remote dir to delete.
+async function confirmRemoteDeleteDir(
+  sandboxId: string,
+  remoteDir: string,
+  force: boolean,
+): Promise<string> {
+  const target = assertDeletableRemoteDir(remoteDir);
+  if (force) return target;
+  if (!process.stdin.isTTY) {
+    throw new UserError(
+      `--delete will permanently wipe ${target} on sandbox ${sandboxId}.`,
+      "Non-interactive session: re-run with --force (or --yes) to confirm the wipe.",
+    );
+  }
+  console.log(
+    chalk.yellow(
+      `--delete will permanently wipe sandbox ${sandboxId}:${target} before uploading.`,
+    ),
+  );
+  const { default: inquirer } = await import("inquirer");
+  const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
+    {
+      type: "confirm",
+      name: "confirmed",
+      message: `Wipe ${sandboxId}:${target}?`,
+      default: false,
+    },
+  ]);
+  if (!confirmed) {
+    throw new UserError("Cancelled - nothing was deleted or uploaded.");
+  }
+  return target;
 }
 
 async function execSandbox(
