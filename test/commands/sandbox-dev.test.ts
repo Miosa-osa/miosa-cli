@@ -246,6 +246,52 @@ services:
       reused: true,
     });
   });
+
+  it("does not create a replacement for a missing explicitly selected sandbox", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-dev-explicit-"));
+    fs.writeFileSync(
+      path.join(dir, "miosa.app.yml"),
+      `
+schema_version: 1
+name: clinic
+dependencies:
+  install: false
+services:
+  web:
+    command: npm run dev
+    port: 3000
+    health:
+      path: /health
+`,
+    );
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/sandboxes/missing", method: "GET" })
+      .reply(404, JSON.stringify({ error: { message: "not found" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "dev",
+      "up",
+      "--dir",
+      dir,
+      "--sandbox",
+      "missing",
+    ]);
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("Explicitly selected sandbox missing was not found"),
+    );
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
 });
 
 describe("miosa sandbox doctor --full", () => {

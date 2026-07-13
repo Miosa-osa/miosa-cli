@@ -302,6 +302,7 @@ async function devUp(
   const manifest = loaded.manifest;
   const api = new MiosaClient(loadConfig());
   const saved = readDevState(projectDir);
+  const explicitlySelected = Boolean(sandboxOverride);
   let sandboxId =
     sandboxOverride ??
     (saved && saved.project === manifest.name ? saved.sandbox_id : null);
@@ -312,11 +313,17 @@ async function devUp(
     try {
       const row = unwrapRecord(await api.apiGet(`/api/v1/sandboxes/${encodeURIComponent(sandboxId)}`));
       if (isTerminalSandbox(row)) {
+        if (explicitlySelected) {
+          throw new UserError(`Explicitly selected sandbox ${sandboxId} is in a terminal state.`);
+        }
         sandboxId = null;
         reused = false;
       }
     } catch (error) {
       if (!isNotFound(error)) throw error;
+      if (explicitlySelected) {
+        throw new UserError(`Explicitly selected sandbox ${sandboxId} was not found.`);
+      }
       sandboxId = null;
       reused = false;
     }
@@ -463,13 +470,22 @@ async function installDependencies(
   manifest: MiosaAppManifest,
 ): Promise<void> {
   const fingerprint = createHash("sha256");
-  for (const filename of ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "requirements.lock", "package.json"]) {
+  const command = manifest.dependencies?.install;
+  const lockfiles = new Set([
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "requirements.lock",
+    "package.json",
+    ...pipLockfiles(command),
+  ]);
+  for (const filename of lockfiles) {
     const file = path.join(projectDir, filename);
     if (fs.existsSync(file)) fingerprint.update(filename).update(fs.readFileSync(file));
   }
   const hash = fingerprint.digest("hex").slice(0, 20);
   const marker = `.miosa-runtime/install-${hash}.done`;
-  const command = manifest.dependencies?.install;
   if (!command) return;
   await exec(
     api,
@@ -478,6 +494,21 @@ async function installDependencies(
     manifest.sandbox?.workdir ?? "/workspace",
     900,
   );
+}
+
+function pipLockfiles(command: string | false | undefined): string[] {
+  if (typeof command !== "string") return [];
+
+  const filenames: string[] = [];
+  for (const match of command.matchAll(
+    /(?:^|\s)(?:-r\s+|--requirement(?:=|\s+))([^\s;&|`<>]+\.lock)(?=\s|$)/g,
+  )) {
+    const filename = match[1];
+    if (!filename) continue;
+    if (path.isAbsolute(filename) || filename.split(/[\\/]/).includes("..")) continue;
+    filenames.push(filename);
+  }
+  return filenames;
 }
 
 async function waitForRunning(api: MiosaClient, sandboxId: string, timeout: number): Promise<void> {

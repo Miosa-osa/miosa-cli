@@ -360,12 +360,14 @@ function normalizeServices(
 }
 
 function isDeterministicInstall(command: string): boolean {
+  if (/[;&|`<>\r\n]/.test(command) || command.includes("$(")) return false;
+
   return (
-    /^npm\s+ci(?:\s|$)/.test(command) ||
-    /^pnpm\s+install\b.*--frozen-lockfile(?:\s|$)/.test(command) ||
-    /^yarn\s+install\b.*(?:--immutable|--frozen-lockfile)(?:\s|$)/.test(command) ||
-    /^bun\s+install\b.*--frozen-lockfile(?:\s|$)/.test(command) ||
-    /^pip(?:3)?\s+install\b.*(?:--require-hashes|-r\s+[^ ]+\.lock)(?:\s|$)/.test(
+    /^npm\s+ci(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^pnpm\s+install\b(?=[^\r\n]*--frozen-lockfile)(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^yarn\s+install\b(?=[^\r\n]*(?:--immutable|--frozen-lockfile))(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^bun\s+install\b(?=[^\r\n]*--frozen-lockfile)(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^pip(?:3)?\s+install\b(?=[^\r\n]*(?:--require-hashes|-r\s+[^\s]+\.lock|--requirement(?:=|\s+)[^\s]+\.lock))(?:\s+[^\s]+)*\s*$/.test(
       command,
     )
   );

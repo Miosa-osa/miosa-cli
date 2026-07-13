@@ -94,6 +94,22 @@ services:
     );
   });
 
+  it.each([
+    "npm ci; npm install",
+    "pnpm install --frozen-lockfile && npm install",
+    "yarn install --immutable | tee install.log",
+    "pip install --require-hashes -r requirements.lock\nnpm install",
+  ])("rejects chained deterministic-looking install command %s", (install) => {
+    const manifest = parseAppManifest(
+      "miosa.app.yml",
+      `name: unsafe\ndependencies:\n  install: ${JSON.stringify(install)}\n`,
+    );
+
+    expect(validateProjectManifest(manifest)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "INSTALL_NOT_DETERMINISTIC" })]),
+    );
+  });
+
   it("parses nested resources and domain from YAML", () => {
     const manifest = parseAppManifest(
       "miosa.app.yml",
