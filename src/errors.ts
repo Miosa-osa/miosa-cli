@@ -116,9 +116,14 @@ export function mapHttpError(
     case 404:
       return new UserError(`Not found: ${msg}`);
     case 422:
-      return new UserError(
-        `Validation error: ${msg}`,
-        body.error?.details ? JSON.stringify(body.error.details) : undefined,
+      return new ApiResponseError(
+        "VALIDATION_ERROR",
+        msg,
+        EXIT_USER_ERROR,
+        false,
+        "Correct the reported fields and retry the same command.",
+        body.error?.details ?? rawBody,
+        requestId,
       );
     case 429:
       return new UserError("Rate limited. Wait a moment and retry.");
