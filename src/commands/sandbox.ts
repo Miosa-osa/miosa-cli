@@ -52,6 +52,10 @@ import {
   UserError,
 } from "../errors.js";
 import { EXIT_USER_ERROR } from "../types.js";
+import {
+  registerSandboxDevCommands,
+  runFullSandboxDoctor,
+} from "./sandbox-dev.js";
 
 const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
 const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
@@ -69,6 +73,8 @@ export function register(program: Command): void {
     .description(
       "Manage Sandboxes — lightweight code-only Computers (Firecracker microVMs without a desktop)",
     );
+
+  registerSandboxDevCommands(sandbox);
 
   // list
   sandbox
@@ -1772,20 +1778,44 @@ export function register(program: Command): void {
     );
 
   sandbox
-    .command("doctor <sandbox-id>")
+    .command("doctor [sandbox-id]")
     .description(
       "Diagnose sandbox app readiness across sandbox state, internal HTTP, public route, and TLS/edge reachability",
     )
-    .requiredOption(
+    .option(
       "--port <port>",
       "Port inside the sandbox to check",
       parseIntegerOption,
     )
     .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--full", "Inspect the complete canonical developer contract")
+    .option("--dir <path>", "Project directory for --full", ".")
     .option("--json", "Output as JSON")
     .action(
-      (id: string, opts: { port: number; probePath: string; json?: boolean }) =>
+      (id: string | undefined, opts: { port?: number; probePath: string; full?: boolean; dir: string; json?: boolean }) =>
         runAction(async () => {
+          if (opts.full) {
+            const report = await runFullSandboxDoctor(opts.dir, id);
+            if (!report.ok) process.exitCode = 1;
+            if (isJsonMode(opts)) {
+              console.log(JSON.stringify(report, null, 2));
+              return;
+            }
+            console.log();
+            console.log(chalk.bold("Sandbox Doctor Full"));
+            console.log();
+            for (const check of report.checks) {
+              console.log(`  ${check.ok ? chalk.green("ok") : chalk.red("fail")} ${check.id}: ${check.message}`);
+            }
+            console.log();
+            return;
+          }
+          if (!id || opts.port == null) {
+            throw new UserError(
+              "Sandbox ID and --port are required unless --full is used.",
+              "Use miosa sandbox doctor <sandbox-id> --port <port>, or miosa sandbox doctor --full.",
+            );
+          }
           const report = await doctorSandbox(id, opts.port, opts.probePath);
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(report, null, 2));

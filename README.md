@@ -215,6 +215,91 @@ miosa sandbox create --snapshot <snapshot-id> --timeout 1h --wait --json
 miosa sandbox fork <sandbox-id> --name feature-branch --json
 ```
 
+### Canonical sandbox development contract
+
+`miosa sandbox dev up` runs a project from the canonical `miosa.app.yml` manifest.
+The command validates the manifest and CLI authentication, creates or reuses a persistent sandbox, overlay-syncs source files, installs locked dependencies once per lockfile fingerprint, starts named services, waits for internal and public health, and prints stable preview URLs.
+
+```yaml
+schema_version: 1
+name: clinic-intake
+
+sandbox:
+  name: clinic-intake-dev
+  template: node
+  workdir: /workspace
+
+sync:
+  exclude:
+    - coverage
+
+dependencies:
+  install: npm ci
+
+services:
+  web:
+    command: npm run dev -- --host 0.0.0.0
+    port: 3000
+    health:
+      path: /health
+      timeout: 120
+
+requirements:
+  config:
+    - NODE_ENV
+  secrets:
+    - SESSION_SECRET
+  database: true
+```
+
+Run the project with human-readable or stable JSON output:
+
+```bash
+miosa sandbox dev up
+miosa sandbox dev up --dir ./app --json
+miosa sandbox dev up --dir ./app --sandbox <sandbox-id> --json
+```
+
+The command writes `.miosa/sandbox.json` immediately after sandbox creation so a partial run can resume without creating another sandbox.
+A saved sandbox is reused only when its project name matches the manifest, unless `--sandbox` explicitly selects one.
+Sync is an overlay and never deletes remote files.
+It always excludes `.git`, `.miosa`, `.env`, `.env.*`, `node_modules`, `.venv`, `coverage`, and `dist`, plus entries in `sync.exclude`.
+This preserves runtime-owned dependency trees, virtual environments, install markers, service logs, and other files that exist only in the sandbox.
+
+Dependency commands must enforce a lockfile.
+Supported built-in validation recognizes `npm ci`, frozen pnpm and Bun installs, immutable or frozen Yarn installs, and hash-locked pip installs.
+An install marker under `/workspace/.miosa-runtime` makes retries idempotent for the same lockfile fingerprint.
+
+Service commands are sent as JSON data to the sandbox service endpoint.
+The CLI does not interpolate secret values into shell commands.
+Declare secret names under `requirements.secrets`; set values through the encrypted sandbox environment commands.
+
+Inspect the complete contract with:
+
+```bash
+miosa sandbox doctor --full --json
+miosa sandbox doctor <sandbox-id> --full --dir ./app --json
+```
+
+When no ID is passed, full doctor reads `.miosa/sandbox.json`.
+It checks sandbox API state, the exec channel, project filesystem access, named service state, internal listeners, public preview routing, managed database attachment state, required config and secret names, and snapshot capability.
+It never returns config or secret values.
+JSON output includes `ok`, `sandbox_id`, `manifest`, `checks`, and `failure_codes`.
+Each failed check has a stable code and an actionable `remediation` command.
+
+The development contract depends on these existing backend routes:
+
+- `POST /api/v1/sandboxes` and `GET /api/v1/sandboxes/:id` for persistent sandbox lifecycle and API state.
+- `POST /api/v1/sandboxes/:id/files` and `POST /api/v1/sandboxes/:id/exec` for source sync, deterministic install, filesystem checks, and internal health.
+- `GET`, `POST`, and restart routes under `/api/v1/sandboxes/:id/services` for idempotent named processes.
+- `POST /api/v1/sandboxes/:id/expose` for preview routing.
+- `GET /api/v1/sandboxes/:id/env` for name-only config and secret presence checks.
+- `GET /api/v1/sandboxes/:id/snapshots` for snapshot capability checks.
+- Database attachment fields on `GET /api/v1/sandboxes/:id` for attachment inspection.
+
+The CLI does not add release-candidate prepare or prove commands because the current backend contract has no release-candidate prepare endpoint.
+Use `miosa sandbox publish`, `miosa releases promote`, and `miosa deploy prove` for the deployment interfaces that do exist.
+
 Use a disposable sandbox only when you explicitly do not want preserved state:
 
 ```bash

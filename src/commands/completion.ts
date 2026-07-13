@@ -91,6 +91,8 @@ const SUBCOMMANDS: Record<string, string[]> = {
     "shell",
     "publish",
     "deploy",
+    "dev",
+    "doctor",
     "connectors",
   ],
   connectors: ["list", "show", "create", "token"],
