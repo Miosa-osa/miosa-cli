@@ -6,6 +6,12 @@ import chalk from "chalk";
 import { request } from "undici";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError, isJsonMode } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
@@ -503,7 +509,8 @@ function fmtDeployState(state: Deployment["state"]): string {
 function unwrapMetrics(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && "data" in raw) {
     const data = (raw as Record<string, unknown>)["data"];
-    if (data && typeof data === "object") return data as Record<string, unknown>;
+    if (data && typeof data === "object")
+      return data as Record<string, unknown>;
   }
   if (raw && typeof raw === "object") return raw as Record<string, unknown>;
   return {};
@@ -521,7 +528,8 @@ function renderDeploymentMetrics(raw: unknown): void {
   const root = unwrapMetrics(raw);
   const current = metricCurrent(raw);
   const instances =
-    current["runtime_instances"] && typeof current["runtime_instances"] === "object"
+    current["runtime_instances"] &&
+    typeof current["runtime_instances"] === "object"
       ? (current["runtime_instances"] as Record<string, unknown>)
       : {};
   const usage =
@@ -532,7 +540,10 @@ function renderDeploymentMetrics(raw: unknown): void {
   printBanner({ subtitle: "Deployment metrics" });
   console.log(
     kvPanel([
-      { label: "deployment_id", value: String(root["deployment_id"] ?? root["resource_id"] ?? "-") },
+      {
+        label: "deployment_id",
+        value: String(root["deployment_id"] ?? root["resource_id"] ?? "-"),
+      },
       { label: "window", value: String(root["window"] ?? "1h") },
       { label: "state", value: formatMetricState(current["state"]) },
       {
@@ -543,12 +554,21 @@ function renderDeploymentMetrics(raw: unknown): void {
       { label: "unhealthy", value: formatMetricValue(instances["unhealthy"]) },
       { label: "errors", value: formatMetricValue(instances["error"]) },
       { label: "restarts", value: formatMetricValue(instances["restarts"]) },
-      { label: "cpu_limit", value: formatMillicores(current["cpu_limit_millicores"]) },
+      {
+        label: "cpu_limit",
+        value: formatMillicores(current["cpu_limit_millicores"]),
+      },
       { label: "memory_limit", value: formatMb(current["memory_limit_mb"]) },
       { label: "runtime", value: formatSeconds(usage["runtime_sec"]) },
       { label: "cost_cents", value: formatMetricValue(usage["cost_cents"]) },
-      { label: "last_health_check", value: formatMetricValue(current["last_health_check_at"]) },
-      { label: "last_heartbeat", value: formatMetricValue(current["last_heartbeat_at"]) },
+      {
+        label: "last_health_check",
+        value: formatMetricValue(current["last_health_check_at"]),
+      },
+      {
+        label: "last_heartbeat",
+        value: formatMetricValue(current["last_heartbeat_at"]),
+      },
     ]),
   );
 }
@@ -568,7 +588,8 @@ function formatMetricState(value: unknown): string {
 }
 
 function formatMetricValue(value: unknown): string {
-  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  if (value === null || value === undefined || value === "")
+    return chalk.dim("-");
   return String(value);
 }
 
@@ -1279,37 +1300,53 @@ Examples:
     .description("Manage environment variables for a deployment");
 
   envCmd
-    .command("set <pairs...>")
-    .description("Set one or more env vars (KEY=VALUE)")
+    .command("set [pairs...]")
+    .description(
+      `Set one or more env vars (KEY=VALUE). ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--id <id>", "Deployment ID (overrides .miosa.json)")
-    .action(async (pairs: string[], opts: { id?: string }) => {
-      try {
-        const cwd = process.cwd();
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const deploymentId = resolveDeploymentId(opts.id, cwd);
+    .action(
+      async (
+        pairs: string[],
+        opts: { id?: string; envFile?: string; envStdin?: boolean },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(opts.id, cwd);
 
-        const env: Record<string, string> = {};
-        for (const pair of pairs) {
-          const eq = pair.indexOf("=");
-          if (eq === -1) {
-            env[pair] = "";
-          } else {
-            env[pair.slice(0, eq)] = pair.slice(eq + 1);
+          const inline: Record<string, string> = {};
+          for (const pair of pairs ?? []) {
+            const eq = pair.indexOf("=");
+            if (eq === -1) {
+              inline[pair] = "";
+            } else {
+              inline[pair.slice(0, eq)] = pair.slice(eq + 1);
+            }
           }
-        }
+          const env = await resolveEnvInputs(inline, opts);
+          if (Object.keys(env).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
 
-        const spinner = spin("Setting env vars...");
-        const vars = await client.setDeploymentEnv(deploymentId, env);
-        spinner.succeed(`Set ${vars.length} env var(s)`);
+          const spinner = spin("Setting env vars...");
+          const vars = await client.setDeploymentEnv(deploymentId, env);
+          spinner.succeed(`Set ${vars.length} env var(s)`);
 
-        for (const v of vars) {
-          console.log(`  ${chalk.bold(v.name)}  ${chalk.dim(v.preview)}`);
+          for (const v of vars) {
+            console.log(`  ${chalk.bold(v.name)}  ${chalk.dim(v.preview)}`);
+          }
+        } catch (err) {
+          handleError(err);
         }
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   envCmd
     .command("list [id]")

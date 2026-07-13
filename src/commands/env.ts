@@ -7,6 +7,12 @@ import { MiosaClient } from "../client.js";
 import { UserError } from "../errors.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError } from "./util.js";
 import { resolveDeploymentId } from "./project.js";
 import type { EnvVarPreview } from "../types.js";
@@ -60,9 +66,15 @@ export function register(program: Command): void {
 Examples:
   miosa env list <deployment-id>
   miosa env set <deployment-id> NODE_ENV=production PORT=3000
+  miosa env set <deployment-id> --env-file .env.production
+  cat secrets.env | miosa env set <deployment-id> --env-stdin
   miosa env unset <deployment-id> DEBUG
   miosa env pull <deployment-id>
   miosa env pull <deployment-id> --output .env
+
+Inline KEY=VALUE args pass through your shell, which may expand $VARS in
+unquoted values. Use --env-file or --env-stdin for secrets - those values
+are read literally, byte-for-byte.
 `,
     );
 
@@ -89,17 +101,27 @@ Examples:
   // ── env set ─────────────────────────────────────────────────────────────────
 
   env
-    .command("set <deployment-id> <pairs...>")
-    .description("Set one or more env vars (KEY=VALUE)")
+    .command("set <deployment-id> [pairs...]")
+    .description(
+      `Set one or more env vars (KEY=VALUE). ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--json", "Output as JSON")
     .action(
       async (
         deploymentId: string,
         pairs: string[],
-        opts: { json?: boolean },
+        opts: { json?: boolean; envFile?: string; envStdin?: boolean },
       ) => {
         try {
-          const kvs = parseKvPairs(pairs);
+          const kvs = await resolveEnvInputs(parseKvPairs(pairs ?? []), opts);
+          if (Object.keys(kvs).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
           const client = new MiosaClient(loadConfig());
           const spinner = spin(
             `Setting ${Object.keys(kvs).length} env var(s)...`,

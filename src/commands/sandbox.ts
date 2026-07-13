@@ -34,6 +34,12 @@ import {
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
 import { assertDeletableRemoteDir } from "./sandbox-delete-guard.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError, isJsonMode } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -680,10 +686,12 @@ Note:
     .option("--cwd <path>", "Working directory inside the Sandbox")
     .option(
       "--env <KEY=VALUE>",
-      "Environment variable for the run. Repeatable.",
+      `Environment variable for the Agent Run. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
       collectOption,
       [],
     )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--agent-profile <id>", "Agent runtime profile ID")
     .option(
       "--skip-agent-profile",
@@ -715,6 +723,8 @@ Note:
           preflight?: boolean;
           cwd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           externalWorkspace?: string;
@@ -754,8 +764,12 @@ Note:
           if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
-          if (opts.env && opts.env.length > 0) {
-            body["env"] = parseEnvPairs(opts.env);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
+          if (Object.keys(env).length > 0) {
+            body["env"] = env;
           }
           if (opts.agentProfile) {
             body["agent_runtime_profile_id"] = opts.agentProfile;
@@ -830,10 +844,12 @@ Note:
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -868,6 +884,8 @@ Note:
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -897,7 +915,10 @@ Note:
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -947,10 +968,12 @@ Note:
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -985,6 +1008,8 @@ Note:
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -1014,7 +1039,10 @@ Note:
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -1718,28 +1746,48 @@ Note:
     );
 
   env
-    .command("set <sandbox-id> <pairs...>")
-    .description("Set encrypted sandbox env vars as KEY=VALUE")
+    .command("set <sandbox-id> [pairs...]")
+    .description(
+      `Set encrypted sandbox env vars as KEY=VALUE. ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--json", "Output as JSON")
-    .action((id: string, pairs: string[], opts: JsonOptions) =>
-      runAction(async () => {
-        const vars = Object.entries(parseEnvPairs(pairs)).map(
-          ([key, value]) => ({
+    .action(
+      (
+        id: string,
+        pairs: string[],
+        opts: JsonOptions & { envFile?: string; envStdin?: boolean },
+      ) =>
+        runAction(async () => {
+          const values = await resolveEnvInputs(
+            parseEnvPairs(pairs ?? []),
+            opts,
+          );
+          if (Object.keys(values).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
+          const vars = Object.entries(values).map(([key, value]) => ({
             key,
             value,
-          }),
-        );
-        const result = unwrap(
-          await client().apiPut<unknown>(apiPath(`/sandboxes/${enc(id)}/env`), {
-            vars,
-          }),
-        );
-        if (isJsonMode(opts)) {
-          console.log(JSON.stringify(result, null, 2));
-          return;
-        }
-        console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
-      }),
+          }));
+          const result = unwrap(
+            await client().apiPut<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/env`),
+              {
+                vars,
+              },
+            ),
+          );
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
+        }),
     );
 
   env
