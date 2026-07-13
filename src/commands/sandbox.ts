@@ -300,6 +300,18 @@ export function register(program: Command): void {
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
       .option(
+        "--external-workspace <id>",
+        "White-label workspace/customer ID for billing attribution",
+      )
+      .option(
+        "--external-user <id>",
+        "White-label user ID for billing attribution",
+      )
+      .option(
+        "--external-project <id>",
+        "White-label project ID for billing attribution",
+      )
+      .option(
         "--agent-profile <id>",
         "Agent runtime profile ID to mount into the sandbox",
       )
@@ -343,6 +355,15 @@ export function register(program: Command): void {
       ),
   )
     .option("--json", "Output as JSON")
+    .addHelpText(
+      "after",
+      `
+Note:
+  White-label preview domains require external attribution at creation.
+  Pass --external-workspace / --external-user / --external-project when the
+  sandbox will be exposed on a white-label preview domain.
+`,
+    )
     .action(
       (
         opts: DataOptions & {
@@ -360,6 +381,9 @@ export function register(program: Command): void {
           depth?: number;
           snapshot?: string;
           workspace?: string;
+          externalWorkspace?: string;
+          externalUser?: string;
+          externalProject?: string;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           networkPolicy?: string;
@@ -411,6 +435,15 @@ export function register(program: Command): void {
             (program.opts() as { workspace?: string }).workspace ??
             process.env["MIOSA_WORKSPACE"];
           if (workspace) body["workspace_id"] = workspace;
+          if (opts.externalWorkspace) {
+            body["external_workspace_id"] = opts.externalWorkspace;
+          }
+          if (opts.externalUser) {
+            body["external_user_id"] = opts.externalUser;
+          }
+          if (opts.externalProject) {
+            body["external_project_id"] = opts.externalProject;
+          }
           const networkPolicy = buildNetworkPolicy(opts);
           if (networkPolicy) {
             body["metadata"] = {
