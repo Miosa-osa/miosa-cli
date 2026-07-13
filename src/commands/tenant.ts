@@ -41,7 +41,7 @@ export function register(program: Command): void {
     .action(async (opts: { json?: boolean }) => {
       try {
         const config = loadConfig();
-        const client = new MiosaClient(config);
+        const client = new MiosaClient({ ...config, tenant: null, workspace: null });
         const spinner = spin("Fetching tenants...");
         const rows = unwrapTenants(
           await client.apiGet("/api/v1/platform/tenants"),
@@ -85,7 +85,7 @@ export function register(program: Command): void {
     .action(async (slug: string, opts: { json?: boolean }) => {
       try {
         const config = loadConfig();
-        const client = new MiosaClient(config);
+        const client = new MiosaClient({ ...config, tenant: null, workspace: null });
 
         // Validate the tenant exists + we have access
         const spinner = spin(`Switching to tenant ${chalk.bold(slug)}...`);

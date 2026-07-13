@@ -8,7 +8,14 @@ import chalk from "chalk";
 import { loadProjectManifest, type MiosaAppManifest } from "../app-manifest.js";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { ApiResponseError, MiosaError, UserError } from "../errors.js";
+import {
+  ApiResponseError,
+  AuthError,
+  MiosaError,
+  NetworkError,
+  ServerError,
+  UserError,
+} from "../errors.js";
 import { handleError, isJsonMode } from "./util.js";
 
 interface DevState {
@@ -92,6 +99,12 @@ export async function runFullSandboxDoctor(
   const loaded = loadProjectManifest(projectDir);
   const manifest = loaded.manifest;
   const saved = readDevState(projectDir);
+  if (saved && !sandboxOverride && saved.project !== manifest.name) {
+    throw new UserError(
+      `Saved sandbox state belongs to project ${saved.project}, but the loaded manifest is ${manifest.name}.`,
+      `Pass --sandbox <id> explicitly or run miosa sandbox dev up --dir ${quote(projectDir)} to create state for this project.`,
+    );
+  }
   const sandboxId = sandboxOverride ?? saved?.sandbox_id;
   if (!sandboxId) {
     throw new UserError(
@@ -380,10 +393,14 @@ async function devUp(
       if (!isNotFound(error)) throw error;
     }
     if (exists) {
-      await api.apiPost(
-        `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/services/${encodeURIComponent(name)}/restart`,
-        {},
+      await api.apiDelete(
+        `/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/services/${encodeURIComponent(name)}`,
       );
+      await api.apiPost(`/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/services`, {
+        name,
+        command: service.command,
+        cwd,
+      });
     } else {
       await api.apiPost(`/api/v1/sandboxes/${encodeURIComponent(sandboxId)}/services`, {
         name,
@@ -688,7 +705,7 @@ function isNotFound(error: unknown): boolean {
   return error instanceof MiosaError && /not found/i.test(error.message);
 }
 
-function withDevRecovery(error: unknown, projectDir: string): unknown {
+export function withDevRecovery(error: unknown, projectDir: string): unknown {
   if (!(error instanceof MiosaError)) return error;
   const saved = readDevState(projectDir);
   if (!saved) return error;
@@ -704,6 +721,18 @@ function withDevRecovery(error: unknown, projectDir: string): unknown {
       error.details,
       error.requestId,
     );
+  }
+  if (error instanceof AuthError) {
+    return new AuthError(error.message, hint, error.details, error.requestId);
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError(error.message, hint);
+  }
+  if (error instanceof UserError) {
+    return new UserError(error.message, hint);
+  }
+  if (error instanceof ServerError) {
+    return new ServerError(error.message, error.statusCode, error.body, error.requestId, hint);
   }
   return new MiosaError(
     error.message,

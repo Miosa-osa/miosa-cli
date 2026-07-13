@@ -48,8 +48,9 @@ export class ServerError extends MiosaError {
     public readonly statusCode: number,
     public readonly body?: unknown,
     requestId?: string | null,
+    hint?: string,
   ) {
-    super(message, EXIT_SERVER_ERROR, undefined, body, requestId);
+    super(message, EXIT_SERVER_ERROR, hint, body, requestId);
   }
 }
 
