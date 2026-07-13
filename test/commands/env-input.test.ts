@@ -279,13 +279,13 @@ describe("env input command wiring", () => {
     expect(body.env).toEqual({ TOKEN: SCRYPT_HASH });
   });
 
-  it("sandbox prompt --env-file ships file values on the agent run", async () => {
+  it("sandbox run-agent --env-file ships file values on the agent run", async () => {
     const mock = mockApi();
     let captured = "";
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/agent-runs",
+        path: "/api/v1/runs",
         method: "POST",
         body: (body: string) => {
           captured = body;
@@ -303,7 +303,7 @@ describe("env input command wiring", () => {
       "node",
       "miosa",
       "sandbox",
-      "prompt",
+      "run-agent",
       "sbx_env",
       "--env-file",
       file,
