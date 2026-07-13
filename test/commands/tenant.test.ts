@@ -193,7 +193,7 @@ describe("miosa tenant switch", () => {
     await program.parseAsync(["node", "miosa", "tenant", "switch", "acme"]);
 
     expect(saveConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ default_host: "acme" }),
+      expect.objectContaining({ tenant: "acme" }),
     );
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });

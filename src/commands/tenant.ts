@@ -74,7 +74,8 @@ export function register(program: Command): void {
       }
     });
 
-  // switch — updates MIOSA_API_KEY context or writes tenant slug to config
+  // switch — writes the active tenant slug to config. The API verifies the
+  // caller is a member before honoring X-MIOSA-Tenant on requests.
   tenant
     .command("switch <slug>")
     .description(
@@ -102,7 +103,7 @@ export function register(program: Command): void {
           process.exit(1);
         }
 
-        saveConfig({ default_host: match.slug });
+        saveConfig({ tenant: match.slug });
         spinner.succeed(
           `Switched to tenant ${chalk.bold(match.name)} (${match.slug})`,
         );
