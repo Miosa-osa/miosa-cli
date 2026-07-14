@@ -32,6 +32,12 @@ const {
   saveNamedContext,
 } = await import("../../src/config.js");
 const { register } = await import("../../src/commands/tenant.js");
+const { register: registerSandbox } = await import(
+  "../../src/commands/sandbox.js"
+);
+const { register: registerDeploy } = await import(
+  "../../src/commands/deploy.js"
+);
 
 const tenants = [
   {
@@ -52,6 +58,15 @@ function buildProgram(): Command {
   const program = new Command();
   program.exitOverride();
   register(program);
+  return program;
+}
+
+function buildScopedProgram(
+  registerCommand: (program: Command) => void,
+): Command {
+  const program = new Command();
+  program.exitOverride();
+  registerCommand(program);
   return program;
 }
 
@@ -90,11 +105,13 @@ describe("miosa tenant switch context persistence", () => {
     });
     delete process.env["MIOSA_TENANT"];
     delete process.env["MIOSA_WORKSPACE"];
+    delete process.env["MIOSA_JSON"];
     vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     saveConfig({
       api_key: "msk_u_test" as never,
-      tenant: "personal",
+      tenant: "osa",
       workspace: "workspace-one",
     });
     saveNamedContext("operator", contextFromConfig("operator"));
@@ -133,5 +150,86 @@ describe("miosa tenant switch context persistence", () => {
     applyNamedContext("operator");
 
     expect(loadConfig().tenant).toBe("panther-defense");
+  });
+
+  it("scopes sandbox and deployment commands to the selected tenant without OSA fallback", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({ path: "/api/v1/platform/tenants", method: "GET" })
+      .reply(200, JSON.stringify({ data: tenants }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "GET",
+        headers: { "x-miosa-tenant": "clinic-iq" },
+      })
+      .reply(200, JSON.stringify({ data: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({
+        path: "/api/v1/deployments",
+        method: "GET",
+        headers: { "x-miosa-tenant": "clinic-iq" },
+      })
+      .reply(200, JSON.stringify({ data: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    setGlobalDispatcher(mock);
+
+    await switchTenant("clinic-iq");
+    await buildScopedProgram(registerSandbox).parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "list",
+      "--json",
+    ]);
+    await buildScopedProgram(registerDeploy).parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "list",
+      "--json",
+    ]);
+
+    expect(loadConfig().tenant).toBe("clinic-iq");
+    expect(loadContextStore().contexts["operator"]?.tenant).toBe("clinic-iq");
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("preserves the current tenant when the API key is refused for another tenant", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/platform/tenants", method: "GET" })
+      .reply(
+        403,
+        JSON.stringify({
+          error: {
+            code: "TENANT_API_KEY_MISMATCH",
+            message: "API key does not belong to tenant clinic-iq",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    setGlobalDispatcher(mock);
+    vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`process.exit(${String(code)})`);
+    });
+
+    await expect(switchTenant("clinic-iq")).rejects.toThrow("process.exit(3)");
+
+    expect(loadConfig().tenant).toBe("osa");
+    expect(loadContextStore()).toMatchObject({
+      active: "operator",
+      contexts: { operator: { tenant: "osa" } },
+    });
   });
 });
