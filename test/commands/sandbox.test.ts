@@ -744,6 +744,107 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("passes external attribution IDs in the create body when flags are set", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "attributed",
+          timeout_sec: 3600,
+          external_workspace_id: "clinic-iq",
+          external_user_id: "founder-1",
+          external_project_id: "landing-page",
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_attr",
+            name: "attributed",
+            template_id: "nextjs",
+            state: "running",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "attributed",
+      "--external-workspace",
+      "clinic-iq",
+      "--external-user",
+      "founder-1",
+      "--external-project",
+      "landing-page",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("omits external attribution fields from the create body when flags are absent", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "unattributed",
+          timeout_sec: 3600,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_plain",
+            name: "unattributed",
+            template_id: "nextjs",
+            state: "running",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "unattributed",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("waits for sandbox VM readiness without requiring an app port", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();

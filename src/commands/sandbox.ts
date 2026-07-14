@@ -33,6 +33,13 @@ import {
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
+import { assertDeletableRemoteDir } from "./sandbox-delete-guard.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError, isJsonMode } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -300,6 +307,18 @@ export function register(program: Command): void {
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
       .option(
+        "--external-workspace <id>",
+        "White-label workspace/customer ID for billing attribution",
+      )
+      .option(
+        "--external-user <id>",
+        "White-label user ID for billing attribution",
+      )
+      .option(
+        "--external-project <id>",
+        "White-label project ID for billing attribution",
+      )
+      .option(
         "--agent-profile <id>",
         "Agent runtime profile ID to mount into the sandbox",
       )
@@ -343,6 +362,15 @@ export function register(program: Command): void {
       ),
   )
     .option("--json", "Output as JSON")
+    .addHelpText(
+      "after",
+      `
+Note:
+  White-label preview domains require external attribution at creation.
+  Pass --external-workspace / --external-user / --external-project when the
+  sandbox will be exposed on a white-label preview domain.
+`,
+    )
     .action(
       (
         opts: DataOptions & {
@@ -360,6 +388,9 @@ export function register(program: Command): void {
           depth?: number;
           snapshot?: string;
           workspace?: string;
+          externalWorkspace?: string;
+          externalUser?: string;
+          externalProject?: string;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           networkPolicy?: string;
@@ -411,6 +442,15 @@ export function register(program: Command): void {
             (program.opts() as { workspace?: string }).workspace ??
             process.env["MIOSA_WORKSPACE"];
           if (workspace) body["workspace_id"] = workspace;
+          if (opts.externalWorkspace) {
+            body["external_workspace_id"] = opts.externalWorkspace;
+          }
+          if (opts.externalUser) {
+            body["external_user_id"] = opts.externalUser;
+          }
+          if (opts.externalProject) {
+            body["external_project_id"] = opts.externalProject;
+          }
           const networkPolicy = buildNetworkPolicy(opts);
           if (networkPolicy) {
             body["metadata"] = {
@@ -646,10 +686,12 @@ export function register(program: Command): void {
     .option("--cwd <path>", "Working directory inside the Sandbox")
     .option(
       "--env <KEY=VALUE>",
-      "Environment variable for the run. Repeatable.",
+      `Environment variable for the Agent Run. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
       collectOption,
       [],
     )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--agent-profile <id>", "Agent runtime profile ID")
     .option(
       "--skip-agent-profile",
@@ -681,6 +723,8 @@ export function register(program: Command): void {
           preflight?: boolean;
           cwd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           externalWorkspace?: string;
@@ -720,8 +764,12 @@ export function register(program: Command): void {
           if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
-          if (opts.env && opts.env.length > 0) {
-            body["env"] = parseEnvPairs(opts.env);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
+          if (Object.keys(env).length > 0) {
+            body["env"] = env;
           }
           if (opts.agentProfile) {
             body["agent_runtime_profile_id"] = opts.agentProfile;
@@ -796,10 +844,12 @@ export function register(program: Command): void {
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -834,6 +884,8 @@ export function register(program: Command): void {
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -863,7 +915,10 @@ export function register(program: Command): void {
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -913,10 +968,12 @@ export function register(program: Command): void {
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -951,6 +1008,8 @@ export function register(program: Command): void {
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -980,7 +1039,10 @@ export function register(program: Command): void {
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -1684,28 +1746,48 @@ export function register(program: Command): void {
     );
 
   env
-    .command("set <sandbox-id> <pairs...>")
-    .description("Set encrypted sandbox env vars as KEY=VALUE")
+    .command("set <sandbox-id> [pairs...]")
+    .description(
+      `Set encrypted sandbox env vars as KEY=VALUE. ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--json", "Output as JSON")
-    .action((id: string, pairs: string[], opts: JsonOptions) =>
-      runAction(async () => {
-        const vars = Object.entries(parseEnvPairs(pairs)).map(
-          ([key, value]) => ({
+    .action(
+      (
+        id: string,
+        pairs: string[],
+        opts: JsonOptions & { envFile?: string; envStdin?: boolean },
+      ) =>
+        runAction(async () => {
+          const values = await resolveEnvInputs(
+            parseEnvPairs(pairs ?? []),
+            opts,
+          );
+          if (Object.keys(values).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
+          const vars = Object.entries(values).map(([key, value]) => ({
             key,
             value,
-          }),
-        );
-        const result = unwrap(
-          await client().apiPut<unknown>(apiPath(`/sandboxes/${enc(id)}/env`), {
-            vars,
-          }),
-        );
-        if (isJsonMode(opts)) {
-          console.log(JSON.stringify(result, null, 2));
-          return;
-        }
-        console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
-      }),
+          }));
+          const result = unwrap(
+            await client().apiPut<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/env`),
+              {
+                vars,
+              },
+            ),
+          );
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
+        }),
     );
 
   env
@@ -1978,17 +2060,25 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         id: string,
         localDir: string,
         remoteDir: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(id, localDir, remoteDir, {
             delete: !!opts.delete,
+            force: !!(opts.force || opts.yes),
           });
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
@@ -2011,12 +2101,20 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         localDir: string,
         remoteDir: string,
-        opts: { sandbox: string; delete?: boolean; json?: boolean },
+        opts: {
+          sandbox: string;
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(
@@ -2025,6 +2123,7 @@ export function register(program: Command): void {
             remoteDir,
             {
               delete: !!opts.delete,
+              force: !!(opts.force || opts.yes),
             },
           );
           if (isJsonMode(opts)) {
@@ -2050,12 +2149,19 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting directories",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         source: string,
         target: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           if (isSandboxTarget(source) && !isSandboxTarget(target)) {
@@ -2088,7 +2194,10 @@ export function register(program: Command): void {
               parsed.sandboxId,
               local,
               parsed.remotePath,
-              { delete: !!opts.delete },
+              {
+                delete: !!opts.delete,
+                force: !!(opts.force || opts.yes),
+              },
             );
             if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
@@ -2242,7 +2351,9 @@ export function register(program: Command): void {
             }
             if (opts.filename) query.set("filename", opts.filename);
             const bytes = await client().apiGetBinary(
-              apiPath(`/sandboxes/${enc(id)}/exports/download?${query.toString()}`),
+              apiPath(
+                `/sandboxes/${enc(id)}/exports/download?${query.toString()}`,
+              ),
             );
             fs.writeFileSync(opts.output, bytes);
           }
@@ -2265,7 +2376,10 @@ export function register(program: Command): void {
             kvPanel([
               { label: "Export", value: chalk.bold(str(exportData["id"])) },
               { label: "Sandbox", value: id },
-              { label: "Status", value: statusColor(str(exportData["status"])) },
+              {
+                label: "Status",
+                value: statusColor(str(exportData["status"])),
+              },
               {
                 label: "Archive",
                 value: str(exportData["archive_download_url"]),
@@ -4548,7 +4662,7 @@ async function uploadDirToSandbox(
   sandboxId: string,
   localDir: string,
   remoteDir: string,
-  opts: { delete: boolean },
+  opts: { delete: boolean; force?: boolean },
 ): Promise<{
   sandbox_id: string;
   local_dir: string;
@@ -4559,14 +4673,18 @@ async function uploadDirToSandbox(
   if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
     throw new UserError(`Local directory not found: ${sourceDir}`);
   }
+  const deleteTarget = opts.delete
+    ? await confirmRemoteDeleteDir(sandboxId, remoteDir, !!opts.force)
+    : null;
   const c = client();
   const archivePath = createDeployArchive(sourceDir);
   const remoteArchive = `/tmp/miosa-upload-${Date.now()}.tgz`;
   try {
     await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
-    const clean = opts.delete
-      ? `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`
-      : `mkdir -p ${shellQuote(remoteDir)}`;
+    const clean =
+      deleteTarget != null
+        ? `rm -rf ${shellQuote(deleteTarget)} && mkdir -p ${shellQuote(deleteTarget)}`
+        : `mkdir -p ${shellQuote(remoteDir)}`;
     await execSandbox(
       c,
       sandboxId,
@@ -4582,6 +4700,42 @@ async function uploadDirToSandbox(
     remote_dir: remoteDir,
     files_label: path.basename(sourceDir) || sourceDir,
   };
+}
+
+// --delete runs `rm -rf` inside the sandbox. Refuse protected roots, then
+// require an explicit confirmation (interactive prompt, or --force/--yes)
+// before anything is wiped. Returns the normalized remote dir to delete.
+async function confirmRemoteDeleteDir(
+  sandboxId: string,
+  remoteDir: string,
+  force: boolean,
+): Promise<string> {
+  const target = assertDeletableRemoteDir(remoteDir);
+  if (force) return target;
+  if (!process.stdin.isTTY) {
+    throw new UserError(
+      `--delete will permanently wipe ${target} on sandbox ${sandboxId}.`,
+      "Non-interactive session: re-run with --force (or --yes) to confirm the wipe.",
+    );
+  }
+  console.log(
+    chalk.yellow(
+      `--delete will permanently wipe sandbox ${sandboxId}:${target} before uploading.`,
+    ),
+  );
+  const { default: inquirer } = await import("inquirer");
+  const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
+    {
+      type: "confirm",
+      name: "confirmed",
+      message: `Wipe ${sandboxId}:${target}?`,
+      default: false,
+    },
+  ]);
+  if (!confirmed) {
+    throw new UserError("Cancelled - nothing was deleted or uploaded.");
+  }
+  return target;
 }
 
 async function execSandbox(
