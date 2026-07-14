@@ -14,7 +14,7 @@ vi.mock("../../src/config.js", () => ({
     tenant: "active-tenant",
     workspace: "active-workspace",
   }),
-  saveConfig: vi.fn(),
+  saveConfigForActiveContext: vi.fn(),
   clearApiKey: vi.fn(),
   saveAuthCache: vi.fn(),
 }));
@@ -189,12 +189,12 @@ describe("miosa tenant switch", () => {
         headers: { "content-type": "application/json" },
       });
 
-    const { saveConfig } = await import("../../src/config.js");
+    const { saveConfigForActiveContext } = await import("../../src/config.js");
 
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "tenant", "switch", "acme"]);
 
-    expect(saveConfig).toHaveBeenCalledWith(
+    expect(saveConfigForActiveContext).toHaveBeenCalledWith(
       expect.objectContaining({ tenant: "acme" }),
     );
     expect(process.exit).not.toHaveBeenCalledWith(1);
@@ -221,9 +221,9 @@ describe("miosa tenant switch", () => {
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "tenant", "switch", "beta"]);
 
-    expect((await import("../../src/config.js")).saveConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ tenant: "beta" }),
-    );
+    expect(
+      (await import("../../src/config.js")).saveConfigForActiveContext,
+    ).toHaveBeenCalledWith(expect.objectContaining({ tenant: "beta" }));
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 

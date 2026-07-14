@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, saveConfig } from "../config.js";
+import { loadConfig, saveConfigForActiveContext } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
@@ -103,7 +103,7 @@ export function register(program: Command): void {
           process.exit(1);
         }
 
-        saveConfig({ tenant: match.slug });
+        saveConfigForActiveContext({ tenant: match.slug });
         spinner.succeed(
           `Switched to tenant ${chalk.bold(match.name)} (${match.slug})`,
         );
