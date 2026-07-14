@@ -57,18 +57,18 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
       "Use --timeout 1h or sandbox extend during active work. Use snapshot/checkpoint/fork for durable recovery points.",
     primary_commands: [
       "miosa sandbox create --template nextjs --timeout 1h --wait --json",
-      "miosa sandbox prompt <id> --provider codex --json -- <task>",
+      "miosa sandbox run-agent <id> --runner codex --json -- <task>",
       "miosa sandbox exec <id> -- sh -lc '<command>'",
       "miosa sandbox write-file <id> /workspace/file ./file --json",
       "miosa sandbox publish <id> --wait --json",
     ],
     use_when: [
       "Coding agents should build inside the remote workspace.",
-      "You need filesystem, command execution, package installs, preview ports, artifacts, or app publish.",
+      "You need filesystem, command execution, package installs, preview ports, files, or app publish.",
       "You want Polsia/Nebula-style virtual device behavior without a GUI desktop.",
     ],
     avoid_when: [
-      "The task requires a full desktop browser session with VNC/CUA.",
+      "The task requires a full desktop browser session with VNC and desktop control.",
       "You need a long-lived production app; publish it after preview is ready.",
     ],
   },
@@ -76,7 +76,7 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
     kind: "computer",
     label: "Computer",
     purpose:
-      "Durable VM/desktop device for browser automation, CUA sessions, SSH, tunnels, and persistent agent control.",
+      "Durable VM/desktop device for browser automation, computer control sessions, SSH, tunnels, and persistent agent control.",
     lifecycle:
       "Managed as a Computer. It is the correct target for GUI/browser-heavy work and remote operator sessions.",
     persistence:
@@ -90,12 +90,12 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
     ],
     use_when: [
       "The agent must use Chromium or a full desktop.",
-      "The workflow needs login to dashboards, form filling, screenshots, or CUA-style control.",
+      "The workflow needs login to dashboards, form filling, screenshots, or desktop control.",
       "A human and agent need to share the same persistent machine state.",
     ],
     avoid_when: [
       "Simple code generation/build/test work fits a cheaper sandbox worker.",
-      "The output is a production deployment; use Docker Deploy or standard deploy after build.",
+      "The output is a production deployment; use App Engine or standard deploy after build.",
     ],
   },
   {
@@ -123,7 +123,7 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
   },
   {
     kind: "docker_deploy_host",
-    label: "Docker Deploy Host",
+    label: "App Engine Host",
     purpose:
       "Workspace appliance VM that runs Docker containers for durable apps published from sandboxes.",
     lifecycle:
@@ -141,22 +141,22 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
     ],
     avoid_when: [
       "Interactive agent work is still happening; finish in a sandbox first.",
-      "The app needs the standard MIOSA Deploy runtime instead of Docker Deploy.",
+      "The app needs the standard MIOSA Deploy runtime instead of App Engine.",
     ],
   },
 ];
 
 const ROUTING: Record<string, string> = {
   build_code:
-    "Use sandbox_worker. Run the coding agent inside it with sandbox prompt/exec and publish after HTTP 200.",
+    "Use sandbox_worker. Run the coding agent inside it with sandbox run-agent/exec and publish after HTTP 200.",
   browser_automation:
-    "Use computer. It has the desktop/browser/CUA surface needed for dashboards, clicks, and visual inspection.",
+    "Use computer. It has the desktop/browser control surface needed for dashboards, clicks, and visual inspection.",
   durable_app:
     "Use docker_deploy_host after the app is ready. Publish from the sandbox into a versioned deployment.",
   local_private_context:
     "Use local_device only for local discovery or user-owned files, then move execution into a sandbox/computer.",
   massive_parallel_agents:
-    "Use one sandbox_worker per isolated code/task shard, computers only where GUI/browser state is required, and Docker Deploy for durable outputs.",
+    "Use one sandbox_worker per isolated code/task shard, computers only where GUI/browser state is required, and App Engine for durable outputs.",
 };
 
 export function register(program: Command): void {
@@ -164,7 +164,7 @@ export function register(program: Command): void {
     .command("devices")
     .alias("device")
     .description(
-      "Inspect MIOSA device types: sandboxes, computers, local devices, and Docker Deploy hosts",
+      "Inspect MIOSA device types: sandboxes, computers, local devices, and App Engine hosts",
     );
 
   devices

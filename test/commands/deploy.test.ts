@@ -728,9 +728,183 @@ describe("miosa deploy --docker-deploy", () => {
     await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
 
     const output = logged.join("\n");
-    expect(output).toContain("Docker Deploy");
+    expect(output).toContain("App Engine");
     expect(output).toContain("ddh_123");
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+});
+
+describe("miosa deploy prove", () => {
+  beforeEach(() => {
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    delete process.env["MIOSA_JSON"];
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it("proves a Docker Deploy deployment from the app truth row", async () => {
+    const deployment = {
+      ...mockDeployment,
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: "ddh_123",
+      public_url: "https://docker-site.example.com",
+      docker_deploy_app: {
+        id: "app_row_123",
+        docker_deploy_host_id: "ddh_123",
+        app_id: "dokploy_app_123",
+        container_id: "container_123",
+        status: "running",
+        runtime_ip: "172.16.74.246",
+        runtime_port: 23906,
+        public_url: "https://docker-site.example.com",
+        last_health_status: "healthy",
+      },
+      metadata: {
+        deployment_product: "docker_deploy",
+        runtime: {
+          ip: "172.16.74.200",
+          port: 20000,
+        },
+      },
+    };
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: deployment }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts/ddh_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          host: {
+            id: "ddh_123",
+            status: "active",
+            appliance_status: "healthy",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "prove",
+      mockDeployment.id,
+      "--no-probe",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      checks: Array<{ id: string; ok: boolean }>;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "docker_deploy_app_row", ok: true }),
+    );
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "docker_deploy_container_route", ok: true }),
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("fails proof when Docker Deploy is metadata-only", async () => {
+    const deployment = {
+      ...mockDeployment,
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: "ddh_123",
+      public_url: "https://docker-site.example.com",
+      docker_deploy_app: null,
+      metadata: {
+        deployment_product: "docker_deploy",
+        runtime: {
+          ip: "172.16.74.246",
+          port: 23906,
+        },
+      },
+    };
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: deployment }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts/ddh_123",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          host: {
+            id: "ddh_123",
+            status: "active",
+            appliance_status: "healthy",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "prove",
+      mockDeployment.id,
+      "--no-probe",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      checks: Array<{ id: string; ok: boolean }>;
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "docker_deploy_app_row", ok: false }),
+    );
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({ id: "docker_deploy_container_route", ok: false }),
+    );
+    expect(process.exitCode).toBe(1);
   });
 });
 

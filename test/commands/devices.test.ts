@@ -59,7 +59,7 @@ describe("miosa devices", () => {
       output.devices
         .find((device) => device.kind === "sandbox_worker")
         ?.primary_commands.some((command) =>
-          command.startsWith("miosa sandbox prompt"),
+          command.startsWith("miosa sandbox run-agent"),
         ),
     ).toBe(true);
   });

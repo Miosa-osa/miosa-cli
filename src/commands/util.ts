@@ -14,7 +14,9 @@ export function handleError(err: unknown): never {
             retryable: retryableFor(err),
             ...(err.hint ? { hint: err.hint } : {}),
             ...(err.requestId ? { request_id: err.requestId } : {}),
-            ...(isDebugMode() && err.details ? { details: err.details } : {}),
+            ...((isValidationError(err) || isDebugMode()) && err.details
+              ? { details: err.details }
+              : {}),
           }
         : err instanceof Error
           ? {
@@ -41,7 +43,7 @@ export function handleError(err: unknown): never {
     if (isDebugMode() && err.requestId) {
       console.error(chalk.dim(`  Request ID: ${err.requestId}`));
     }
-    if (isDebugMode() && err.details) {
+    if ((isValidationError(err) || isDebugMode()) && err.details) {
       console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
     }
     return process.exit(err.exitCode);
@@ -55,6 +57,14 @@ export function handleError(err: unknown): never {
   }
   console.error(chalk.red(`Unknown error: ${String(err)}`));
   return process.exit(1);
+}
+
+function isValidationError(err: MiosaError): boolean {
+  return (
+    "code" in err &&
+    typeof err.code === "string" &&
+    /VALIDATION|INVALID|REQUIRED|CONFLICT/.test(err.code)
+  );
 }
 
 function errorCodeFor(err: MiosaError): string {

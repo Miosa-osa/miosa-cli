@@ -8,8 +8,7 @@ import {
   loadConfig,
   loadContextStore,
   redactKey,
-  saveConfig,
-  saveContextStore,
+  saveConfigForActiveContext,
   saveNamedContext,
   type MiosaContext,
 } from "../config.js";
@@ -86,22 +85,6 @@ function printContextTable(active: string | null, contexts: MiosaContext[]): voi
     );
   }
   console.log();
-}
-
-function updateActiveContext(values: Partial<MiosaContext>): MiosaContext | null {
-  const store = loadContextStore();
-  if (!store.active) return null;
-  const context = store.contexts[store.active];
-  if (!context) return null;
-
-  const updated: MiosaContext = {
-    ...context,
-    ...values,
-    updated_at: new Date().toISOString(),
-  };
-  store.contexts[store.active] = updated;
-  saveContextStore(store);
-  return updated;
 }
 
 export function register(program: Command): void {
@@ -252,8 +235,7 @@ export function register(program: Command): void {
         }
 
         const patch = { [key]: value === "-" ? null : value } as Partial<MiosaContext>;
-        saveConfig(patch);
-        const updated = updateActiveContext(patch);
+        const updated = saveConfigForActiveContext(patch);
         const config = loadConfig();
 
         if (jsonMode(opts)) {

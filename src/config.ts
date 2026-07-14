@@ -201,6 +201,19 @@ export interface MiosaContextStore {
   contexts: Record<string, MiosaContext>;
 }
 
+export type ContextConfigUpdates = Partial<
+  Pick<
+    MiosaContext,
+    | "endpoint"
+    | "api_key"
+    | "tenant"
+    | "workspace"
+    | "region"
+    | "default_host"
+    | "output"
+  >
+>;
+
 function emptyContextStore(): MiosaContextStore {
   return { active: null, contexts: {} };
 }
@@ -226,6 +239,26 @@ export function saveContextStore(store: MiosaContextStore): void {
   fs.writeFileSync(CONTEXTS_FILE, JSON.stringify(store, null, 2) + "\n", {
     mode: 0o600,
   });
+}
+
+export function saveConfigForActiveContext(
+  updates: ContextConfigUpdates,
+): MiosaContext | null {
+  saveConfig(updates);
+
+  const store = loadContextStore();
+  if (!store.active) return null;
+  const context = store.contexts[store.active];
+  if (!context) return null;
+
+  const updated: MiosaContext = {
+    ...context,
+    ...updates,
+    updated_at: new Date().toISOString(),
+  };
+  store.contexts[store.active] = updated;
+  saveContextStore(store);
+  return updated;
 }
 
 export function contextFromConfig(name: string, config = loadConfig()): MiosaContext {

@@ -227,6 +227,17 @@ export interface Deployment {
   external_project_id?: string | null;
   public_url?: string | null;
   auto_subdomain?: string | null;
+  docker_deploy_app?: {
+    id?: string | null;
+    docker_deploy_host_id?: string | null;
+    app_id?: string | null;
+    container_id?: string | null;
+    status?: string | null;
+    runtime_ip?: string | null;
+    runtime_port?: number | string | null;
+    public_url?: string | null;
+    last_health_status?: string | null;
+  } | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;

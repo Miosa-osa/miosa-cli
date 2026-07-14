@@ -134,6 +134,41 @@ describe("MiosaClient", () => {
       expect((err as ApiResponseError).retryable).toBe(false);
     });
 
+    it("preserves structured 422 validation details without debug mode", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      mock
+        .get("https://api.miosa.ai")
+        .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+        .reply(
+          422,
+          JSON.stringify({
+            error: {
+              message: "manifest rejected",
+              details: {
+                fields: [{ path: "services.web.port", code: "taken" }],
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json", "x-request-id": "req_validation" } },
+        );
+
+      const client = new MiosaClient(makeConfig());
+      const error = await client.apiPost("/api/v1/sandboxes", {}).catch((value: unknown) => value);
+
+      expect(error).toBeInstanceOf(ApiResponseError);
+      expect(error).toMatchObject({
+        code: "VALIDATION_ERROR",
+        message: "manifest rejected",
+        details: {
+          fields: [{ path: "services.web.port", code: "taken" }],
+        },
+        requestId: "req_validation",
+      });
+    });
+
     it("sends global tenant and workspace scope headers", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();

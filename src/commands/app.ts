@@ -114,7 +114,7 @@ export function register(program: Command): void {
     )
     .option("--slug <slug>", "Production app slug placeholder/value")
     .option("--workspace <id>", "Workspace ID for scoped create commands")
-    .option("--docker-deploy", "Force Docker Deploy production path")
+    .option("--docker-deploy", "Force App Engine production path")
     .option("--no-docker-deploy", "Prefer standard MIOSA Deploy path")
     .option("--json", "Output compact machine-readable JSON")
     .action((dir: string, opts: AppPlanOptions) => {

@@ -267,7 +267,7 @@ export function planApp(
       ),
       purpose:
         recommendedDeploy === "docker_deploy"
-          ? "Promote the sandbox workspace into the recommended Docker Deploy production runtime."
+          ? "Promote the sandbox workspace into the recommended App Engine production runtime."
           : "Promote the sandbox workspace into durable MIOSA app hosting.",
       json: true,
       wait: true,
@@ -280,7 +280,7 @@ export function planApp(
           : "curl -fsS <production-url>",
       purpose:
         recommendedDeploy === "docker_deploy"
-          ? "Verify deployment_product, Docker Deploy host health, appliance route metadata, and the public URL in one agent-readable check."
+          ? "Verify deployment_product, App Engine host health, appliance route metadata, and the public URL in one agent-readable check."
           : "Probe the returned production URL. Do not mark complete from control-plane state alone.",
       json: recommendedDeploy === "docker_deploy",
     });
@@ -495,9 +495,9 @@ function recommendationReason(
   needsDatabase?: boolean,
 ): string {
   if (deployment === "docker_deploy") {
-    if (needsDatabase) return "App needs server-side runtime/env; Docker Deploy is the recommended production path.";
-    if (framework === "nextjs") return "Next.js commonly needs server/runtime support; Docker Deploy is the safest default.";
-    return "Docker Deploy gives a durable runtime with lower-resource app hosting.";
+    if (needsDatabase) return "App needs server-side runtime/env; App Engine is the recommended production path.";
+    if (framework === "nextjs") return "Next.js commonly needs server/runtime support; App Engine is the safest default.";
+    return "App Engine gives a durable runtime with lower-resource app hosting.";
   }
   if (deployment === "static_publish") {
     return "Detected build output can be served as static assets.";
@@ -612,7 +612,7 @@ function edgeCasesFor(
   if (deployment === "docker_deploy") {
     cases.push({
       code: "DOCKER_DEPLOY_HOST_NOT_READY",
-      meaning: "Workspace Docker Deploy host must be active before app publish can finish.",
+      meaning: "Workspace App Engine host must be active before app publish can finish.",
       recovery: [
         "miosa docker-deploy ensure --wait --timeout 600 --json",
         "miosa docker-deploy templates --json",
