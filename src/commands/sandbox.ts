@@ -50,8 +50,9 @@ import {
   NetworkError,
   ServerError,
   UserError,
+  mapHttpError,
 } from "../errors.js";
-import { EXIT_USER_ERROR } from "../types.js";
+import { EXIT_USER_ERROR, type ApiErrorBody } from "../types.js";
 import {
   registerSandboxDevCommands,
   runFullSandboxDoctor,
@@ -1895,7 +1896,7 @@ export function register(program: Command): void {
     .option("--json", "Output raw JSON response")
     .action(async (id: string, remotePath: string, opts: JsonOptions) => {
       try {
-        const result = await fetchApiRaw(
+        const result = await client().apiGet<unknown>(
           apiPath(`/sandboxes/${enc(id)}/files/read?path=${enc(remotePath)}`),
         );
         if (isJsonMode(opts)) {
@@ -2671,8 +2672,7 @@ const SANDBOX_KEY_PATH = path.join(
 
 async function ensureSandboxSshKey(
   id: string,
-  apiKey: string,
-  endpoint: string,
+  config: ReturnType<typeof loadConfig>,
 ): Promise<void> {
   if (!fs.existsSync(SANDBOX_KEY_PATH)) {
     console.log(
@@ -2707,28 +2707,80 @@ async function ensureSandboxSshKey(
   // already exist from a previous sandbox, but a fresh sandbox still needs it
   // installed in authorized_keys before SSH auth can succeed.
   const pubKey = fs.readFileSync(`${SANDBOX_KEY_PATH}.pub`, "utf8").trim();
-  const base = endpoint.replace(/\/$/, "");
-  const res = await fetch(
-    `${base}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-keys`,
+  const endpoint = config.endpoint.replace(/\/$/, "");
+  const response = await fetch(
+    `${endpoint}${apiPath(`/sandboxes/${encodeURIComponent(id)}/ssh-keys`)}`,
     {
       method: "POST",
       headers: {
+        ...sandboxTransportHeaders(config),
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ public_key: pubKey }),
     },
   );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to register SSH key: ${res.status} ${body}`);
+  if (!response.ok) {
+    const rawBody = await response.text();
+    let body: ApiErrorBody = {};
+    try {
+      body = JSON.parse(rawBody) as ApiErrorBody;
+    } catch {
+      body = { message: rawBody || `HTTP ${response.status}` };
+    }
+    throw mapHttpError(
+      response.status,
+      body,
+      rawBody,
+      response.headers.get("x-request-id"),
+    );
   }
 
   console.log(chalk.green("SSH key registered."));
 }
 
-function bridgeSandboxWs(socket: Socket, wsUrl: string, apiKey: string): void {
+function sandboxTransportHeaders(
+  config: ReturnType<typeof loadConfig>,
+): Record<string, string> {
+  if (!config.api_key) throw new Error("Not authenticated. Run: miosa login");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${String(config.api_key)}`,
+  };
+  if (config.tenant) headers["X-MIOSA-Tenant"] = config.tenant;
+  if (config.workspace) headers["X-MIOSA-Workspace"] = config.workspace;
+  return headers;
+}
+
+export function buildSandboxWebSocketRequest(
+  config: ReturnType<typeof loadConfig>,
+  id: string,
+): {
+  url: string;
+  headers: Record<string, string>;
+} {
+  const base = config.endpoint.replace(/\/$/, "");
+  const wsBase = base.replace(/^https?/, (protocol) =>
+    protocol === "https" ? "wss" : "ws",
+  );
+  const url = new URL(
+    `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-tunnel`,
+  );
+  const headers = sandboxTransportHeaders(config);
+
+  if (config.tenant) {
+    url.searchParams.set("tenant", config.tenant);
+  }
+  if (config.workspace) {
+    url.searchParams.set("workspace", config.workspace);
+  }
+
+  return { url: url.toString(), headers };
+}
+
+function bridgeSandboxWs(
+  socket: Socket,
+  request: ReturnType<typeof buildSandboxWebSocketRequest>,
+): void {
   let closed = false;
 
   function cleanup(): void {
@@ -2737,8 +2789,8 @@ function bridgeSandboxWs(socket: Socket, wsUrl: string, apiKey: string): void {
     if (!socket.destroyed) socket.destroy();
   }
 
-  const ws = new WebSocket(wsUrl, {
-    headers: { Authorization: `Bearer ${apiKey}` },
+  const ws = new WebSocket(request.url, {
+    headers: request.headers,
   });
 
   ws.on("open", () => {
@@ -2769,15 +2821,9 @@ async function runSandboxSsh(
   opts: { port?: number; user?: string; spawn?: boolean; json?: boolean },
 ): Promise<void> {
   const config = loadConfig();
-  const apiKey = config.api_key;
-  if (!apiKey) throw new Error("Not authenticated. Run: miosa login");
+  const wsRequest = buildSandboxWebSocketRequest(config, id);
 
-  const endpoint = config.endpoint ?? "https://api.miosa.ai";
-  const base = endpoint.replace(/\/$/, "");
-  const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-tunnel`;
-
-  await ensureSandboxSshKey(id, String(apiKey), endpoint);
+  await ensureSandboxSshKey(id, config);
 
   // Pick a free local port
   const localPort = opts.port ?? (await pickFreePort());
@@ -2789,7 +2835,7 @@ async function runSandboxSsh(
         sandbox_id: id,
         local_port: localPort,
         user,
-        ws_url: wsUrl,
+        ws_url: wsRequest.url,
         key_path: SANDBOX_KEY_PATH,
       }),
     );
@@ -2797,7 +2843,7 @@ async function runSandboxSsh(
   }
 
   const server = createServer((socket) => {
-    bridgeSandboxWs(socket, wsUrl, String(apiKey));
+    bridgeSandboxWs(socket, wsRequest);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -5072,39 +5118,6 @@ async function readSandboxFile(
     );
   }
   throw new UserError(`Could not read sandbox file: ${remotePath}`);
-}
-
-async function fetchApiRaw(path: string, body?: unknown): Promise<unknown> {
-  const config = loadConfig();
-  const apiKey = config.api_key;
-  if (!apiKey) throw new UserError("Not authenticated. Run: miosa login");
-
-  const endpoint = (config.endpoint ?? "https://api.miosa.ai").replace(
-    /\/$/,
-    "",
-  );
-  const res = await fetch(`${endpoint}${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      Authorization: `Bearer ${String(apiKey)}`,
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      "User-Agent": "@miosa/cli",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new UserError(
-      `Server error (${res.status}): HTTP ${res.status}`,
-      text || res.statusText,
-    );
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
 }
 
 function commandInCwd(command: string, cwd?: string): string {
