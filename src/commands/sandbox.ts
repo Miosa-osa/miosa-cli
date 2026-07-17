@@ -3815,7 +3815,7 @@ function parsePublishDatabase(value?: string): unknown {
     normalized === "create:postgres" ||
     normalized === "create:postgresql"
   ) {
-    return { engine: "postgresql", engine_version: "15" };
+    return { engine: "postgresql", engine_version: "16" };
   }
   if (normalized.startsWith("existing:")) {
     return { existing_database_id: value.slice("existing:".length) };

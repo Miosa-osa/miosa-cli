@@ -3288,7 +3288,7 @@ async function dispatchTool(
     if (name === "database_create") {
       const engine = normalizeDatabaseEngine(args["engine"]);
       const body: Record<string, unknown> = { name: args["name"], engine };
-      if (engine === "postgresql" && !args["version"]) body["engine_version"] = "15";
+      if (engine === "postgresql" && !args["version"]) body["engine_version"] = "16";
       for (const key of ["size", "region"]) {
         if (args[key]) body[key] = args[key];
       }
