@@ -845,6 +845,225 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("creates a sandbox with the named small size by default", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          size: "small",
+          timeout_sec: 3600,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_small", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("sends an explicitly selected named sandbox size", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          size: "large",
+          timeout_sec: 3600,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_large", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--size",
+      "large",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("accepts a complete exact legacy resource override", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          size: "medium",
+          cpu_count: 4,
+          memory_mb: 8192,
+          disk_size_mb: 20480,
+          timeout_sec: 3600,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_medium", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--cpu",
+      "4",
+      "--memory",
+      "8gb",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("rejects partial legacy resource overrides before making a request", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--cpu",
+      "4",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(logged.join("\n")).toContain(
+      "require --cpu, --memory, and --disk together",
+    );
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+  it("rejects a legacy override that conflicts with the named size", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--size",
+      "small",
+      "--cpu",
+      "4",
+      "--memory",
+      "8gb",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(logged.join("\n")).toContain(
+      "match medium, not requested size small",
+    );
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+  it("renders lifecycle state instead of legacy status in list and show", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const pool = mock.get("https://api.miosa.ai");
+    const sandbox = {
+      id: "sbx_paused",
+      name: "agent-workspace",
+      state: "paused",
+      status: "legacy-running",
+      template_id: "miosa-sandbox",
+      created_at: "2026-07-18T00:00:00Z",
+    };
+
+    pool
+      .intercept({ path: "/api/v1/sandboxes", method: "GET" })
+      .reply(200, JSON.stringify({ data: [sandbox] }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({ path: "/api/v1/sandboxes/sbx_paused", method: "GET" })
+      .reply(200, JSON.stringify({ data: sandbox }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync(["node", "miosa", "sandbox", "list"]);
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "show",
+      "sbx_paused",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("paused");
+    expect(output).not.toContain("legacy-running");
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
   it("waits for sandbox VM readiness without requiring an app port", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -1901,3 +2120,4 @@ describe("miosa sandbox connectors", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 });
+

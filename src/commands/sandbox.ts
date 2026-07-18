@@ -68,6 +68,15 @@ import {
 const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
 const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
 const EXPIRING_SANDBOX_THRESHOLD_SEC = 5 * 60;
+const SANDBOX_SIZE_CONTRACTS = {
+  xs: { cpu: 1, memory: 2_048, disk: 10_240 },
+  small: { cpu: 2, memory: 4_096, disk: 10_240 },
+  medium: { cpu: 4, memory: 8_192, disk: 20_480 },
+  large: { cpu: 8, memory: 16_384, disk: 40_960 },
+  xl: { cpu: 16, memory: 32_768, disk: 81_920 },
+} as const;
+
+type SandboxSize = keyof typeof SANDBOX_SIZE_CONTRACTS;
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -129,7 +138,7 @@ export function register(program: Command): void {
           { header: "NAME", key: "name" as keyof Record<string, unknown> },
           {
             header: "STATUS",
-            key: "status" as keyof Record<string, unknown>,
+            key: "state" as keyof Record<string, unknown>,
             color: (val) => statusColor(val.trim()),
           },
           {
@@ -202,7 +211,7 @@ export function register(program: Command): void {
             { label: "Name", value: str(sb["name"]) },
             {
               label: "Status",
-              value: statusColor(str(sb["status"])),
+              value: statusColor(str(sb["state"])),
             },
           ];
           if (sb["template_id"]) {
@@ -272,6 +281,11 @@ export function register(program: Command): void {
         "Template / image ID (default: miosa-sandbox)",
       )
       .option("--name <name>", "Human-readable name for the Sandbox")
+      .option(
+        "--size <size>",
+        "Named size: xs, small, medium, large, or xl (default: small)",
+        parseSandboxSize,
+      )
       .option("--cpu <n>", "vCPU count", parseIntegerOption)
       .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
       .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
@@ -376,6 +390,7 @@ Note:
         opts: DataOptions & {
           template?: string;
           name?: string;
+          size?: SandboxSize;
           cpu?: number;
           memory?: number;
           disk?: number;
@@ -421,9 +436,13 @@ Note:
           const body: Record<string, unknown> = {};
           if (opts.template) body["template_id"] = opts.template;
           if (opts.name) body["name"] = opts.name;
-          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
-          if (opts.memory != null) body["memory_mb"] = opts.memory;
-          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
+          const resources = resolveSandboxResources(opts);
+          body["size"] = resources.size;
+          if (resources.legacy) {
+            body["cpu_count"] = resources.legacy.cpu;
+            body["memory_mb"] = resources.legacy.memory;
+            body["disk_size_mb"] = resources.legacy.disk;
+          }
           const timeoutSec =
             opts.timeout ?? DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC;
           body["timeout_sec"] = timeoutSec;
@@ -5377,6 +5396,59 @@ function parseIntegerOption(value: string): number {
   const n = Number.parseInt(String(value), 10);
   if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
   return n;
+}
+
+function parseSandboxSize(value: string): SandboxSize {
+  const size = String(value).trim().toLowerCase();
+  if (size in SANDBOX_SIZE_CONTRACTS) return size as SandboxSize;
+  throw new UserError(
+    `Invalid sandbox size: ${value}. Expected xs, small, medium, large, or xl.`,
+  );
+}
+
+function resolveSandboxResources(opts: {
+  size?: SandboxSize;
+  cpu?: number;
+  memory?: number;
+  disk?: number;
+}): {
+  size: SandboxSize;
+  legacy?: { cpu: number; memory: number; disk: number };
+} {
+  const legacyValues = [opts.cpu, opts.memory, opts.disk];
+  const legacyCount = legacyValues.filter((value) => value != null).length;
+
+  if (legacyCount === 0) return { size: opts.size ?? "small" };
+  if (legacyCount !== legacyValues.length) {
+    throw new UserError(
+      "Legacy resource overrides require --cpu, --memory, and --disk together. Prefer --size.",
+    );
+  }
+
+  const legacy = {
+    cpu: opts.cpu as number,
+    memory: opts.memory as number,
+    disk: opts.disk as number,
+  };
+  const matchingSize = Object.entries(SANDBOX_SIZE_CONTRACTS).find(
+    ([, contract]) =>
+      contract.cpu === legacy.cpu &&
+      contract.memory === legacy.memory &&
+      contract.disk === legacy.disk,
+  )?.[0] as SandboxSize | undefined;
+
+  if (!matchingSize) {
+    throw new UserError(
+      "Legacy --cpu/--memory/--disk values must exactly match a named sandbox size. Prefer --size.",
+    );
+  }
+  if (opts.size && opts.size !== matchingSize) {
+    throw new UserError(
+      `Legacy resource overrides match ${matchingSize}, not requested size ${opts.size}.`,
+    );
+  }
+
+  return { size: matchingSize, legacy };
 }
 
 function parseSizeMb(value: string): number {
