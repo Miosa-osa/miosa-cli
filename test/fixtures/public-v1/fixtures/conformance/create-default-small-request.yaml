@@ -1,0 +1,5 @@
+path: /sandboxes
+method: post
+request: true
+body:
+  template_id: miosa-sandbox

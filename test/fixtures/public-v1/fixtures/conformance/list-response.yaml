@@ -1,0 +1,5 @@
+path: /sandboxes
+method: get
+status: 200
+body:
+  data: []

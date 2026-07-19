@@ -1,0 +1,33 @@
+path: /sandboxes
+method: post
+status: 201
+body:
+  id: 793dd977-ad90-4e1a-87aa-4e07aa470bb9
+  slug: 793dd977
+  template_id: miosa-sandbox
+  state: provisioning
+  size: xs
+  resource_contract:
+    id: sandbox/xs@v1
+    product: sandbox
+    size: xs
+    version: v1
+    vcpus: 1
+    memory_mb: 2048
+    disk_size_mb: 10240
+  cpu_count: 1
+  memory_mb: 2048
+  disk_size_mb: 10240
+  always_on: false
+  persistent: true
+  timeout_sec: 3600
+  timeout_remaining_ms: 3600000
+  idle_timeout_sec: 0
+  total_runtime_sec:
+  name:
+  ready: false
+  ready_at:
+  preview_url: https://793dd977.sandbox.miosa.app
+  created_at: '2026-07-19T12:00:00Z'
+  started_at:
+  destroyed_at:
