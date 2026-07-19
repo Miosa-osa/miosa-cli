@@ -21,7 +21,7 @@ interface ConformanceFixture {
   body: Record<string, unknown>;
 }
 
-const EXPECTED_CONTRACT_COMMIT = "70e858e685b20ce1888b48e7c21b2b4ca48ca6f0";
+const EXPECTED_CONTRACT_COMMIT = "774abcbc97380b599009759632691dc60d8e6b38";
 
 function fixture(name: string): ConformanceFixture {
   const configuredRoot = process.env["MIOSA_API_CONTRACTS_ROOT"];
@@ -62,7 +62,7 @@ describe("public sandbox contract conformance", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("sends the canonical minimal create fixture by default", async () => {
-    const contract = fixture("create-request");
+    const contract = fixture("create-default-small-request");
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);

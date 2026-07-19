@@ -3,7 +3,7 @@ method: post
 request: true
 body:
   template_id: miosa-sandbox
-  size: small
-  timeout_sec: 3600
-  persistent: true
-  idle_timeout_sec: 0
+  size: xs
+  cpu_count: 1
+  memory_mb: 2048
+  disk_size_mb: 10240

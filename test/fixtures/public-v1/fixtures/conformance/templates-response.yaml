@@ -1,0 +1,93 @@
+path: /templates
+method: get
+status: 200
+body:
+  data:
+    - id: miosa-sandbox
+      name: MIOSA Sandbox
+      product: sandbox
+      default_size: small
+      primitive: template
+      sdk_name: miosa-sandbox
+      cli_name: miosa-sandbox
+      installed_tools: [node]
+      readiness_contract: {}
+      benchmark_lane: {}
+      aliases: [sandbox]
+      sizes:
+        - size: xs
+          state: fast_ready
+          resource_contract:
+            contract_id: sandbox/xs@v1
+            contract_version: v1
+            product: sandbox
+            size: xs
+            vcpus: 1
+            memory_mb: 2048
+            disk_size_mb: 10240
+        - size: small
+          state: fast_ready
+          resource_contract:
+            contract_id: sandbox/small@v1
+            contract_version: v1
+            product: sandbox
+            size: small
+            vcpus: 2
+            memory_mb: 4096
+            disk_size_mb: 10240
+      readiness: fast_ready
+  templates:
+    - id: miosa-sandbox
+      name: MIOSA Sandbox
+      product: sandbox
+      default_size: small
+      primitive: template
+      sdk_name: miosa-sandbox
+      cli_name: miosa-sandbox
+      installed_tools: [node]
+      readiness_contract: {}
+      benchmark_lane: {}
+      aliases: [sandbox]
+      sizes:
+        - size: xs
+          state: fast_ready
+          resource_contract:
+            contract_id: sandbox/xs@v1
+            contract_version: v1
+            product: sandbox
+            size: xs
+            vcpus: 1
+            memory_mb: 2048
+            disk_size_mb: 10240
+        - size: small
+          state: fast_ready
+          resource_contract:
+            contract_id: sandbox/small@v1
+            contract_version: v1
+            product: sandbox
+            size: small
+            vcpus: 2
+            memory_mb: 4096
+            disk_size_mb: 10240
+      readiness: fast_ready
+  shape_contracts:
+    sandbox:
+      - contract_id: sandbox/xs@v1
+        contract_version: v1
+        product: sandbox
+        size: xs
+        vcpus: 1
+        memory_mb: 2048
+        disk_size_mb: 10240
+      - contract_id: sandbox/small@v1
+        contract_version: v1
+        product: sandbox
+        size: small
+        vcpus: 2
+        memory_mb: 4096
+        disk_size_mb: 10240
+    computer: []
+  readiness_states:
+    - fast_ready
+    - cold_boot_only
+    - missing
