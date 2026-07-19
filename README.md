@@ -167,7 +167,20 @@ miosa sandbox publish <sandbox-id> \
 
 ## Agentic sandbox app templates
 
-Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/stop preserves the filesystem and moves the session to `paused`; `destroy` is the permanent delete operation.
+Query the canonical product catalog before choosing a shape:
+
+```bash
+miosa templates catalog --product sandbox
+miosa templates readiness miosa-sandbox --product sandbox --json
+```
+
+The default sandbox is `small`: 2 vCPU, 4096 MiB RAM, and 10240 MiB disk.
+The `miosa-sandbox` input is a stable alias, while catalog and create responses expose the resolved immutable `image_id` generation.
+Legacy `--cpu`, `--memory`, and `--disk` values must be supplied together and exactly match one named size.
+
+Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/pause preserves the filesystem and moves the session to `paused`; `destroy --force` is a legacy API extension for permanent deletion and is not in the public V1 allowlist.
+
+Sandbox placement is server-owned. The public sandbox create contract uses MIOSA-managed capacity by default and has no per-sandbox provider or placement selector. BYOC accounts, regions, and pools are configured separately with `miosa cloud`; eligible placement remains a control-plane policy decision.
 
 For a working Next.js starter with a public preview:
 
@@ -251,10 +264,7 @@ miosa sandbox resume <sandbox-id> --json
 Checkpoint and fork:
 
 ```bash
-miosa sandbox snapshot <sandbox-id> --comment "before auth refactor" --json
-miosa sandbox snapshots list <sandbox-id> --json
-miosa sandbox create --snapshot <snapshot-id> --timeout 1h --wait --json
-miosa sandbox fork <sandbox-id> --name feature-branch --json
+miosa sandbox fork <sandbox-id> --timeout 1h --idempotency-key feature-branch --json
 ```
 
 ### Canonical sandbox development contract
@@ -341,6 +351,8 @@ The development contract depends on these existing backend routes:
 
 The CLI does not add release-candidate prepare or prove commands because the current backend contract has no release-candidate prepare endpoint.
 Use `miosa sandbox publish`, `miosa releases promote`, and `miosa deploy prove` for the deployment interfaces that do exist.
+
+The public V1 snapshot operation is `fork`: the service takes a copy-on-write snapshot of a running sandbox and creates the fork. The separate snapshot create/list/restore commands are legacy API extensions and are not part of the public V1 allowlist.
 
 Use a disposable sandbox only when you explicitly do not want preserved state:
 
