@@ -21,10 +21,22 @@ interface ConformanceFixture {
   body: Record<string, unknown>;
 }
 
+const EXPECTED_CONTRACT_COMMIT = "70e858e685b20ce1888b48e7c21b2b4ca48ca6f0";
+
 function fixture(name: string): ConformanceFixture {
-  const contractsRoot =
-    process.env["MIOSA_API_CONTRACTS_ROOT"] ??
-    resolve(process.cwd(), "../miosa-api-contracts");
+  const configuredRoot = process.env["MIOSA_API_CONTRACTS_ROOT"];
+  const contractsRoot = configuredRoot
+    ? resolve(configuredRoot)
+    : resolve(process.cwd(), "test/fixtures/public-v1");
+  if (!configuredRoot) {
+    const pinnedCommit = readFileSync(
+      resolve(contractsRoot, "CONTRACT_COMMIT"),
+      "utf8",
+    ).trim();
+    if (pinnedCommit !== EXPECTED_CONTRACT_COMMIT) {
+      throw new Error(`Unexpected vendored contract commit: ${pinnedCommit}`);
+    }
+  }
   const fixturePath = resolve(
     contractsRoot,
     "fixtures/conformance",
