@@ -19,6 +19,8 @@ const { buildSandboxWebSocketRequest, register } = await import(
   "../../src/commands/sandbox.js"
 );
 
+const originalJsonMode = process.env["MIOSA_JSON"];
+
 function buildProgram(): Command {
   const program = new Command();
   program.exitOverride();
@@ -49,6 +51,11 @@ describe("miosa sandbox exec", () => {
   });
 
   afterEach(() => {
+    if (originalJsonMode === undefined) {
+      delete process.env["MIOSA_JSON"];
+    } else {
+      process.env["MIOSA_JSON"] = originalJsonMode;
+    }
     vi.restoreAllMocks();
   });
 
@@ -621,6 +628,7 @@ describe("miosa sandbox exec", () => {
         body: JSON.stringify({
           template_id: "nextjs",
           name: "bennett-os-auth-db",
+          size: "small",
           timeout_sec: 3600,
           idle_timeout_sec: 0,
           persistent: true,
@@ -2128,4 +2136,3 @@ describe("miosa sandbox connectors", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 });
-

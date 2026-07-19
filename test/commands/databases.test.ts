@@ -70,7 +70,7 @@ describe("miosa databases create", () => {
         body: JSON.stringify({
           name: "agent-pg",
           engine: "postgresql",
-          engine_version: "15",
+          engine_version: "16",
           workspace_id: WORKSPACE_ID,
         }),
       })
@@ -80,7 +80,7 @@ describe("miosa databases create", () => {
           id: DB_ID,
           name: "agent-pg",
           engine: "postgresql",
-          engine_version: "15",
+          engine_version: "16",
           state: "provisioning",
           workspace_id: WORKSPACE_ID,
         }),
@@ -99,7 +99,7 @@ describe("miosa databases create", () => {
           id: DB_ID,
           name: "agent-pg",
           engine: "postgresql",
-          engine_version: "15",
+          engine_version: "16",
           state: "running",
           workspace_id: WORKSPACE_ID,
           proxy_status: "ready",

@@ -22,9 +22,12 @@ interface ConformanceFixture {
 }
 
 function fixture(name: string): ConformanceFixture {
+  const contractsRoot =
+    process.env["MIOSA_API_CONTRACTS_ROOT"] ??
+    resolve(process.cwd(), "../miosa-api-contracts");
   const fixturePath = resolve(
-    process.cwd(),
-    "../miosa-api-contracts/fixtures/conformance",
+    contractsRoot,
+    "fixtures/conformance",
     `${name}.yaml`,
   );
   return parse(readFileSync(fixturePath, "utf8")) as ConformanceFixture;
