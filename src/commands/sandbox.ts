@@ -281,6 +281,15 @@ export function register(program: Command): void {
         parseDurationSec,
       )
       .option(
+        "--idle-timeout <duration>",
+        "Idle timeout before pause; 0 disables it (default: 0)",
+        parseDurationSec,
+      )
+      .option(
+        "--idempotency-key <key>",
+        "Retry-safe create key retained by the service for 24 hours",
+      )
+      .option(
         "--publish-port <port>",
         "Expose this port after create",
         parseIntegerOption,
@@ -360,6 +369,8 @@ export function register(program: Command): void {
           memory?: number;
           disk?: number;
           timeout?: number;
+          idleTimeout?: number;
+          idempotencyKey?: string;
           publishPort?: number;
           wait?: boolean;
           probePath?: string;
@@ -395,8 +406,9 @@ export function register(program: Command): void {
             return;
           }
 
-          const body: Record<string, unknown> = {};
-          if (opts.template) body["template_id"] = opts.template;
+          const body: Record<string, unknown> = {
+            template_id: opts.template ?? "miosa-sandbox",
+          };
           if (opts.name) body["name"] = opts.name;
           const resources = resolveSandboxResources(opts);
           body["size"] = resources.size;
@@ -408,6 +420,7 @@ export function register(program: Command): void {
           const timeoutSec =
             opts.timeout ?? DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC;
           body["timeout_sec"] = timeoutSec;
+          body["idle_timeout_sec"] = opts.idleTimeout ?? 0;
           if (opts.source) body["source"] = opts.source;
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
@@ -436,7 +449,13 @@ export function register(program: Command): void {
           if (opts.autoStart) body["auto_start"] = true;
 
           const raw = unwrap(
-            await client().apiPost<unknown>(apiPath("/sandboxes"), body),
+            await client().apiPost<unknown>(
+              apiPath("/sandboxes"),
+              body,
+              opts.idempotencyKey
+                ? { "Idempotency-Key": opts.idempotencyKey }
+                : undefined,
+            ),
           );
           const sb = (raw ?? {}) as Record<string, unknown>;
           const id = String(sb["id"] ?? "");
@@ -498,7 +517,8 @@ export function register(program: Command): void {
   // delete
   sandbox
     .command("delete <sandbox-id>")
-    .description("Delete a Sandbox")
+    .description("Permanently delete a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -508,7 +528,8 @@ export function register(program: Command): void {
   sandbox
     .command("destroy <sandbox-id>")
     .alias("rm")
-    .description("Destroy a Sandbox (alias for delete)")
+    .description("Permanently destroy a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -533,6 +554,14 @@ export function register(program: Command): void {
       }),
     );
 
+  sandbox
+    .command("pause <sandbox-id>")
+    .description("Pause a running persistent Sandbox and preserve its workspace")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {})),
+    );
+
   // stop — snapshot + pause (mirrors `box stop`)
   sandbox
     .command("stop <sandbox-id>")
@@ -548,7 +577,7 @@ export function register(program: Command): void {
       runAction(async () => {
         const stopped = unwrap(
           await client().apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/stop`),
+            apiPath(`/sandboxes/${enc(id)}/pause`),
             {},
           ),
         );
@@ -578,22 +607,48 @@ export function register(program: Command): void {
   sandbox
     .command("resume <sandbox-id>")
     .description("Resume a paused Sandbox")
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe lifecycle key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
+    .action((id: string, opts: JsonOptions & { idempotencyKey?: string }) =>
       runAction(() => resumeSandboxAndPrint(id, opts)),
     );
 
   // fork — clone from snapshot in one call (mirrors `box fork`)
   sandbox
     .command("fork <sandbox-id>")
-    .description("Clone (fork) a Sandbox from its current state")
-    .option("--name <name>", "Optional name for the forked Sandbox")
+    .description("Snapshot and fork a running Sandbox into a new Sandbox")
+    .option("--template <template>", "Template or immutable image override")
+    .option("--timeout <duration>", "Fork timeout", parseDurationSec)
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe fork key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: { name?: string } & JsonOptions) =>
+    .action((
+      id: string,
+      opts: {
+        template?: string;
+        timeout?: number;
+        idempotencyKey?: string;
+      } & JsonOptions,
+    ) =>
       runAction(async () => {
         const body: Record<string, unknown> = {};
-        if (opts.name) body["name"] = opts.name;
-        await postAndPrint(`/sandboxes/${enc(id)}/fork`, opts, body);
+        if (opts.template) body["template_id"] = opts.template;
+        if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+        const result = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/fork`),
+            body,
+            opts.idempotencyKey
+              ? { "Idempotency-Key": opts.idempotencyKey }
+              : undefined,
+          ),
+        );
+        printValue(result, opts);
       }),
     );
 
@@ -4072,10 +4127,19 @@ async function waitForSandboxRunning(
 
 async function resumeSandboxAndPrint(
   sandboxId: string,
-  opts: JsonOptions,
+  opts: JsonOptions & { idempotencyKey?: string },
 ): Promise<void> {
   try {
-    await postAndPrint(`/sandboxes/${enc(sandboxId)}/resume`, opts, {});
+    const result = unwrap(
+      await client().apiPost<unknown>(
+        apiPath(`/sandboxes/${enc(sandboxId)}/resume`),
+        {},
+        opts.idempotencyKey
+          ? { "Idempotency-Key": opts.idempotencyKey }
+          : undefined,
+      ),
+    );
+    printValue(result, opts);
   } catch (err) {
     if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_PAUSED") {
       throw await enrichSandboxLifecycleError(sandboxId, err);

@@ -415,6 +415,7 @@ describe("miosa sandbox exec", () => {
           name: "bennett-os-auth-db",
           size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -504,6 +505,7 @@ describe("miosa sandbox exec", () => {
           name: "throwaway",
           size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: false,
         }),
       })
@@ -549,8 +551,10 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes",
         method: "POST",
         body: JSON.stringify({
+          template_id: "miosa-sandbox",
           size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -584,8 +588,10 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes",
         method: "POST",
         body: JSON.stringify({
+          template_id: "miosa-sandbox",
           size: "large",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -621,11 +627,13 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes",
         method: "POST",
         body: JSON.stringify({
+          template_id: "miosa-sandbox",
           size: "medium",
           cpu_count: 4,
           memory_mb: 8192,
           disk_size_mb: 20480,
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -811,7 +819,7 @@ describe("miosa sandbox exec", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/stop",
+        path: "/api/v1/sandboxes/sbx_123/pause",
         method: "POST",
         body: JSON.stringify({}),
       })
