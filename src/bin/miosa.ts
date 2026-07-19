@@ -193,6 +193,7 @@ const commandModules = [
   "../commands/secrets.js",
   "../commands/volumes.js",
   "../commands/regions.js",
+  "../commands/cloud.js",
   "../commands/groups.js",
   "../commands/meshes.js",
   "../commands/network-policy.js",

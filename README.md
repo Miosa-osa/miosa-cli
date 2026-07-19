@@ -42,6 +42,48 @@ miosa command-overview --json
 subcommands. Use `miosa capabilities --json` for the higher-level agent workflow
 contract.
 
+## AWS BYOC host pools
+
+The `cloud` command manages the public BYOC control-plane contract.
+It configures AWS trust, region networking and artifacts, host pool limits, server-run preflight, and provisioning.
+
+```bash
+miosa cloud accounts create \
+  --name "Production AWS" \
+  --external-account-id 123456789012 \
+  --default-region us-east-1 \
+  --json
+
+miosa cloud accounts attach-role <account-id> \
+  --role-arn arn:aws:iam::123456789012:role/MiosaByocRole \
+  --default-region us-east-1 \
+  --json
+
+miosa cloud regions create \
+  --account-id <account-id> \
+  --provider-region us-east-1 \
+  --name "N. Virginia" \
+  --subnet-ref subnet-0abc123 \
+  --security-group-refs sg-0def456 \
+  --instance-profile-ref MiosaByocHost \
+  --artifact-manifest-uri s3://miosa-byoc-artifacts/manifest.json \
+  --metadata '{"host_image_id":"ami-0123456789abcdef0"}' \
+  --json
+
+miosa cloud pools create \
+  --region-id <region-id> \
+  --instance-type m7i.4xlarge \
+  --max-nodes 4 \
+  --max-hourly-cents 250 \
+  --json
+
+miosa cloud pools provision <pool-id> --count 1 --json
+```
+
+New pools default to `m7i.4xlarge`, the verified production shape.
+Use `m7i.2xlarge` for the supported baseline tier.
+`miosa cloud preflights run --region-id <id>` resolves the customer role and verifies the region, network, AMI, instance type, quota, and runtime artifact contract on the server.
+
 ## Deploy — 60 seconds to first deploy
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
