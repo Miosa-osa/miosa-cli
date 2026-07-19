@@ -1,0 +1,19 @@
+path: /sandboxes/{id}/usage
+method: get
+status: 200
+body:
+  data:
+    sandbox_id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+    state: running
+    runtime_sec: 47
+    provisioned_vcpu_ms: 94000
+    active_cpu_ms: 12000
+    network_ingress_bytes: 2048
+    network_egress_bytes: 4096
+    measurement_status:
+      active_cpu: measured
+      network: measured
+      provisioned_resources: measured
+    estimated_cost_cents: 1
+    timeout_sec: 3600
+    timeout_remaining_ms: 3553000

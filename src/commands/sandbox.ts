@@ -68,6 +68,15 @@ import {
 const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
 const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
 const EXPIRING_SANDBOX_THRESHOLD_SEC = 5 * 60;
+const SANDBOX_SIZE_CONTRACTS = {
+  xs: { cpu: 1, memory: 2_048, disk: 10_240 },
+  small: { cpu: 2, memory: 4_096, disk: 10_240 },
+  medium: { cpu: 4, memory: 8_192, disk: 20_480 },
+  large: { cpu: 8, memory: 16_384, disk: 40_960 },
+  xl: { cpu: 16, memory: 32_768, disk: 81_920 },
+} as const;
+
+type SandboxSize = keyof typeof SANDBOX_SIZE_CONTRACTS;
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -129,7 +138,7 @@ export function register(program: Command): void {
           { header: "NAME", key: "name" as keyof Record<string, unknown> },
           {
             header: "STATUS",
-            key: "status" as keyof Record<string, unknown>,
+            key: "state" as keyof Record<string, unknown>,
             color: (val) => statusColor(val.trim()),
           },
           {
@@ -202,7 +211,7 @@ export function register(program: Command): void {
             { label: "Name", value: str(sb["name"]) },
             {
               label: "Status",
-              value: statusColor(str(sb["status"])),
+              value: statusColor(str(sb["state"])),
             },
           ];
           if (sb["template_id"]) {
@@ -272,6 +281,11 @@ export function register(program: Command): void {
         "Template / image ID (default: miosa-sandbox)",
       )
       .option("--name <name>", "Human-readable name for the Sandbox")
+      .option(
+        "--size <size>",
+        "Named size: xs, small, medium, large, or xl (default: small)",
+        parseSandboxSize,
+      )
       .option("--cpu <n>", "vCPU count", parseIntegerOption)
       .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
       .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
@@ -279,6 +293,15 @@ export function register(program: Command): void {
         "--timeout <duration>",
         "Wall-clock timeout, e.g. 300s, 1h",
         parseDurationSec,
+      )
+      .option(
+        "--idle-timeout <duration>",
+        "Idle timeout before pause; 0 disables it (default: 0)",
+        parseDurationSec,
+      )
+      .option(
+        "--idempotency-key <key>",
+        "Retry-safe create key retained by the service for 24 hours",
       )
       .option(
         "--publish-port <port>",
@@ -376,10 +399,13 @@ Note:
         opts: DataOptions & {
           template?: string;
           name?: string;
+          size?: SandboxSize;
           cpu?: number;
           memory?: number;
           disk?: number;
           timeout?: number;
+          idleTimeout?: number;
+          idempotencyKey?: string;
           publishPort?: number;
           wait?: boolean;
           probePath?: string;
@@ -418,15 +444,21 @@ Note:
             return;
           }
 
-          const body: Record<string, unknown> = {};
-          if (opts.template) body["template_id"] = opts.template;
+          const body: Record<string, unknown> = {
+            template_id: opts.template ?? "miosa-sandbox",
+          };
           if (opts.name) body["name"] = opts.name;
-          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
-          if (opts.memory != null) body["memory_mb"] = opts.memory;
-          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
+          const resources = resolveSandboxResources(opts);
+          body["size"] = resources.size;
+          if (resources.legacy) {
+            body["cpu_count"] = resources.legacy.cpu;
+            body["memory_mb"] = resources.legacy.memory;
+            body["disk_size_mb"] = resources.legacy.disk;
+          }
           const timeoutSec =
             opts.timeout ?? DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC;
           body["timeout_sec"] = timeoutSec;
+          body["idle_timeout_sec"] = opts.idleTimeout ?? 0;
           if (opts.source) body["source"] = opts.source;
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
@@ -464,7 +496,13 @@ Note:
           if (opts.autoStart) body["auto_start"] = true;
 
           const raw = unwrap(
-            await client().apiPost<unknown>(apiPath("/sandboxes"), body),
+            await client().apiPost<unknown>(
+              apiPath("/sandboxes"),
+              body,
+              opts.idempotencyKey
+                ? { "Idempotency-Key": opts.idempotencyKey }
+                : undefined,
+            ),
           );
           const sb = (raw ?? {}) as Record<string, unknown>;
           const id = String(sb["id"] ?? "");
@@ -526,7 +564,8 @@ Note:
   // delete
   sandbox
     .command("delete <sandbox-id>")
-    .description("Delete a Sandbox")
+    .description("Permanently delete a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -536,7 +575,8 @@ Note:
   sandbox
     .command("destroy <sandbox-id>")
     .alias("rm")
-    .description("Destroy a Sandbox (alias for delete)")
+    .description("Permanently destroy a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -561,6 +601,14 @@ Note:
       }),
     );
 
+  sandbox
+    .command("pause <sandbox-id>")
+    .description("Pause a running persistent Sandbox and preserve its workspace")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {})),
+    );
+
   // stop — snapshot + pause (mirrors `box stop`)
   sandbox
     .command("stop <sandbox-id>")
@@ -576,7 +624,7 @@ Note:
       runAction(async () => {
         const stopped = unwrap(
           await client().apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/stop`),
+            apiPath(`/sandboxes/${enc(id)}/pause`),
             {},
           ),
         );
@@ -606,22 +654,48 @@ Note:
   sandbox
     .command("resume <sandbox-id>")
     .description("Resume a paused Sandbox")
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe lifecycle key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
+    .action((id: string, opts: JsonOptions & { idempotencyKey?: string }) =>
       runAction(() => resumeSandboxAndPrint(id, opts)),
     );
 
   // fork — clone from snapshot in one call (mirrors `box fork`)
   sandbox
     .command("fork <sandbox-id>")
-    .description("Clone (fork) a Sandbox from its current state")
-    .option("--name <name>", "Optional name for the forked Sandbox")
+    .description("Snapshot and fork a running Sandbox into a new Sandbox")
+    .option("--template <template>", "Template or immutable image override")
+    .option("--timeout <duration>", "Fork timeout", parseDurationSec)
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe fork key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: { name?: string } & JsonOptions) =>
+    .action((
+      id: string,
+      opts: {
+        template?: string;
+        timeout?: number;
+        idempotencyKey?: string;
+      } & JsonOptions,
+    ) =>
       runAction(async () => {
         const body: Record<string, unknown> = {};
-        if (opts.name) body["name"] = opts.name;
-        await postAndPrint(`/sandboxes/${enc(id)}/fork`, opts, body);
+        if (opts.template) body["template_id"] = opts.template;
+        if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+        const result = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/fork`),
+            body,
+            opts.idempotencyKey
+              ? { "Idempotency-Key": opts.idempotencyKey }
+              : undefined,
+          ),
+        );
+        printValue(result, opts);
       }),
     );
 
@@ -4243,10 +4317,19 @@ async function waitForSandboxRunning(
 
 async function resumeSandboxAndPrint(
   sandboxId: string,
-  opts: JsonOptions,
+  opts: JsonOptions & { idempotencyKey?: string },
 ): Promise<void> {
   try {
-    await postAndPrint(`/sandboxes/${enc(sandboxId)}/resume`, opts, {});
+    const result = unwrap(
+      await client().apiPost<unknown>(
+        apiPath(`/sandboxes/${enc(sandboxId)}/resume`),
+        {},
+        opts.idempotencyKey
+          ? { "Idempotency-Key": opts.idempotencyKey }
+          : undefined,
+      ),
+    );
+    printValue(result, opts);
   } catch (err) {
     if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_PAUSED") {
       throw await enrichSandboxLifecycleError(sandboxId, err);
@@ -5377,6 +5460,59 @@ function parseIntegerOption(value: string): number {
   const n = Number.parseInt(String(value), 10);
   if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
   return n;
+}
+
+function parseSandboxSize(value: string): SandboxSize {
+  const size = String(value).trim().toLowerCase();
+  if (size in SANDBOX_SIZE_CONTRACTS) return size as SandboxSize;
+  throw new UserError(
+    `Invalid sandbox size: ${value}. Expected xs, small, medium, large, or xl.`,
+  );
+}
+
+function resolveSandboxResources(opts: {
+  size?: SandboxSize;
+  cpu?: number;
+  memory?: number;
+  disk?: number;
+}): {
+  size: SandboxSize;
+  legacy?: { cpu: number; memory: number; disk: number };
+} {
+  const legacyValues = [opts.cpu, opts.memory, opts.disk];
+  const legacyCount = legacyValues.filter((value) => value != null).length;
+
+  if (legacyCount === 0) return { size: opts.size ?? "small" };
+  if (legacyCount !== legacyValues.length) {
+    throw new UserError(
+      "Legacy resource overrides require --cpu, --memory, and --disk together. Prefer --size.",
+    );
+  }
+
+  const legacy = {
+    cpu: opts.cpu as number,
+    memory: opts.memory as number,
+    disk: opts.disk as number,
+  };
+  const matchingSize = Object.entries(SANDBOX_SIZE_CONTRACTS).find(
+    ([, contract]) =>
+      contract.cpu === legacy.cpu &&
+      contract.memory === legacy.memory &&
+      contract.disk === legacy.disk,
+  )?.[0] as SandboxSize | undefined;
+
+  if (!matchingSize) {
+    throw new UserError(
+      "Legacy --cpu/--memory/--disk values must exactly match a named sandbox size. Prefer --size.",
+    );
+  }
+  if (opts.size && opts.size !== matchingSize) {
+    throw new UserError(
+      `Legacy resource overrides match ${matchingSize}, not requested size ${opts.size}.`,
+    );
+  }
+
+  return { size: matchingSize, legacy };
 }
 
 function parseSizeMb(value: string): number {
