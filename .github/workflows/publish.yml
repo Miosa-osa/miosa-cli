@@ -16,11 +16,39 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Use Node.js 20
+      - name: Validate release tag and version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="$(node -p "require('./package.json').version")"
+          semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+
+          if [[ ! "$version" =~ $semver_re ]]; then
+            echo "::error::package.json version is not semantic versioning: $version"
+            exit 1
+          fi
+          if [ "$tag" != "v${version}" ]; then
+            echo "::error::Tag $tag does not match package.json version $version"
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+          if [ "$(git rev-parse HEAD)" != "$tag_commit" ]; then
+            echo "::error::Checkout does not match tag $tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "::error::Tag $tag is not reachable from origin/main"
+            exit 1
+          fi
+
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -35,6 +63,18 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Inspect package archive
+        run: npm pack --dry-run
+
+      - name: Verify npm credential
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is required for publication"
+            exit 1
+          fi
 
       - name: Publish to npm
         run: npm publish --access public --provenance
