@@ -411,12 +411,19 @@ miosa deploy destroy [id]                  # Tear down deployment
 
 ## OpenComputers hosts
 
+OpenComputers connects a machine you own to your MIOSA account.
+OSA runs on that machine as the local agent harness and keeps an outbound-only connection to MIOSA.
+MIOSA issues a one-time host credential, tracks the host, and can send scoped work to it.
+
 ```bash
 # Authenticate
 miosa login
 
-# List your hosts
-miosa hosts
+# Register a Linux or macOS machine and print its one-time OSA install command
+miosa opencomputers connect my-mac --platform macos
+
+# List connected machines
+miosa opencomputers list
 
 # Open an interactive terminal
 miosa ssh my-mac
@@ -487,13 +494,13 @@ echo "msk_u_yourkey" | miosa login   # non-TTY / CI
 
 Remove the stored API key.
 
-### `miosa hosts [--json]`
+### `miosa opencomputers list [--json]`
 
-List all registered hosts.
+List machines connected to your MIOSA account through OpenComputers.
 
 ```bash
-miosa hosts
-miosa hosts --json | jq '.[].name'
+miosa opencomputers list
+miosa opencomputers list --json | jq '.[].name'
 ```
 
 ### `miosa host <name-or-id> [--json]`
@@ -505,14 +512,19 @@ miosa host my-mac
 miosa host abc12345
 ```
 
-### `miosa connect [name]`
+### `miosa opencomputers connect [name]`
 
-Register a new host interactively. Prints the install command and waits for the host to come online.
+Register a machine, print its one-time OSA install command, and wait for it to come online.
+The command does not install OSA automatically because the target machine can be different from the machine where you run the CLI.
+Use `--no-wait` in automation.
+JSON output redacts the install command unless you explicitly pass `--show-install-command`.
 
 ```bash
-miosa connect
-miosa connect my-new-server
+miosa opencomputers connect my-new-server --platform linux
+miosa opencomputers connect ci-runner --platform linux --no-wait --json
 ```
+
+`miosa connect` and `miosa hosts` remain available as compatibility shortcuts.
 
 ### `miosa ssh <computer-or-host> [--cmd "..."]`
 
@@ -637,13 +649,13 @@ miosa status
 
 **"No API key configured"** — Run `miosa login`.
 
-**"Host not found"** — Check `miosa hosts` for the correct name or ID.
+**"Host not found"** — Check `miosa opencomputers list` for the correct name or ID.
 
 **"Insufficient credits"** — Top up at https://miosa.ai/billing.
 
 **Network errors** — Check your connection. Use `MIOSA_DEBUG=1 miosa <cmd>` for stack traces.
 
-**Custom endpoint** — `MIOSA_ENDPOINT=https://your-instance.ai miosa hosts`
+**Custom endpoint** — `MIOSA_ENDPOINT=https://your-instance.ai miosa opencomputers list`
 
 ## Links
 

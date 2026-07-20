@@ -141,7 +141,7 @@ describe("miosa hosts", () => {
     await program.parseAsync(["node", "miosa", "hosts"]);
 
     const output = logged.join("\n");
-    expect(output).toContain("miosa connect");
+    expect(output).toContain("miosa opencomputers connect <name>");
   });
 
   it("should show short IDs (8 chars) in table output", async () => {

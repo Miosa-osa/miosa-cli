@@ -8,27 +8,52 @@ import { spin } from "../ui/spinner.js";
 const PLATFORMS = [
   "macos",
   "linux",
-  "windows",
   "ubuntu",
   "debian",
   "fedora",
   "other",
 ];
 
-export function register(program: Command): void {
+type ConnectOptions = {
+  platform?: string;
+  wait: boolean;
+  waitTimeout: number;
+  json?: boolean;
+  showInstallCommand?: boolean;
+};
+
+export function register(
+  program: Command,
+  options: {
+    command?: string;
+    description?: string;
+  } = {},
+): void {
   program
-    .command("connect [name]")
+    .command(options.command ?? "connect [name]")
     .description(
-      "Onboarding wizard: register a new host and get the install command",
+      options.description ??
+        "Onboarding wizard: register an OpenComputers host and get its install command",
     )
-    .action(async (nameArg?: string) => {
+    .option("--platform <platform>", "Target platform: macos, linux, ubuntu, debian, fedora, or other")
+    .option("--no-wait", "Return after creating the host instead of waiting for it to connect")
+    .option("--wait-timeout <seconds>", "Maximum connection wait time", "300")
+    .option("--show-install-command", "Include the secret-bearing install command in JSON output")
+    .option("--json", "Output structured JSON without secrets by default")
+    .action(async (nameArg: string | undefined, opts: ConnectOptions) => {
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
         const { default: inquirer } = await import("inquirer");
 
         let name = nameArg;
-        let platform: string | undefined;
+        let platform = opts.platform;
+
+        if (platform && !PLATFORMS.includes(platform)) {
+          throw new Error(
+            `Unsupported platform: ${platform}. Choose one of: ${PLATFORMS.join(", ")}.`,
+          );
+        }
 
         if (process.stdin.isTTY) {
           const answers = await inquirer.prompt<{
@@ -52,12 +77,22 @@ export function register(program: Command): void {
             },
           ]);
           name = name ?? answers.name;
-          platform = answers.platform;
+          platform = platform ?? answers.platform;
         } else {
           if (!name) {
-            console.error("Provide a name: miosa connect <name>");
-            process.exit(1);
+            throw new Error("Provide a name: miosa opencomputers connect <name>.");
           }
+
+          if (!platform) {
+            throw new Error(
+              "Provide --platform when running non-interactively, for example: --platform linux.",
+            );
+          }
+        }
+
+        const waitTimeoutMs = Number(opts.waitTimeout) * 1_000;
+        if (!Number.isFinite(waitTimeoutMs) || waitTimeoutMs <= 0) {
+          throw new Error("--wait-timeout must be a positive number of seconds.");
         }
 
         const spinner = spin(`Registering host "${name}"...`);
@@ -67,6 +102,23 @@ export function register(program: Command): void {
         });
         spinner.succeed(`Host registered (id: ${host.id.slice(0, 8)})`);
 
+        if (opts.json) {
+          const output = {
+            host: {
+              id: host.id,
+              name: host.name,
+              state: host.state,
+              platform: host.platform,
+            },
+            next_step: "Run the install command on the target machine, then use miosa opencomputers list.",
+            ...(opts.showInstallCommand
+              ? { install_command: host.install_command }
+              : {}),
+          };
+          console.log(JSON.stringify(output, null, 2));
+          return;
+        }
+
         if (host.install_command) {
           console.log();
           console.log(chalk.bold("Run this on your machine to connect:"));
@@ -75,17 +127,16 @@ export function register(program: Command): void {
           console.log();
         }
 
-        if (host.host_key) {
-          console.log(
-            chalk.dim(`  Host key: ${host.host_key} (keep this secret)`),
-          );
-          console.log();
+        if (!opts.wait) {
+          console.log(chalk.dim("Host created. Check its connection with: miosa opencomputers list"));
+          return;
         }
 
-        // Poll until online
+        // Poll until online. The CLI never installs the agent itself because the
+        // target machine may be different from the one running this command.
         const pollSpinner = spin("Waiting for host to come online...");
         let attempts = 0;
-        const maxAttempts = 60; // 5 minutes at 5s intervals
+        const maxAttempts = Math.ceil(waitTimeoutMs / 5_000);
 
         const poll = async (): Promise<void> => {
           while (attempts < maxAttempts) {
@@ -101,7 +152,7 @@ export function register(program: Command): void {
             pollSpinner.text = `Waiting for host to come online... (${attempts * 5}s)`;
           }
           pollSpinner.warn(
-            `Timed out waiting. Check the host and retry: miosa host ${name}`,
+            `Timed out waiting. Check the host with: miosa opencomputers list`,
           );
         };
 
