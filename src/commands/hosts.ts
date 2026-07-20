@@ -38,10 +38,17 @@ function relativeTime(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-export function register(program: Command): void {
+export function register(
+  program: Command,
+  options: {
+    command?: string;
+    description?: string;
+    emptyHint?: string;
+  } = {},
+): void {
   program
-    .command("hosts")
-    .description("List all OpenComputers hosts")
+    .command(options.command ?? "hosts")
+    .description(options.description ?? "List all OpenComputers hosts")
     .option("--json", "Output as JSON")
     .action(async (opts: { json?: boolean }) => {
       try {
@@ -55,7 +62,12 @@ export function register(program: Command): void {
         }
 
         if (hosts.length === 0) {
-          console.log(chalk.dim("No hosts found. Add one with: miosa connect"));
+          console.log(
+            chalk.dim(
+              options.emptyHint ??
+                "No hosts found. Add one with: miosa opencomputers connect <name>",
+            ),
+          );
           return;
         }
 

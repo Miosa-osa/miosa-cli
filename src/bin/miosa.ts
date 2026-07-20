@@ -88,7 +88,9 @@ Examples:
   miosa computers vnc <id>                      Open a Computer's VNC viewer
   miosa sandbox list                            List all Sandboxes
   miosa sandbox exec <id> --data '{"cmd":"…"}'  Run a command in a Sandbox
-  miosa hosts                                   List all OpenComputers hosts
+  miosa opencomputers connect my-mac --platform macos
+                                                  Connect a machine you own through OSA
+  miosa opencomputers list                      List connected OpenComputers hosts
   miosa ssh my-mac                              Interactive terminal on a Computer or host
   miosa exec my-mac "npm test"                  Run a command and stream output
   miosa cp ./file.txt my-mac:/tmp/              Upload a file
@@ -162,6 +164,7 @@ const commandModules = [
   "../commands/devices.js",
   "../commands/app.js",
   "../commands/command-overview.js",
+  "../commands/opencomputers.js",
   "../commands/hosts.js",
   "../commands/host.js",
   "../commands/computers.js",
