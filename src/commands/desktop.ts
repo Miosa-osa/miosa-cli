@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { request } from "undici";
 import { loadConfig } from "../config.js";
 import { AuthError, NetworkError, mapHttpError } from "../errors.js";
+import { CLI_USER_AGENT } from "../version.js";
 import {
   enc,
   getAndPrint,
@@ -22,7 +23,7 @@ function desktopPath(id: string, sub: string): string {
 function authHeaders(apiKey: string): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
-    "User-Agent": "@miosa/cli/0.1.0",
+    "User-Agent": CLI_USER_AGENT,
   };
 }
 

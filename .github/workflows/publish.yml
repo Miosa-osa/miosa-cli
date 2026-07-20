@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to verify or publish"
+        required: true
+      dry_run:
+        description: "Verify without publishing to npm"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -15,13 +24,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Invalid CLI release tag: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ steps.release.outputs.tag }}
           fetch-depth: 0
 
       - name: Validate release tag and version
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
+          tag="${{ steps.release.outputs.tag }}"
           version="$(node -p "require('./package.json').version")"
           semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
 
@@ -68,6 +92,7 @@ jobs:
         run: npm pack --dry-run
 
       - name: Verify npm credential
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -77,6 +102,11 @@ jobs:
           fi
 
       - name: Publish to npm
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verification-only notice
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run == 'true' }}
+        run: echo "Verification complete; npm publication was not requested"

@@ -26,6 +26,7 @@ import type {
 } from "./types.js";
 import { AuthError, mapHttpError, NetworkError, UserError } from "./errors.js";
 import { isDebugMode } from "./cli-env.js";
+import { CLI_USER_AGENT } from "./version.js";
 
 export class MiosaClient {
   private readonly endpoint: string;
@@ -51,7 +52,7 @@ export class MiosaClient {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
-      "User-Agent": `@miosa/cli/0.1.0`,
+      "User-Agent": CLI_USER_AGENT,
     };
 
     if (this.tenant) headers["X-MIOSA-Tenant"] = this.tenant;
