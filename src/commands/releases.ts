@@ -340,6 +340,28 @@ export function register(program: Command): void {
     );
 
   releases
+    .command("migration-backup <deployment-id> <version-id>")
+    .description("Queue the required database backup before a risky promotion")
+    .option("--json", "Output as JSON")
+    .action(async (deploymentId: string, versionId: string, opts: { json?: boolean }) => {
+      try {
+        const client = new MiosaClient(loadConfig());
+        const app = await resolveApp(client, deploymentId);
+        const result = await client.apiPost<unknown>(
+          `/api/v1/deployments/${encodeURIComponent(app.id)}/versions/${encodeURIComponent(versionId)}/migration-backup`,
+          {},
+        );
+        if (isJsonMode(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(chalk.green(`Migration backup queued for ${app.name} version ${shortId(versionId)}.`));
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  releases
     .command("promote-release <deployment-id> <release-id>")
     .description("Promote one exact immutable release to active")
     .option("-y, --yes", "Skip confirmation prompt")
