@@ -161,4 +161,47 @@ describe("miosa releases", () => {
       },
     });
   });
+
+  it("promotes the exact immutable release without translating to a version", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${app.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: app }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${app.id}/releases/${release.id}/promote`,
+        method: "POST",
+      })
+      .reply(200, JSON.stringify({ data: { ...app, active_version_id: release.deployment_version_id }, release_id: release.id }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "releases",
+      "promote-release",
+      app.id,
+      release.id,
+      "--yes",
+    ]);
+
+    expect(logged.join("\n")).toContain(`Release ${release.id.slice(0, 8)} promoted`);
+  });
 });

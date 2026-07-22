@@ -340,6 +340,57 @@ export function register(program: Command): void {
     );
 
   releases
+    .command("promote-release <deployment-id> <release-id>")
+    .description("Promote one exact immutable release to active")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("--json", "Output as JSON")
+    .action(
+      async (
+        deploymentId: string,
+        releaseId: string,
+        opts: { yes?: boolean; json?: boolean },
+      ) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const app = await resolveApp(client, deploymentId);
+
+          if (!opts.yes) {
+            const { default: inquirer } = await import("inquirer");
+            const { ok } = await inquirer.prompt<{ ok: boolean }>([
+              {
+                type: "confirm",
+                name: "ok",
+                message: `Promote release ${shortId(releaseId)} on ${app.name}?`,
+                default: false,
+              },
+            ]);
+            if (!ok) {
+              console.log(chalk.dim("Cancelled."));
+              return;
+            }
+          }
+
+          const result = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(app.id)}/releases/${encodeURIComponent(releaseId)}/promote`,
+          );
+
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          console.log(
+            chalk.green(
+              `Release ${shortId(releaseId)} promoted on ${app.name}.`,
+            ),
+          );
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  releases
     .command("rollback <release-id>")
     .description("Rollback to a release")
     .option("--app <app>", "App name, slug, or deployment ID")
