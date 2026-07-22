@@ -77,6 +77,7 @@ interface DockerDeployAppTruth {
   runtime_port?: number | string | null;
   public_url?: string | null;
   last_health_status?: string | null;
+  deployment_version_id?: string | null;
 }
 
 function unwrapHosts(payload: unknown): DockerDeployHost[] {
@@ -486,6 +487,8 @@ export function register(program: Command): void {
         const hostId = deploymentHostId(deployment);
         const runtime = deploymentRuntime(deployment);
         const publicUrl = deploymentPublicUrl(deployment);
+        const activeVersionId = deployment.active_version_id ?? null;
+        const servingVersionId = app?.deployment_version_id ?? null;
         let host: DockerDeployHost | null = null;
 
         if (hostId) {
@@ -561,6 +564,22 @@ export function register(program: Command): void {
             recovery: [
               "Check the appliance container list.",
               "Re-run miosa docker-deploy doctor <deployment-id> --json after the publish job completes.",
+            ],
+          },
+          {
+            id: "version_reconciled",
+            ok: Boolean(
+              activeVersionId &&
+                servingVersionId &&
+                activeVersionId === servingVersionId,
+            ),
+            message:
+              activeVersionId === servingVersionId && activeVersionId
+                ? `Control plane and App Engine serve version ${activeVersionId}.`
+                : `Version mismatch: active=${activeVersionId ?? "missing"}, serving=${servingVersionId ?? "missing"}.`,
+            recovery: [
+              "Do not treat this promotion as live.",
+              "Re-run the exact version promotion after App Engine reconciliation is healthy.",
             ],
           },
         ];
