@@ -240,6 +240,7 @@ describe("miosa docker-deploy", () => {
       slug: "docker-site",
       state: "running",
       deployment_product: "docker_deploy",
+      active_version_id: "version_123",
       docker_deploy_host_id: readyHost.id,
       public_url: "https://docker-site.example.com",
       metadata: {
@@ -263,6 +264,7 @@ describe("miosa docker-deploy", () => {
         runtime_port: 23906,
         public_url: "https://docker-site.example.com",
         last_health_status: "healthy",
+        deployment_version_id: "version_123",
       },
     };
 
@@ -327,6 +329,7 @@ describe("miosa docker-deploy", () => {
       status: 200,
       body_kind: "html",
     });
+    expect(parsed).toMatchObject({ ok: true });
   });
 
   it("fails doctor when a Docker Deploy deployment has no app truth row", async () => {
@@ -396,6 +399,82 @@ describe("miosa docker-deploy", () => {
     );
     expect(parsed.checks).toContainEqual(
       expect.objectContaining({ id: "app_container_running", ok: false }),
+    );
+    expect(process.exitCode).toBe(1);
+    process.exitCode = previousExitCode;
+  });
+
+  it("fails doctor when promotion metadata and the serving container disagree", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const deployment = {
+      id: "dep_version_skew",
+      name: "docker-site",
+      slug: "docker-site",
+      state: "running",
+      deployment_product: "docker_deploy",
+      active_version_id: "version_new",
+      docker_deploy_host_id: readyHost.id,
+      public_url: "https://docker-site.example.com",
+      metadata: {
+        deployment_product: "docker_deploy",
+        runtime: { ip: "172.16.74.246", port: 23906 },
+      },
+      docker_deploy_app: {
+        id: "app_row_123",
+        docker_deploy_host_id: readyHost.id,
+        container_id: "container_old",
+        status: "running",
+        runtime_ip: "172.16.74.246",
+        runtime_port: 23906,
+        deployment_version_id: "version_old",
+      },
+    };
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/deployments/dep_version_skew", method: "GET" })
+      .reply(200, JSON.stringify({ data: deployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/docker-deploy/hosts/${readyHost.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ host: readyHost }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "doctor",
+      "dep_version_skew",
+      "--no-probe",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      checks: Array<{ id: string; ok: boolean; message: string }>;
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({
+        id: "version_reconciled",
+        ok: false,
+        message: expect.stringContaining("active=version_new, serving=version_old"),
+      }),
     );
     expect(process.exitCode).toBe(1);
     process.exitCode = previousExitCode;

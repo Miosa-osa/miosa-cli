@@ -217,6 +217,7 @@ export interface Deployment {
   run_command: string | null;
   runtime_image: string | null;
   current_build_id: BuildId | null;
+  active_version_id?: string | null;
   state: DeploymentState;
   auto_deploy: boolean;
   custom_domain_id: string | null;
@@ -237,6 +238,7 @@ export interface Deployment {
     runtime_port?: number | string | null;
     public_url?: string | null;
     last_health_status?: string | null;
+    deployment_version_id?: string | null;
   } | null;
   metadata: Record<string, unknown>;
   created_at: string;
