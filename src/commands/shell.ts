@@ -26,9 +26,9 @@ import { MiosaClient } from "../client.js";
 import { handleError } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { getTerminalSize } from "../pty/raw-mode.js";
-import { CLI_USER_AGENT } from "../version.js";
 import { NetworkError, mapHttpError } from "../errors.js";
 import type { ComputerId } from "../types.js";
+import { CLI_USER_AGENT } from "../version.js";
 
 // ---------------------------------------------------------------------------
 // Types

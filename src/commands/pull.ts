@@ -194,6 +194,7 @@ Examples:
           }
 
           fs.writeFileSync(outputPath, toDotenv(secrets), { mode: 0o600 });
+          fs.chmodSync(outputPath, 0o600);
           ensureGitignored(cwd, path.basename(outputPath));
 
           console.log(

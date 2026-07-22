@@ -74,6 +74,7 @@ export function saveConfig(updates: Partial<MiosaConfig>): void {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + "\n", {
     mode: 0o600,
   });
+  fs.chmodSync(CONFIG_FILE, 0o600);
 }
 
 export function clearApiKey(): void {
@@ -122,6 +123,7 @@ export function saveAuthCache(cache: AuthCache): void {
   fs.writeFileSync(AUTH_CACHE_FILE, JSON.stringify(cache, null, 2) + "\n", {
     mode: 0o600,
   });
+  fs.chmodSync(AUTH_CACHE_FILE, 0o600);
 }
 
 export function loadAuthCache(): AuthCache | null {
@@ -239,6 +241,7 @@ export function saveContextStore(store: MiosaContextStore): void {
   fs.writeFileSync(CONTEXTS_FILE, JSON.stringify(store, null, 2) + "\n", {
     mode: 0o600,
   });
+  fs.chmodSync(CONTEXTS_FILE, 0o600);
 }
 
 export function saveConfigForActiveContext(

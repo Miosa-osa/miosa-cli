@@ -150,7 +150,6 @@ Examples:
             cwd,
             env: mergedEnv,
             stdio: "inherit",
-            shell: true,
           });
 
           // Forward signals so the child receives Ctrl+C etc.

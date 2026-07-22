@@ -7,8 +7,8 @@ import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { formatBytes } from "../ui/progress.js";
 import { formatDuration } from "../ui/render.js";
-import { CLI_USER_AGENT } from "../version.js";
 import { handleError, isJsonMode } from "./util.js";
+import { CLI_USER_AGENT } from "../version.js";
 
 interface Database {
   id: string;

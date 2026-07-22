@@ -7,8 +7,8 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
-import { CLI_USER_AGENT } from "../version.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
+import { CLI_USER_AGENT } from "../version.js";
 
 interface Bucket {
   id: string;

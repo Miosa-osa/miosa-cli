@@ -7,7 +7,7 @@
 # This script detects pnpm, npm, or yarn and installs @miosa/cli globally.
 # It's a thin wrapper for now — a static-binary path is on the roadmap.
 
-set -e
+set -euo pipefail
 
 PACKAGE="@miosa/cli"
 MIN_NODE_MAJOR=20
@@ -25,8 +25,8 @@ require_node() {
     echo "Install from https://nodejs.org or via your package manager:"
     echo ""
     echo "  macOS (Homebrew):  brew install node"
-    echo "  Linux (apt):       curl -fsSL https://deb.nodesource.com/setup_${MIN_NODE_MAJOR}.x | sudo bash - && sudo apt install -y nodejs"
-    echo "  Linux (other):     https://github.com/nodesource/distributions"
+    echo "  Cross-platform:    https://github.com/nvm-sh/nvm"
+    echo "  Linux distros:     https://nodejs.org/en/download/package-manager"
     exit 1
   fi
 

@@ -125,7 +125,6 @@ describe("miosa run", () => {
           DATABASE_URL: expect.any(String),
         }),
         stdio: "inherit",
-        shell: true,
       }),
     );
   });

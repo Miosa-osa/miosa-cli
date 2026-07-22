@@ -242,7 +242,6 @@ Examples:
           cwd,
           env: mergedEnv,
           stdio: "inherit",
-          shell: true,
         });
 
         // Graceful shutdown

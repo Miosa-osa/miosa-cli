@@ -38,7 +38,7 @@ export class MiosaClient {
     if (!config.api_key) {
       throw new AuthError(
         "You are not logged in. Run: miosa login",
-        "Install with `brew install Miosa-osa/tap/miosa`, then run `miosa login`.",
+        "Run `miosa login` to authenticate.",
       );
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
@@ -143,7 +143,7 @@ export class MiosaClient {
     return this.get<T>(path);
   }
 
-  /** Generic binary GET for file download routes. */
+  /** Generic binary GET for file/artifact download routes. */
   async apiGetBinary(path: string): Promise<Buffer> {
     let res: Dispatcher.ResponseData;
     try {
