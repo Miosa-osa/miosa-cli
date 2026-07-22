@@ -352,6 +352,7 @@ export function register(program: Command): void {
     .option("--db-version <version>", "Alias for --engine-version")
     .option("--region <region>", "Region ID")
     .option("--workspace <workspace-id>", "Workspace ID")
+    .option("--environment <environment-id>", "Deployment environment ID")
     .option("--wait", "Wait until the database is ready")
     .option("--timeout <seconds>", "Wait timeout in seconds", parseIntegerOption, 120)
     .option("--json", "Output raw JSON")
@@ -363,6 +364,7 @@ export function register(program: Command): void {
         dbVersion?: string;
         region?: string;
         workspace?: string;
+        environment?: string;
         wait?: boolean;
         timeout: number;
         json?: boolean;
@@ -383,6 +385,7 @@ export function register(program: Command): void {
           if (engineVersion) body["engine_version"] = engineVersion;
           if (opts.region) body["region"] = opts.region;
           if (opts.workspace) body["workspace_id"] = opts.workspace;
+          if (opts.environment) body["environment_id"] = opts.environment;
 
           let db = unwrapDatabase(
             await client.apiPost("/api/v1/databases", body),
