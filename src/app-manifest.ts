@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
+import { UserError } from "./errors.js";
 
 export const APP_MANIFEST_FILES = [
   "miosa.app.yml",
@@ -8,6 +10,8 @@ export const APP_MANIFEST_FILES = [
 ] as const;
 
 export interface MiosaAppManifest {
+  schema_version?: number;
+  name?: string;
   template?: string;
   framework?: string;
   workdir?: string;
@@ -30,7 +34,60 @@ export interface MiosaAppManifest {
     path?: string;
     port?: number;
   };
+  sandbox?: ProjectSandboxManifest;
+  sync?: ProjectSyncManifest;
+  dependencies?: ProjectDependenciesManifest;
+  services?: Record<string, ProjectServiceManifest>;
+  requirements?: ProjectRequirementsManifest;
 }
+
+export interface ProjectSandboxManifest {
+  name?: string;
+  template?: string;
+  workdir: string;
+}
+
+export interface ProjectSyncManifest {
+  exclude: string[];
+}
+
+export interface ProjectDependenciesManifest {
+  install: string | false;
+}
+
+export interface ProjectServiceManifest {
+  command?: string;
+  cwd?: string;
+  port?: number;
+  health?: {
+    path: string;
+    timeout: number;
+  };
+}
+
+export interface ProjectRequirementsManifest {
+  config: string[];
+  secrets: string[];
+  database: boolean;
+}
+
+export interface ManifestValidationIssue {
+  code: string;
+  path: string;
+  message: string;
+  fix: string;
+}
+
+const DEFAULT_SYNC_EXCLUDES = [
+  ".git",
+  ".miosa",
+  ".env",
+  ".env.*",
+  "node_modules",
+  ".venv",
+  "coverage",
+  "dist",
+] as const;
 
 export type ResourceIntent =
   | false
@@ -61,6 +118,24 @@ export function loadAppManifest(dir: string): LoadedAppManifest | null {
   return null;
 }
 
+export function loadProjectManifest(dir: string): LoadedAppManifest {
+  const loaded = loadAppManifest(dir);
+  if (!loaded) {
+    throw new UserError(
+      `Project manifest not found in ${path.resolve(dir)}.`,
+      "Create miosa.app.yml. See the sandbox development contract in README.md.",
+    );
+  }
+  const issues = validateProjectManifest(loaded.manifest);
+  if (issues.length > 0) {
+    throw new UserError(
+      `Invalid project manifest: ${issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`,
+      issues.map((issue) => `${issue.code}: ${issue.fix}`).join(" "),
+    );
+  }
+  return loaded;
+}
+
 export function parseAppManifest(
   filename: string,
   content: string,
@@ -69,7 +144,85 @@ export function parseAppManifest(
     const parsed = JSON.parse(content) as unknown;
     return normalizeManifest(parsed);
   }
-  return normalizeManifest(parseSimpleYaml(content));
+  return normalizeManifest(parseYaml(content) as unknown);
+}
+
+export function validateProjectManifest(
+  manifest: MiosaAppManifest,
+): ManifestValidationIssue[] {
+  const issues: ManifestValidationIssue[] = [];
+  if (manifest.schema_version !== 1) {
+    issues.push({
+      code: "MANIFEST_SCHEMA_UNSUPPORTED",
+      path: "schema_version",
+      message: "schema_version must be 1",
+      fix: "Set schema_version: 1.",
+    });
+  }
+  if (!manifest.name) {
+    issues.push({
+      code: "MANIFEST_NAME_REQUIRED",
+      path: "name",
+      message: "project name is required",
+      fix: "Set name to a stable project identifier.",
+    });
+  }
+
+  const install = manifest.dependencies?.install;
+  if (typeof install === "string" && !isDeterministicInstall(install)) {
+    issues.push({
+      code: "INSTALL_NOT_DETERMINISTIC",
+      path: "dependencies.install",
+      message: `install command is not lockfile-strict: ${install}`,
+      fix: "Use npm ci, pnpm install --frozen-lockfile, yarn install --immutable, bun install --frozen-lockfile, or a hash-locked equivalent.",
+    });
+  }
+
+  const services = manifest.services ?? {};
+  if (Object.keys(services).length === 0) {
+    issues.push({
+      code: "SERVICES_REQUIRED",
+      path: "services",
+      message: "at least one service is required",
+      fix: "Declare a named service with command, port, and health settings.",
+    });
+  }
+  const usedPorts = new Map<number, string>();
+  for (const [name, service] of Object.entries(services)) {
+    if (!service.command) {
+      issues.push({
+        code: "SERVICE_COMMAND_REQUIRED",
+        path: `services.${name}.command`,
+        message: "service command is required",
+        fix: `Set services.${name}.command to the foreground process command.`,
+      });
+    }
+    if (
+      service.port == null ||
+      !Number.isInteger(service.port) ||
+      service.port < 1 ||
+      service.port > 65535
+    ) {
+      issues.push({
+        code: "SERVICE_PORT_INVALID",
+        path: `services.${name}.port`,
+        message: "service port must be an integer from 1 through 65535",
+        fix: `Set services.${name}.port to the listener port.`,
+      });
+    } else {
+      const previous = usedPorts.get(service.port);
+      if (previous) {
+        issues.push({
+          code: "SERVICE_PORT_DUPLICATE",
+          path: `services.${name}.port`,
+          message: `port ${service.port} is also used by ${previous}`,
+          fix: "Give every declared service a unique listener port.",
+        });
+      }
+      usedPorts.set(service.port, name);
+    }
+  }
+  return issues;
 }
 
 export function manifestProbePath(manifest?: MiosaAppManifest | null): string | undefined {
@@ -116,49 +269,6 @@ export function manifestResources(
   return manifest?.resources;
 }
 
-function parseSimpleYaml(content: string): Record<string, unknown> {
-  const root: Record<string, unknown> = {};
-  const stack: Array<{ indent: number; object: Record<string, unknown> }> = [
-    { indent: -1, object: root },
-  ];
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    const withoutComment = rawLine.replace(/\s+#.*$/, "");
-    if (!withoutComment.trim()) continue;
-    const indent = withoutComment.match(/^\s*/)?.[0].length ?? 0;
-    const trimmed = withoutComment.trim();
-    const idx = trimmed.indexOf(":");
-    if (idx <= 0) continue;
-
-    const key = trimmed.slice(0, idx).trim();
-    const rawValue = trimmed.slice(idx + 1).trim();
-
-    while (stack.length > 1 && indent <= stack[stack.length - 1]!.indent) {
-      stack.pop();
-    }
-
-    const parent = stack[stack.length - 1]!.object;
-
-    if (rawValue === "") {
-      const child: Record<string, unknown> = {};
-      parent[key] = child;
-      stack.push({ indent, object: child });
-    } else {
-      parent[key] = parseScalar(rawValue);
-    }
-  }
-
-  return root;
-}
-
-function parseScalar(raw: string): unknown {
-  const value = raw.replace(/^['"]|['"]$/g, "");
-  if (value === "false") return false;
-  if (value === "true") return true;
-  if (/^\d+$/.test(value)) return Number(value);
-  return value;
-}
-
 function normalizeManifest(value: unknown): MiosaAppManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const row = value as Record<string, unknown>;
@@ -170,15 +280,28 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
     row["resources"] && typeof row["resources"] === "object"
       ? normalizeResources(row["resources"] as Record<string, unknown>)
       : undefined;
+  const sandbox = recordValue(row["sandbox"]);
+  const sync = recordValue(row["sync"]);
+  const dependencies = recordValue(row["dependencies"]);
+  const requirements = recordValue(row["requirements"]);
+  const services = normalizeServices(recordValue(row["services"]));
+  const workdir = stringValue(
+    sandbox?.["workdir"] ?? row["workdir"] ?? row["workspace"] ?? row["root"],
+  ) ?? "/workspace";
+  const install =
+    dependencies?.["install"] === false || row["install"] === false
+      ? false
+      : stringValue(
+          dependencies?.["install"] ?? row["install"] ?? row["install_command"],
+        );
 
   return {
+    schema_version: numberValue(row["schema_version"]),
+    name: stringValue(row["name"]),
     template: stringValue(row["template"] ?? row["template_id"]),
     framework: stringValue(row["framework"]),
-    workdir: stringValue(row["workdir"] ?? row["workspace"] ?? row["root"]),
-    install:
-      row["install"] === false
-        ? false
-        : stringValue(row["install"] ?? row["install_command"]),
+    workdir,
+    install,
     dev: stringValue(row["dev"]),
     build: stringValue(row["build"] ?? row["build_command"]),
     start: stringValue(row["start"] ?? row["start_command"]),
@@ -194,7 +317,76 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
       ),
       port: numberValue(readiness["port"]),
     },
+    sandbox: {
+      name: stringValue(sandbox?.["name"]),
+      template: stringValue(sandbox?.["template"]),
+      workdir,
+    },
+    sync: {
+      exclude: uniqueStrings([
+        ...DEFAULT_SYNC_EXCLUDES,
+        ...stringArray(sync?.["exclude"]),
+      ]),
+    },
+    dependencies: install === undefined ? undefined : { install },
+    services,
+    requirements: {
+      config: stringArray(requirements?.["config"]),
+      secrets: stringArray(requirements?.["secrets"]),
+      database: requirements?.["database"] === true,
+    },
   };
+}
+
+function normalizeServices(
+  value: Record<string, unknown> | null,
+): Record<string, ProjectServiceManifest> | undefined {
+  if (!value) return undefined;
+  const services: Record<string, ProjectServiceManifest> = {};
+  for (const [name, candidate] of Object.entries(value)) {
+    const row = recordValue(candidate) ?? {};
+    const health = recordValue(row["health"]);
+    services[name] = {
+      command: stringValue(row["command"] ?? row["cmd"]),
+      cwd: stringValue(row["cwd"]),
+      port: numberValue(row["port"]),
+      health: {
+        path: stringValue(health?.["path"]) ?? "/",
+        timeout: numberValue(health?.["timeout"]) ?? 120,
+      },
+    };
+  }
+  return services;
+}
+
+function isDeterministicInstall(command: string): boolean {
+  if (/[;&|`<>\r\n]/.test(command) || command.includes("$(")) return false;
+
+  return (
+    /^npm\s+ci(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^pnpm\s+install\b(?=[^\r\n]*--frozen-lockfile)(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^yarn\s+install\b(?=[^\r\n]*(?:--immutable|--frozen-lockfile))(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^bun\s+install\b(?=[^\r\n]*--frozen-lockfile)(?:\s+[^\s]+)*\s*$/.test(command) ||
+    /^pip(?:3)?\s+install\b(?=[^\r\n]*(?:--require-hashes|-r\s+[^\s]+\.lock|--requirement(?:=|\s+)[^\s]+\.lock))(?:\s+[^\s]+)*\s*$/.test(
+      command,
+    )
+  );
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.trim() !== "",
+  );
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 function normalizeResources(

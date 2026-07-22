@@ -12,7 +12,7 @@ vi.mock("../../src/config.js", () => ({
   }),
 }));
 
-const { register } = await import("../../src/commands/agent-runs.js");
+const { register } = await import("../../src/commands/runs.js");
 
 function buildProgram(): Command {
   const program = new Command();
@@ -29,7 +29,7 @@ function captureLogs(): string[] {
   return logged;
 }
 
-describe("miosa agent-runs", () => {
+describe("miosa runs", () => {
   beforeEach(() => {
     process.env["MIOSA_JSON"] = "1";
   });
@@ -40,7 +40,7 @@ describe("miosa agent-runs", () => {
     process.exitCode = undefined;
   });
 
-  it("lists, shows, and cancels agent runs", async () => {
+  it("lists, shows, and cancels runs", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
@@ -48,7 +48,7 @@ describe("miosa agent-runs", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs?external_workspace_id=clinic-iq&external_user_id=founder-1&external_project_id=landing-page&target_kind=sandbox&target_id=sbx_123&status=running",
+        path: "/api/v1/runs?external_workspace_id=clinic-iq&external_user_id=founder-1&external_project_id=landing-page&target_kind=sandbox&target_id=sbx_123&status=running",
         method: "GET",
       })
       .reply(
@@ -60,8 +60,8 @@ describe("miosa agent-runs", () => {
               target_kind: "sandbox",
               target_id: "sbx_123",
               status: "running",
-              provider: "codex",
-              prompt: "build it",
+              runner: "codex",
+              instruction: "build it",
             },
           ],
         }),
@@ -69,7 +69,7 @@ describe("miosa agent-runs", () => {
       );
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123",
+        path: "/api/v1/runs/run_123",
         method: "GET",
       })
       .reply(
@@ -86,7 +86,7 @@ describe("miosa agent-runs", () => {
       );
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123/cancel",
+        path: "/api/v1/runs/run_123/cancel",
         method: "POST",
         body: JSON.stringify({}),
       })
@@ -107,7 +107,7 @@ describe("miosa agent-runs", () => {
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
+      "runs",
       "list",
       "--sandbox",
       "sbx_123",
@@ -123,14 +123,14 @@ describe("miosa agent-runs", () => {
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
+      "runs",
       "show",
       "run_123",
     ]);
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
+      "runs",
       "cancel",
       "run_123",
     ]);
@@ -141,7 +141,7 @@ describe("miosa agent-runs", () => {
     expect(outputs[2]).toMatchObject({ id: "run_123", status: "canceled" });
   });
 
-  it("lists and downloads agent run artifacts", async () => {
+  it("lists and downloads run files", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
@@ -149,7 +149,7 @@ describe("miosa agent-runs", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123/artifacts",
+        path: "/api/v1/runs/run_123/files",
         method: "GET",
       })
       .reply(
@@ -169,7 +169,7 @@ describe("miosa agent-runs", () => {
       );
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123/artifacts/art_123/download",
+        path: "/api/v1/runs/run_123/files/art_123/download",
         method: "GET",
       })
       .reply(200, "<html>report</html>", {
@@ -183,15 +183,15 @@ describe("miosa agent-runs", () => {
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
-      "artifacts",
+      "runs",
+      "files",
       "run_123",
     ]);
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
-      "download",
+      "runs",
+      "download-file",
       "run_123",
       "art_123",
       "--output",
@@ -201,8 +201,8 @@ describe("miosa agent-runs", () => {
     const outputs = logged.map((entry) => JSON.parse(entry));
     expect(outputs[0][0]).toMatchObject({ id: "art_123", kind: "html" });
     expect(outputs[1]).toMatchObject({
-      agent_run_id: "run_123",
-      artifact_id: "art_123",
+      run_id: "run_123",
+      file_id: "art_123",
       output: "report.html",
       bytes: 19,
     });
@@ -212,7 +212,7 @@ describe("miosa agent-runs", () => {
     );
   });
 
-  it("lists agent run events", async () => {
+  it("lists run activity", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
@@ -220,7 +220,7 @@ describe("miosa agent-runs", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123/events",
+        path: "/api/v1/runs/run_123/activity",
         method: "GET",
       })
       .reply(
@@ -229,10 +229,10 @@ describe("miosa agent-runs", () => {
           data: [
             {
               id: "evt_123",
-              agent_run_id: "run_123",
+              run_id: "run_123",
               sequence: 1,
               type: "created",
-              message: "Agent run created",
+              message: "Run created",
             },
           ],
         }),
@@ -245,20 +245,20 @@ describe("miosa agent-runs", () => {
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
-      "events",
+      "runs",
+      "activity",
       "run_123",
     ]);
 
     const outputs = logged.map((entry) => JSON.parse(entry));
     expect(outputs[0][0]).toMatchObject({
       id: "evt_123",
-      agent_run_id: "run_123",
+      run_id: "run_123",
       type: "created",
     });
   });
 
-  it("waits for an agent run", async () => {
+  it("waits for a run", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
@@ -266,7 +266,7 @@ describe("miosa agent-runs", () => {
     const pool = mock.get("https://api.miosa.ai");
     pool
       .intercept({
-        path: "/api/v1/agent-runs/run_123",
+        path: "/api/v1/runs/run_123",
         method: "GET",
       })
       .reply(
@@ -288,7 +288,7 @@ describe("miosa agent-runs", () => {
     await program.parseAsync([
       "node",
       "miosa",
-      "agent-runs",
+      "runs",
       "wait",
       "run_123",
     ]);

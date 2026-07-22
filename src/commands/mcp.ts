@@ -62,9 +62,12 @@ interface McpToolResult {
   isError?: boolean;
 }
 
+const SANDBOX_SIZES = ["xs", "small", "medium", "large", "xl"] as const;
+type SandboxSize = (typeof SANDBOX_SIZES)[number];
+
 // ── Tool definitions — mirror the Python MCP server exactly ─────────────────
 
-const TOOL_LIST: McpTool[] = [
+export const MCP_TOOLS: McpTool[] = [
   // Lifecycle
   {
     name: "computer_create",
@@ -1060,8 +1063,12 @@ const TOOL_LIST: McpTool[] = [
           type: "string",
           description: "Template / image ID (default: miosa-sandbox)",
         },
-        cpu_count: { type: "integer", description: "vCPU count" },
-        memory_mb: { type: "integer", description: "Memory in MB" },
+        size: {
+          type: "string",
+          enum: [...SANDBOX_SIZES],
+          description: "Canonical sandbox size (default: small)",
+          default: "small",
+        },
         timeout_sec: {
           type: "integer",
           description: "Idle timeout in seconds",
@@ -1782,7 +1789,7 @@ function send(response: JsonRpcResponse): void {
 
 // ── Tool dispatch ────────────────────────────────────────────────────────────
 
-async function dispatchTool(
+export async function dispatchMcpTool(
   client: MiosaClient,
   name: string,
   args: Record<string, unknown>,
@@ -2702,13 +2709,21 @@ async function dispatchTool(
 
     // ── Sandboxes ─────────────────────────────────────────────────────────
     if (name === "sandbox_create") {
+      const rawResourceKeys = ["cpu_count", "memory_mb", "disk_size_mb"].filter(
+        (key) => args[key] !== undefined,
+      );
+      if (rawResourceKeys.length > 0) {
+        return err(
+          `sandbox_create accepts named size only; remove ${rawResourceKeys.join(
+            ", ",
+          )} and use size=xs|small|medium|large|xl`,
+        );
+      }
+
       const body: Record<string, unknown> = {};
       if (args["name"]) body["name"] = args["name"];
       if (args["template_id"]) body["template_id"] = args["template_id"];
-      if (args["cpu_count"] !== undefined)
-        body["cpu_count"] = args["cpu_count"];
-      if (args["memory_mb"] !== undefined)
-        body["memory_mb"] = args["memory_mb"];
+      body["size"] = resolveSandboxSize(args["size"]);
       if (args["timeout_sec"] !== undefined)
         body["timeout_sec"] = args["timeout_sec"];
       const result = await client.apiPost<unknown>("/api/v1/sandboxes", body);
@@ -3288,7 +3303,7 @@ async function dispatchTool(
     if (name === "database_create") {
       const engine = normalizeDatabaseEngine(args["engine"]);
       const body: Record<string, unknown> = { name: args["name"], engine };
-      if (engine === "postgresql" && !args["version"]) body["engine_version"] = "15";
+      if (engine === "postgresql" && !args["version"]) body["engine_version"] = "16";
       for (const key of ["size", "region"]) {
         if (args[key]) body[key] = args[key];
       }
@@ -3410,6 +3425,19 @@ async function dispatchTool(
 
 // ── Payload helpers ───────────────────────────────────────────────────────────
 
+function resolveSandboxSize(value: unknown): SandboxSize {
+  if (value === undefined || value === null || value === "") return "small";
+  if (
+    typeof value === "string" &&
+    SANDBOX_SIZES.includes(value as SandboxSize)
+  ) {
+    return value as SandboxSize;
+  }
+  throw new Error(
+    `Invalid sandbox size '${String(value)}'; expected xs, small, medium, large, or xl`,
+  );
+}
+
 function unwrapData(payload: unknown): unknown {
   if (
     payload !== null &&
@@ -3491,7 +3519,7 @@ async function runServer(): Promise<void> {
         send({
           jsonrpc: "2.0",
           id,
-          result: { tools: TOOL_LIST },
+          result: { tools: MCP_TOOLS },
         });
         break;
       }
@@ -3504,7 +3532,7 @@ async function runServer(): Promise<void> {
           unknown
         >;
 
-        const toolResult = await dispatchTool(client, toolName, toolArgs);
+        const toolResult = await dispatchMcpTool(client, toolName, toolArgs);
         send({ jsonrpc: "2.0", id, result: toolResult });
         break;
       }

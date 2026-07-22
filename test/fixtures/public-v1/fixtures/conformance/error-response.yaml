@@ -1,0 +1,6 @@
+path: /sandboxes
+method: post
+status: 409
+body:
+  error:
+    code: IDEMPOTENCY_PAYLOAD_MISMATCH

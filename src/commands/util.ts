@@ -1,5 +1,6 @@
 import chalk from "chalk";
-import { MiosaError } from "../errors.js";
+import { ApiResponseError, MiosaError } from "../errors.js";
+import { EXIT_USER_ERROR } from "../types.js";
 import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { isDebugMode, isJsonMode } from "../cli-env.js";
@@ -14,7 +15,7 @@ export function handleError(err: unknown): never {
             retryable: retryableFor(err),
             ...(err.hint ? { hint: err.hint } : {}),
             ...(err.requestId ? { request_id: err.requestId } : {}),
-            ...(isDebugMode() && err.details ? { details: err.details } : {}),
+            ...(shouldShowDetails(err) ? { details: err.details } : {}),
           }
         : err instanceof Error
           ? {
@@ -35,14 +36,17 @@ export function handleError(err: unknown): never {
 
   if (err instanceof MiosaError) {
     console.error(chalk.red(`Error: ${err.message}`));
+    if (err instanceof ApiResponseError) {
+      console.error(chalk.dim(`  Code: ${err.code}`));
+    }
     if (err.hint) {
       console.error(chalk.dim(`  Hint: ${err.hint}`));
     }
+    if (shouldShowDetails(err)) {
+      console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
+    }
     if (isDebugMode() && err.requestId) {
       console.error(chalk.dim(`  Request ID: ${err.requestId}`));
-    }
-    if (isDebugMode() && err.details) {
-      console.error(chalk.dim(`  Details: ${formatDetails(err.details)}`));
     }
     return process.exit(err.exitCode);
   }
@@ -78,8 +82,24 @@ function isTransientTransportError(message: string): boolean {
   );
 }
 
+/**
+ * 4xx API errors carry actionable validation details (e.g. why a 422 was
+ * rejected), so they are shown without --debug. 5xx details are raw server
+ * payloads that are rarely actionable — those stay debug-only.
+ */
+function shouldShowDetails(err: MiosaError): boolean {
+  if (err.details == null) return false;
+  if (isDebugMode()) return true;
+  return err instanceof ApiResponseError && err.exitCode === EXIT_USER_ERROR;
+}
+
 function formatDetails(details: unknown): string {
-  return typeof details === "string" ? details : JSON.stringify(details);
+  if (typeof details === "string") return details;
+  if (details !== null && typeof details === "object") {
+    // Pretty-print objects/arrays, indented to align under the "Details:" label.
+    return JSON.stringify(details, null, 2).split("\n").join("\n  ");
+  }
+  return String(details);
 }
 
 /** Parse "host:/path" or just "host" (path defaults to "/") */

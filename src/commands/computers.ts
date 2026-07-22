@@ -66,7 +66,7 @@ function collectOption(value: string, previous: string[]): string[] {
   return previous;
 }
 
-function isTerminalAgentRunStatus(status: unknown): boolean {
+function isTerminalRunStatus(status: unknown): boolean {
   return (
     typeof status === "string" &&
     ["succeeded", "failed", "canceled", "cancelled"].includes(status.toLowerCase())
@@ -78,7 +78,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForComputerAgentRun(
+async function waitForComputerRun(
   runId: string,
   timeoutSec: number,
 ): Promise<Record<string, unknown>> {
@@ -86,12 +86,12 @@ async function waitForComputerAgentRun(
 
   while (true) {
     const run = unwrap<Record<string, unknown>>(
-      await client().apiGet<unknown>(apiPath(`/agent-runs/${enc(runId)}`)),
+      await client().apiGet<unknown>(apiPath(`/runs/${enc(runId)}`)),
     );
 
-    if (isTerminalAgentRunStatus(run["status"])) return run;
+    if (isTerminalRunStatus(run["status"])) return run;
     if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for agent run ${runId}`);
+      throw new Error(`Timed out waiting for run ${runId}`);
     }
 
     await sleep(Math.min(2_000, Math.max(0, deadline - Date.now())));
@@ -374,22 +374,22 @@ export function register(program: Command): void {
     );
 
   computers!
-    .command("prompt <computer-id> <instruction...>")
-    .description("Run an in-Computer AI agent with the given instruction")
+    .command("run-agent <computer-id> <instruction...>")
+    .description("Run an in-Computer runner with the given instruction")
     .option(
-      "--provider <name>",
-      "AI provider: claude-code (default), codex, claude (alias), hermes, osa, pi",
+      "--runner <name>",
+      "Runner: claude-code (default), codex, claude (alias), hermes, osa, pi",
     )
     .option("--model <name>", "Provider-specific model name")
     .option("--cwd <path>", "Working directory inside the Computer")
     .option(
       "--env <KEY=VALUE>",
-      "Environment variable for the Agent Run. Repeatable.",
+      "Environment variable for the run. Repeatable.",
       collectOption,
       [],
     )
     .option("--timeout <sec>", "Exec timeout in seconds")
-    .option("--wait", "Wait for Agent Run completion")
+    .option("--wait", "Wait for run completion")
     .option("--wait-timeout <sec>", "Maximum seconds to wait for --wait")
     .option("--json", "Output as JSON")
     .action(
@@ -397,7 +397,7 @@ export function register(program: Command): void {
         id: string,
         words: string[],
         opts: {
-          provider?: string;
+          runner?: string;
           model?: string;
           cwd?: string;
           env?: string[];
@@ -407,8 +407,8 @@ export function register(program: Command): void {
         } & JsonOptions,
       ) =>
         runAction(async () => {
-          const provider = opts.provider ?? "claude-code";
-          const allowedProviders = [
+          const runner = opts.runner ?? "claude-code";
+          const allowedRunners = [
             "claude-code",
             "codex",
             "claude",
@@ -416,9 +416,9 @@ export function register(program: Command): void {
             "osa",
             "pi",
           ];
-          if (!allowedProviders.includes(provider)) {
+          if (!allowedRunners.includes(runner)) {
             throw new Error(
-              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+              `Unsupported runner "${runner}". Use: ${allowedRunners.join(", ")}`,
             );
           }
 
@@ -426,8 +426,8 @@ export function register(program: Command): void {
             target_kind: "computer",
             target_id: id,
             computer_id: id,
-            provider,
-            prompt: words.join(" "),
+            runner,
+            instruction: words.join(" "),
           };
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
@@ -440,7 +440,7 @@ export function register(program: Command): void {
           if (opts.wait) body["wait"] = true;
 
           let run = unwrap<Record<string, unknown>>(
-            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+            await client().apiPost<unknown>(apiPath("/runs"), body),
           );
 
           if (opts.wait) {
@@ -449,7 +449,7 @@ export function register(program: Command): void {
               opts.waitTimeout ?? opts.timeout ?? "900",
               10,
             );
-            run = await waitForComputerAgentRun(runId, waitTimeout);
+            run = await waitForComputerRun(runId, waitTimeout);
           }
 
           if (isJsonMode(opts)) {
@@ -457,12 +457,12 @@ export function register(program: Command): void {
             return;
           }
 
-          printBanner({ subtitle: "Computer agent run" });
+          printBanner({ subtitle: "Computer run" });
           console.log(
             kvPanel([
               { label: "run", value: chalk.bold(String(run["id"] ?? "—")) },
               { label: "computer", value: chalk.dim(id) },
-              { label: "provider", value: String(run["provider"] ?? provider) },
+              { label: "runner", value: String(run["runner"] ?? runner) },
               { label: "status", value: colorStatus(String(run["status"] ?? "")) },
               { label: "exit", value: String(run["exit_code"] ?? "—") },
             ]),

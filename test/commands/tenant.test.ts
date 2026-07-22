@@ -11,8 +11,10 @@ vi.mock("../../src/config.js", () => ({
     default_host: null,
     region: null,
     output: "text",
+    tenant: "active-tenant",
+    workspace: "active-workspace",
   }),
-  saveConfig: vi.fn(),
+  saveConfigForActiveContext: vi.fn(),
   clearApiKey: vi.fn(),
   saveAuthCache: vi.fn(),
 }));
@@ -187,14 +189,41 @@ describe("miosa tenant switch", () => {
         headers: { "content-type": "application/json" },
       });
 
-    const { saveConfig } = await import("../../src/config.js");
+    const { saveConfigForActiveContext } = await import("../../src/config.js");
 
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "tenant", "switch", "acme"]);
 
-    expect(saveConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ default_host: "acme" }),
+    expect(saveConfigForActiveContext).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant: "acme" }),
     );
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("discovers tenants without sending the active tenant or workspace scope", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/platform/tenants",
+        method: "GET",
+        headers: {
+          authorization: "Bearer msk_u_test",
+        },
+      })
+      .reply(200, JSON.stringify({ data: mockTenants }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "tenant", "switch", "beta"]);
+
+    expect(
+      (await import("../../src/config.js")).saveConfigForActiveContext,
+    ).toHaveBeenCalledWith(expect.objectContaining({ tenant: "beta" }));
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 

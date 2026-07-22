@@ -10,16 +10,37 @@ vi.mock("../../src/config.js", () => ({
     endpoint: "https://api.miosa.ai",
     api_key: "msk_u_test",
     default_host: null,
+    tenant: "panther-defense",
+    workspace: "panther-workspace",
   }),
 }));
 
-const { register } = await import("../../src/commands/sandbox.js");
+const { buildSandboxWebSocketRequest, register } = await import(
+  "../../src/commands/sandbox.js"
+);
+
+const originalJsonMode = process.env["MIOSA_JSON"];
 
 function buildProgram(): Command {
   const program = new Command();
   program.exitOverride();
   register(program);
   return program;
+}
+
+function mockSandboxSshKey(): void {
+  const existsSync = fs.existsSync.bind(fs);
+  const readFileSync = fs.readFileSync.bind(fs);
+  vi.spyOn(fs, "existsSync").mockImplementation((file) =>
+    String(file).endsWith("miosa_sandbox_ed25519")
+      ? true
+      : existsSync(file),
+  );
+  vi.spyOn(fs, "readFileSync").mockImplementation((file, options) =>
+    String(file).endsWith("miosa_sandbox_ed25519.pub")
+      ? "ssh-ed25519 AAAATEST panther@test\n"
+      : readFileSync(file, options as never),
+  );
 }
 
 describe("miosa sandbox exec", () => {
@@ -30,6 +51,11 @@ describe("miosa sandbox exec", () => {
   });
 
   afterEach(() => {
+    if (originalJsonMode === undefined) {
+      delete process.env["MIOSA_JSON"];
+    } else {
+      process.env["MIOSA_JSON"] = originalJsonMode;
+    }
     vi.restoreAllMocks();
   });
 
@@ -88,7 +114,7 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes/sbx_123/files/workspace%2Findex.html",
         method: "GET",
       })
-      .reply(200, "<html><body>artifact</body></html>", {
+      .reply(200, "<html><body>file</body></html>", {
         headers: { "content-type": "text/html" },
       });
 
@@ -111,15 +137,204 @@ describe("miosa sandbox exec", () => {
     ]);
 
     expect(fs.readFileSync(output, "utf8")).toBe(
-      "<html><body>artifact</body></html>",
+      "<html><body>file</body></html>",
     );
     expect(JSON.parse(logged.join("\n"))).toMatchObject({
       sandbox_id: "sbx_123",
       remote_path: "/workspace/index.html",
       output,
-      bytes: 34,
+      bytes: 30,
     });
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("reads sandbox files in the explicit Panther tenant and workspace", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_panther/files/read?path=%2Fworkspace%2Fstatus.txt",
+        method: "GET",
+        headers: {
+          "x-miosa-tenant": "panther-defense",
+          "x-miosa-workspace": "panther-workspace",
+        },
+      })
+      .reply(200, JSON.stringify({ data: { content: "ready" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const output: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "read-file",
+      "sbx_panther",
+      "/workspace/status.txt",
+    ]);
+
+    expect(output.join("")).toBe("ready");
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("fails closed when Panther sandbox scope is rejected", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_osa/files/read?path=%2Fworkspace%2Fsecret.txt",
+        method: "GET",
+        headers: {
+          "x-miosa-tenant": "panther-defense",
+          "x-miosa-workspace": "panther-workspace",
+        },
+      })
+      .reply(
+        403,
+        JSON.stringify({
+          error: {
+            code: "INVALID_TENANT_CONTEXT",
+            message: "credential is not authorized for Panther",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_osa/files/read?path=%2Fworkspace%2Fsecret.txt",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { content: "osa-secret" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    setGlobalDispatcher(mock);
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "read-file",
+      "sbx_osa",
+      "/workspace/secret.txt",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(3);
+    expect(mock.pendingInterceptors()).toHaveLength(1);
+  });
+
+  it("constructs scoped Panther SSH registration and WebSocket requests", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_panther/ssh-keys",
+        method: "POST",
+        headers: {
+          "x-miosa-tenant": "panther-defense",
+          "x-miosa-workspace": "panther-workspace",
+        },
+        body: JSON.stringify({
+          public_key: "ssh-ed25519 AAAATEST panther@test",
+        }),
+      })
+      .reply(204);
+
+    mockSandboxSshKey();
+
+    const output: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      output.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "ssh",
+      "sbx_panther",
+      "--json",
+    ]);
+
+    const result = JSON.parse(output.at(-1) ?? "{}") as { ws_url?: string };
+    const wsUrl = new URL(result.ws_url ?? "");
+    expect(wsUrl.searchParams.get("tenant")).toBe("panther-defense");
+    expect(wsUrl.searchParams.get("workspace")).toBe("panther-workspace");
+    expect(
+      buildSandboxWebSocketRequest(
+        {
+          endpoint: "https://api.miosa.ai",
+          api_key: "msk_u_test" as never,
+          default_host: null,
+          tenant: "panther-defense",
+          workspace: "panther-workspace",
+        },
+        "sbx_panther",
+      ).headers,
+    ).toMatchObject({
+      Authorization: "Bearer msk_u_test",
+      "X-MIOSA-Tenant": "panther-defense",
+      "X-MIOSA-Workspace": "panther-workspace",
+    });
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("fails closed when scoped Panther SSH registration is rejected", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_osa/ssh-keys",
+        method: "POST",
+        headers: {
+          "x-miosa-tenant": "panther-defense",
+          "x-miosa-workspace": "panther-workspace",
+        },
+      })
+      .reply(
+        403,
+        JSON.stringify({
+          error: {
+            code: "INVALID_TENANT_CONTEXT",
+            message: "credential is not authorized for Panther",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_osa/ssh-keys",
+        method: "POST",
+      })
+      .reply(204);
+    setGlobalDispatcher(mock);
+
+    mockSandboxSshKey();
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "ssh",
+      "sbx_osa",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(3);
+    expect(mock.pendingInterceptors()).toHaveLength(1);
   });
 
   it("creates and downloads sandbox exports through the release/v1 routes", async () => {
@@ -137,8 +352,8 @@ describe("miosa sandbox exec", () => {
         method: "POST",
         body: JSON.stringify({
           paths: ["/workspace/report.html", "/workspace/assets"],
-          label: "Agent artifacts",
-          filename: "agent-artifacts.tar",
+          label: "Agent files",
+          filename: "agent-files.tar",
         }),
       })
       .reply(
@@ -148,16 +363,16 @@ describe("miosa sandbox exec", () => {
             id: "exp_123",
             sandbox_id: "sbx_123",
             status: "ready",
-            filename: "agent-artifacts.tar",
+            filename: "agent-files.tar",
             archive_download_url:
-              "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-artifacts.tar",
+              "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-files.tar",
           },
         }),
         { headers: { "content-type": "application/json" } },
       );
     pool
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-artifacts.tar",
+        path: "/api/v1/sandboxes/sbx_123/exports/download?paths%5B%5D=%2Fworkspace%2Freport.html&paths%5B%5D=%2Fworkspace%2Fassets&filename=agent-files.tar",
         method: "GET",
       })
       .reply(200, "tar-bytes", {
@@ -179,9 +394,9 @@ describe("miosa sandbox exec", () => {
       "/workspace/report.html",
       "/workspace/assets",
       "--label",
-      "Agent artifacts",
+      "Agent files",
       "--filename",
-      "agent-artifacts.tar",
+      "agent-files.tar",
       "--output",
       output,
       "--json",
@@ -413,7 +628,9 @@ describe("miosa sandbox exec", () => {
         body: JSON.stringify({
           template_id: "nextjs",
           name: "bennett-os-auth-db",
+          size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -502,6 +719,7 @@ describe("miosa sandbox exec", () => {
           template_id: "nextjs",
           name: "throwaway",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: false,
         }),
       })
@@ -533,6 +751,332 @@ describe("miosa sandbox exec", () => {
       "--json",
     ]);
 
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("passes external attribution IDs in the create body when flags are set", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "attributed",
+          timeout_sec: 3600,
+          external_workspace_id: "clinic-iq",
+          external_user_id: "founder-1",
+          external_project_id: "landing-page",
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_attr",
+            name: "attributed",
+            template_id: "nextjs",
+            state: "running",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "attributed",
+      "--external-workspace",
+      "clinic-iq",
+      "--external-user",
+      "founder-1",
+      "--external-project",
+      "landing-page",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("omits external attribution fields from the create body when flags are absent", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "unattributed",
+          timeout_sec: 3600,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "sbx_plain",
+            name: "unattributed",
+            template_id: "nextjs",
+            state: "running",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "unattributed",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("creates a sandbox with the named small size by default", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          size: "small",
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_small", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("sends an explicitly selected named sandbox size", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          size: "large",
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_large", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--size",
+      "large",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("accepts a complete exact legacy resource override", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          size: "medium",
+          cpu_count: 4,
+          memory_mb: 8192,
+          disk_size_mb: 20480,
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_medium", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--cpu",
+      "4",
+      "--memory",
+      "8gb",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("rejects partial legacy resource overrides before making a request", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--cpu",
+      "4",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(logged.join("\n")).toContain(
+      "require --cpu, --memory, and --disk together",
+    );
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+  it("rejects a legacy override that conflicts with the named size", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--size",
+      "small",
+      "--cpu",
+      "4",
+      "--memory",
+      "8gb",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(logged.join("\n")).toContain(
+      "match medium, not requested size small",
+    );
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+  it("renders lifecycle state instead of legacy status in list and show", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const pool = mock.get("https://api.miosa.ai");
+    const sandbox = {
+      id: "sbx_paused",
+      name: "agent-workspace",
+      state: "paused",
+      status: "legacy-running",
+      template_id: "miosa-sandbox",
+      created_at: "2026-07-18T00:00:00Z",
+    };
+
+    pool
+      .intercept({ path: "/api/v1/sandboxes", method: "GET" })
+      .reply(200, JSON.stringify({ data: [sandbox] }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool
+      .intercept({ path: "/api/v1/sandboxes/sbx_paused", method: "GET" })
+      .reply(200, JSON.stringify({ data: sandbox }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    await buildProgram().parseAsync(["node", "miosa", "sandbox", "list"]);
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "show",
+      "sbx_paused",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("paused");
+    expect(output).not.toContain("legacy-running");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
@@ -590,7 +1134,7 @@ describe("miosa sandbox exec", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/stop",
+        path: "/api/v1/sandboxes/sbx_123/pause",
         method: "POST",
         body: JSON.stringify({}),
       })
@@ -1446,7 +1990,7 @@ describe("miosa sandbox connectors", () => {
     expect(parsed["placeholder_preview"]).toBe("miosa-tok-...");
   });
 
-  it("preflights a requested connector before sandbox prompt exec", async () => {
+  it("preflights a requested connector before sandbox run-agent exec", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
@@ -1468,13 +2012,13 @@ describe("miosa sandbox connectors", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/agent-runs",
+        path: "/api/v1/runs",
         method: "POST",
         body: JSON.stringify({
           target_kind: "sandbox",
           target_id: "sbx_123",
-          provider: "claude",
-          prompt: "hello",
+          runner: "claude",
+          instruction: "hello",
           env: { FEATURE_FLAG: "on" },
           agent_runtime_profile_id: "prof_123",
           external_workspace_id: "clinic-iq",
@@ -1489,7 +2033,7 @@ describe("miosa sandbox connectors", () => {
             id: "run_123",
             target_kind: "sandbox",
             target_id: "sbx_123",
-            provider: "claude",
+            runner: "claude",
             status: "succeeded",
           },
         }),
@@ -1501,7 +2045,7 @@ describe("miosa sandbox connectors", () => {
       "node",
       "miosa",
       "sandbox",
-      "prompt",
+      "run-agent",
       "sbx_123",
       "--connector",
       "anthropic/workspace-claude",
@@ -1544,17 +2088,28 @@ describe("miosa sandbox connectors", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/exec",
+        path: "/api/v1/runs",
         method: "POST",
         body: JSON.stringify({
-          command: "cd '/workspace' && hermes-agent run 'build the page'",
+          target_kind: "sandbox",
+          target_id: "sbx_123",
+          runner: "custom",
+          instruction: "build the page",
+          command: "hermes-agent run",
           cwd: "/workspace",
-          dir: "/workspace",
         }),
       })
       .reply(
-        200,
-        JSON.stringify({ data: { exit_code: 0, stdout: "done\n" } }),
+        201,
+        JSON.stringify({
+          data: {
+            id: "run_123",
+            target_kind: "sandbox",
+            target_id: "sbx_123",
+            runner: "custom",
+            status: "succeeded",
+          },
+        }),
         { headers: { "content-type": "application/json" } },
       );
 
@@ -1563,9 +2118,9 @@ describe("miosa sandbox connectors", () => {
       "node",
       "miosa",
       "sandbox",
-      "prompt",
+      "run-agent",
       "sbx_123",
-      "--provider",
+      "--runner",
       "custom",
       "--runtime-command",
       "hermes-agent run",

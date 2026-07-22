@@ -1,14 +1,13 @@
 {
   "name": "@miosa/cli",
-  "version": "1.0.92",
-  "description": "MIOSA platform CLI - projects, sandboxes, deploys, databases, more",
+  "version": "1.1.1",
+  "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
-  "packageManager": "npm@10.9.0",
   "bin": {
     "miosa": "dist/bin/miosa.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "build:linux": "bun build src/bin/miosa.ts --compile --target=bun-linux-x64 --outfile dist/miosa-linux-x64",
     "dev": "tsx src/bin/miosa.ts",
     "test": "vitest run",
@@ -53,8 +52,9 @@
     "@types/node": "^20.17.9",
     "@types/react": "^19.2.15",
     "@types/ws": "^8.5.13",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vite": "~6.4.3",
+    "vitest": "^3.2.7"
   }
 }

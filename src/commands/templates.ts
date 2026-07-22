@@ -30,6 +30,34 @@ interface TemplateBuild {
   image_digest?: string;
 }
 
+interface ProductTemplate {
+  id: string;
+  name: string;
+  product: string;
+  default_size?: string;
+  image_id?: string;
+  readiness?: string;
+  sizes?: Array<{
+    size: string;
+    state?: string;
+    resource_contract?: {
+      contract_id?: string;
+      vcpus?: number;
+      memory_mb?: number;
+      disk_size_mb?: number;
+    };
+  }>;
+}
+
+function productTemplates(raw: Record<string, unknown>): ProductTemplate[] {
+  const rows = Array.isArray(raw["data"])
+    ? raw["data"]
+    : Array.isArray(raw["templates"])
+      ? raw["templates"]
+      : [];
+  return rows as ProductTemplate[];
+}
+
 function unwrapTemplates(
   raw:
     | { data?: SandboxTemplate[]; templates?: SandboxTemplate[] }
@@ -87,6 +115,106 @@ export function register(program: Command): void {
   const templates = program
     .command("templates")
     .description("Manage sandbox templates");
+
+  templates
+    .command("catalog")
+    .description(
+      "List canonical product templates, image generations, shapes, and readiness",
+    )
+    .option("--product <product>", "Filter by product, for example sandbox")
+    .option("--json", "Output the complete catalog as JSON")
+    .action(async (opts: { product?: string; json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const raw = await client.apiGet<Record<string, unknown>>(
+          "/api/v1/templates",
+        );
+        const rows = productTemplates(raw);
+        const filtered = opts.product
+          ? rows.filter((template) => template.product === opts.product)
+          : rows;
+
+        if (isJsonMode(opts)) {
+          printJson(opts.product ? { ...raw, templates: filtered } : raw);
+          return;
+        }
+
+        renderTable(filtered, [
+          { header: "ID", key: "id", width: 28 },
+          { header: "PRODUCT", key: "product", width: 18 },
+          { header: "DEFAULT", key: (t) => t.default_size ?? "-", width: 10 },
+          {
+            header: "IMAGE GENERATION",
+            key: (t) => t.image_id ?? "-",
+            width: 32,
+          },
+          {
+            header: "READINESS",
+            key: (t) => t.readiness ?? "missing",
+            width: 18,
+          },
+        ]);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  templates
+    .command("readiness <id>")
+    .description(
+      "Show fleet readiness and exact resource contracts for a product template",
+    )
+    .option("--product <product>", "Filter by product, for example sandbox")
+    .option("--json", "Output raw readiness rows")
+    .action(async (id: string, opts: { product?: string; json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const raw = await client.apiGet<Record<string, unknown>>(
+          "/api/v1/templates",
+        );
+        const rows = productTemplates(raw);
+        const template = rows.find(
+          (candidate) =>
+            candidate.id === id && (!opts.product || candidate.product === opts.product),
+        );
+        if (!template) throw new Error(`Product template not found: ${id}`);
+        const readiness = template.sizes ?? [];
+
+        if (isJsonMode(opts)) {
+          printJson(readiness);
+          return;
+        }
+
+        renderTable(readiness, [
+          { header: "SIZE", key: "size", width: 10 },
+          { header: "STATE", key: (row) => row.state ?? "missing", width: 18 },
+          {
+            header: "VCPU",
+            key: (row) => String(row.resource_contract?.vcpus ?? "-"),
+            width: 8,
+          },
+          {
+            header: "MEMORY MIB",
+            key: (row) => String(row.resource_contract?.memory_mb ?? "-"),
+            width: 12,
+          },
+          {
+            header: "DISK MIB",
+            key: (row) => String(row.resource_contract?.disk_size_mb ?? "-"),
+            width: 12,
+          },
+          {
+            header: "CONTRACT",
+            key: (row) => row.resource_contract?.contract_id ?? "-",
+            width: 26,
+          },
+        ]);
+      } catch (err) {
+        handleError(err);
+      }
+    });
 
   // list
   templates

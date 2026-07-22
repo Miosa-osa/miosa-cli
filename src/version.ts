@@ -1,11 +1,8 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(
-  readFileSync(join(__dirname, "../package.json"), "utf8"),
+const manifest = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { version: string };
 
-export const VERSION = pkg.version;
-export const USER_AGENT = `@miosa/cli/${VERSION}`;
+export const CLI_VERSION = manifest.version;
+export const CLI_USER_AGENT = `@miosa/cli/${CLI_VERSION}`;

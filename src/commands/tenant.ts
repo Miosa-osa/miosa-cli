@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig, saveConfig } from "../config.js";
+import { loadConfig, saveConfigForActiveContext } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
@@ -41,7 +41,7 @@ export function register(program: Command): void {
     .action(async (opts: { json?: boolean }) => {
       try {
         const config = loadConfig();
-        const client = new MiosaClient(config);
+        const client = new MiosaClient({ ...config, tenant: null, workspace: null });
         const spinner = spin("Fetching tenants...");
         const rows = unwrapTenants(
           await client.apiGet("/api/v1/platform/tenants"),
@@ -74,7 +74,8 @@ export function register(program: Command): void {
       }
     });
 
-  // switch — updates MIOSA_API_KEY context or writes tenant slug to config
+  // switch — writes the active tenant slug to config. The API verifies the
+  // caller is a member before honoring X-MIOSA-Tenant on requests.
   tenant
     .command("switch <slug>")
     .description(
@@ -84,7 +85,7 @@ export function register(program: Command): void {
     .action(async (slug: string, opts: { json?: boolean }) => {
       try {
         const config = loadConfig();
-        const client = new MiosaClient(config);
+        const client = new MiosaClient({ ...config, tenant: null, workspace: null });
 
         // Validate the tenant exists + we have access
         const spinner = spin(`Switching to tenant ${chalk.bold(slug)}...`);
@@ -102,7 +103,7 @@ export function register(program: Command): void {
           process.exit(1);
         }
 
-        saveConfig({ default_host: match.slug });
+        saveConfigForActiveContext({ tenant: match.slug });
         spinner.succeed(
           `Switched to tenant ${chalk.bold(match.name)} (${match.slug})`,
         );

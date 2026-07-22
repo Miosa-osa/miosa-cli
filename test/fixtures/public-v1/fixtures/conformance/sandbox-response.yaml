@@ -1,0 +1,33 @@
+path: /sandboxes/{id}
+method: get
+status: 200
+body:
+  id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+  slug: 3fa85f64
+  template_id: miosa-sandbox
+  state: running
+  size: small
+  resource_contract:
+    id: sandbox/small@v1
+    product: sandbox
+    size: small
+    version: v1
+    vcpus: 2
+    memory_mb: 4096
+    disk_size_mb: 10240
+  cpu_count: 2
+  memory_mb: 4096
+  disk_size_mb: 10240
+  always_on: false
+  persistent: true
+  timeout_sec: 3600
+  timeout_remaining_ms: 3599000
+  idle_timeout_sec: 0
+  total_runtime_sec:
+  name:
+  ready: true
+  ready_at: '2026-07-19T12:00:01Z'
+  preview_url: https://3fa85f64.sandbox.miosa.app
+  created_at: '2026-07-19T12:00:00Z'
+  started_at: '2026-07-19T12:00:01Z'
+  destroyed_at:

@@ -111,8 +111,8 @@ describe("miosa capabilities", () => {
         JSON.stringify({
           data: {
             version: 1,
-            agent_runs: {
-              contract_fields: ["execution_packet", "output_contract"],
+            runs: {
+              contract_fields: ["execution_packet", "expected_outputs"],
             },
           },
         }),
@@ -130,8 +130,8 @@ describe("miosa capabilities", () => {
     expect(JSON.parse(logged.join(""))).toMatchObject({
       data: {
         version: 1,
-        agent_runs: {
-          contract_fields: ["execution_packet", "output_contract"],
+        runs: {
+          contract_fields: ["execution_packet", "expected_outputs"],
         },
       },
     });

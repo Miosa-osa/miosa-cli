@@ -3,8 +3,15 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import type { Command } from "commander";
 import chalk from "chalk";
+import { request } from "undici";
 import { loadConfig } from "../config.js";
 import { MiosaClient, parseSse } from "../client.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError, isJsonMode } from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
@@ -136,7 +143,261 @@ function deploymentProduct(
 }
 
 function productLabel(product: string): string {
-  return product === "docker_deploy" ? "Docker Deploy" : "MIOSA Deploy";
+  return product === "docker_deploy" ? "App Engine" : "MIOSA Deploy";
+}
+
+interface DeployProofCheck {
+  id: string;
+  ok: boolean;
+  message: string;
+  details?: Record<string, unknown>;
+  recovery?: string[];
+}
+
+interface DeployProofResult {
+  ok: boolean;
+  deployment_id: string;
+  deployment_product: string;
+  public_url: string | null;
+  checks: DeployProofCheck[];
+  next_actions: string[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringField(value: unknown, key: string): string | null {
+  const raw = asRecord(value)[key];
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function numberField(value: unknown, key: string): number | null {
+  const raw = asRecord(value)[key];
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) return Number(raw);
+  return null;
+}
+
+function addProofCheck(
+  checks: DeployProofCheck[],
+  id: string,
+  ok: boolean,
+  message: string,
+  details?: Record<string, unknown>,
+  recovery?: string[],
+): void {
+  checks.push({
+    id,
+    ok,
+    message,
+    ...(details ? { details } : {}),
+    ...(recovery ? { recovery } : {}),
+  });
+}
+
+function dockerDeployApp(deployment: Deployment): Record<string, unknown> | null {
+  const app = asRecord(deployment).docker_deploy_app;
+  if (app && typeof app === "object" && !Array.isArray(app)) {
+    return app as Record<string, unknown>;
+  }
+  const metadataApp = asRecord(deployment.metadata?.["docker_deploy"]);
+  return Object.keys(metadataApp).length > 0 ? metadataApp : null;
+}
+
+function dockerDeployRuntime(deployment: Deployment): {
+  ip: string | null;
+  port: number | null;
+} {
+  const app = dockerDeployApp(deployment);
+  const runtime = asRecord(deployment.metadata?.["runtime"]);
+  return {
+    ip: stringField(app, "runtime_ip") ?? stringField(runtime, "ip"),
+    port: numberField(app, "runtime_port") ?? numberField(runtime, "port"),
+  };
+}
+
+async function probePublicUrl(
+  publicUrl: string | null,
+  probePath: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status?: number; error?: string; url?: string }> {
+  if (!publicUrl) {
+    return { ok: false, error: "missing_public_url" };
+  }
+
+  const url = new URL(publicUrl);
+  url.pathname = probePath.startsWith("/") ? probePath : `/${probePath}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await request(url.toString(), {
+      method: "GET",
+      signal: controller.signal,
+    });
+    res.body.resume();
+    return { ok: res.statusCode >= 200 && res.statusCode < 500, status: res.statusCode, url: url.toString() };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      url: url.toString(),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function proveDeployment(
+  client: MiosaClient,
+  deploymentId: DeploymentId,
+  opts: { probePath: string; timeoutMs: number; probe: boolean },
+): Promise<DeployProofResult> {
+  const deployment = await client.getDeployment(deploymentId);
+  const product = deploymentProduct(deployment);
+  const publicUrl = deploymentUrl(deployment);
+  const checks: DeployProofCheck[] = [];
+
+  addProofCheck(
+    checks,
+    "deployment_row",
+    true,
+    `Deployment ${deployment.id} exists with state=${deployment.state}.`,
+    { state: deployment.state },
+  );
+
+  addProofCheck(
+    checks,
+    "deployment_running",
+    deployment.state === "running",
+    deployment.state === "running"
+      ? "Deployment is marked running."
+      : `Deployment state is ${deployment.state}, expected running.`,
+    { state: deployment.state },
+    ["miosa deploy logs <deployment-id>", "miosa deploy redeploy <deployment-id>"],
+  );
+
+  addProofCheck(
+    checks,
+    "public_url_present",
+    Boolean(publicUrl),
+    publicUrl ? `Public URL is ${publicUrl}.` : "Deployment has no public URL.",
+    { public_url: publicUrl },
+  );
+
+  if (product === "docker_deploy") {
+    const app = dockerDeployApp(deployment);
+    const runtime = dockerDeployRuntime(deployment);
+    const hostId =
+      deployment.docker_deploy_host_id ??
+      stringField(deployment.metadata, "docker_deploy_host_id") ??
+      stringField(app, "docker_deploy_host_id") ??
+      stringField(app, "host_id");
+
+    addProofCheck(
+      checks,
+      "docker_deploy_host_link",
+      Boolean(hostId),
+      hostId ? `Deployment links App Engine host ${hostId}.` : "Deployment has no App Engine host id.",
+      { docker_deploy_host_id: hostId },
+      ["miosa docker-deploy ensure --wait --json"],
+    );
+
+    if (hostId) {
+      try {
+        const host = await client.apiGet<Record<string, unknown>>(
+          `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
+        );
+        const hostRecord = asRecord(asRecord(host).host ?? asRecord(host).data ?? host);
+        const status = stringField(hostRecord, "status");
+        const applianceStatus = stringField(hostRecord, "appliance_status");
+        addProofCheck(
+          checks,
+          "docker_deploy_host_ready",
+          status === "active" && applianceStatus === "healthy",
+          `Host status=${status ?? "unknown"}, appliance=${applianceStatus ?? "unknown"}.`,
+          { status, appliance_status: applianceStatus },
+          ["miosa docker-deploy show <host-id> --json", "miosa docker-deploy ensure --wait --json"],
+        );
+      } catch (error) {
+        addProofCheck(
+          checks,
+          "docker_deploy_host_ready",
+          false,
+          error instanceof Error ? error.message : String(error),
+          { docker_deploy_host_id: hostId },
+        );
+      }
+    }
+
+    addProofCheck(
+      checks,
+      "docker_deploy_app_row",
+      Boolean(app),
+      app ? `App Engine app status=${stringField(app, "status") ?? "unknown"}.` : "App Engine app row is missing.",
+      app
+        ? {
+            status: stringField(app, "status"),
+            app_id: stringField(app, "app_id"),
+            container_id: stringField(app, "container_id"),
+          }
+        : undefined,
+      ["Re-publish with --docker-deploy --wait."],
+    );
+
+    addProofCheck(
+      checks,
+      "docker_deploy_container_route",
+      Boolean(
+        app &&
+          stringField(app, "container_id") &&
+          stringField(app, "status") === "running" &&
+          runtime.ip &&
+          runtime.port,
+      ),
+      app
+        ? `Container=${stringField(app, "container_id") ?? "missing"}, route=${runtime.ip ?? "missing"}:${runtime.port ?? "missing"}.`
+        : "Cannot verify container route without App Engine app row.",
+      {
+        container_id: app ? stringField(app, "container_id") : null,
+        runtime_ip: runtime.ip,
+        runtime_port: runtime.port,
+      },
+      ["miosa docker-deploy doctor <deployment-id> --json"],
+    );
+  }
+
+  if (opts.probe) {
+    const probe = await probePublicUrl(publicUrl, opts.probePath, opts.timeoutMs);
+    addProofCheck(
+      checks,
+      "public_url_probe",
+      probe.ok,
+      probe.ok
+        ? `Public URL returned HTTP ${probe.status}.`
+        : `Public URL probe failed: ${probe.error ?? `HTTP ${probe.status}`}.`,
+      probe,
+      ["Check DNS/custom domain routing.", "Check app logs and container health."],
+    );
+  }
+
+  const nextActions = checks
+    .filter((check) => !check.ok)
+    .flatMap((check) => check.recovery ?? [])
+    .filter((action, index, all) => all.indexOf(action) === index);
+
+  return {
+    ok: checks.every((check) => check.ok),
+    deployment_id: deployment.id,
+    deployment_product: product,
+    public_url: publicUrl,
+    checks,
+    next_actions: nextActions,
+  };
 }
 
 // ── Deployment ID resolution ──────────────────────────────────────────────────
@@ -248,7 +509,8 @@ function fmtDeployState(state: Deployment["state"]): string {
 function unwrapMetrics(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && "data" in raw) {
     const data = (raw as Record<string, unknown>)["data"];
-    if (data && typeof data === "object") return data as Record<string, unknown>;
+    if (data && typeof data === "object")
+      return data as Record<string, unknown>;
   }
   if (raw && typeof raw === "object") return raw as Record<string, unknown>;
   return {};
@@ -266,7 +528,8 @@ function renderDeploymentMetrics(raw: unknown): void {
   const root = unwrapMetrics(raw);
   const current = metricCurrent(raw);
   const instances =
-    current["runtime_instances"] && typeof current["runtime_instances"] === "object"
+    current["runtime_instances"] &&
+    typeof current["runtime_instances"] === "object"
       ? (current["runtime_instances"] as Record<string, unknown>)
       : {};
   const usage =
@@ -277,7 +540,10 @@ function renderDeploymentMetrics(raw: unknown): void {
   printBanner({ subtitle: "Deployment metrics" });
   console.log(
     kvPanel([
-      { label: "deployment_id", value: String(root["deployment_id"] ?? root["resource_id"] ?? "-") },
+      {
+        label: "deployment_id",
+        value: String(root["deployment_id"] ?? root["resource_id"] ?? "-"),
+      },
       { label: "window", value: String(root["window"] ?? "1h") },
       { label: "state", value: formatMetricState(current["state"]) },
       {
@@ -288,12 +554,21 @@ function renderDeploymentMetrics(raw: unknown): void {
       { label: "unhealthy", value: formatMetricValue(instances["unhealthy"]) },
       { label: "errors", value: formatMetricValue(instances["error"]) },
       { label: "restarts", value: formatMetricValue(instances["restarts"]) },
-      { label: "cpu_limit", value: formatMillicores(current["cpu_limit_millicores"]) },
+      {
+        label: "cpu_limit",
+        value: formatMillicores(current["cpu_limit_millicores"]),
+      },
       { label: "memory_limit", value: formatMb(current["memory_limit_mb"]) },
       { label: "runtime", value: formatSeconds(usage["runtime_sec"]) },
       { label: "cost_cents", value: formatMetricValue(usage["cost_cents"]) },
-      { label: "last_health_check", value: formatMetricValue(current["last_health_check_at"]) },
-      { label: "last_heartbeat", value: formatMetricValue(current["last_heartbeat_at"]) },
+      {
+        label: "last_health_check",
+        value: formatMetricValue(current["last_health_check_at"]),
+      },
+      {
+        label: "last_heartbeat",
+        value: formatMetricValue(current["last_heartbeat_at"]),
+      },
     ]),
   );
 }
@@ -313,7 +588,8 @@ function formatMetricState(value: unknown): string {
 }
 
 function formatMetricValue(value: unknown): string {
-  if (value === null || value === undefined || value === "") return chalk.dim("-");
+  if (value === null || value === undefined || value === "")
+    return chalk.dim("-");
   return String(value);
 }
 
@@ -343,13 +619,13 @@ export function register(program: Command): void {
     )
     .option(
       "--docker-deploy",
-      "Create the deployment on this workspace's dedicated Docker Deploy runtime",
+      "Create the deployment on this workspace's dedicated App Engine runtime",
     )
     .addHelpText(
       "after",
       `
 Examples:
-  miosa deploy --docker-deploy       Recommended: deploy current directory to Docker Deploy
+  miosa deploy --docker-deploy       Recommended: deploy current directory to App Engine
   miosa deploy                       Deploy current directory (auto-detects framework)
   miosa deploy list                  List all deployments
   miosa deploy logs                  Tail build logs for this project
@@ -808,6 +1084,84 @@ Examples:
       }
     });
 
+  // ── deploy prove ───────────────────────────────────────────────────────────
+
+  deploy
+    .command("prove [id]")
+    .description("Prove a deployment is real, live, routed, and not metadata-only")
+    .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
+    .option(
+      "--timeout <seconds>",
+      "Public probe timeout in seconds",
+      parsePositiveInteger,
+      20,
+    )
+    .option("--no-probe", "Skip public HTTP probe")
+    .option("--json", "Output stable proof JSON")
+    .action(
+      async (
+        id: string | undefined,
+        opts: {
+          probePath: string;
+          timeout: number;
+          probe?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(id, cwd);
+          const json = isJsonMode(opts);
+          const spinner = json ? null : spin("Proving deployment...");
+
+          const result = await proveDeployment(client, deploymentId, {
+            probePath: opts.probePath,
+            timeoutMs: opts.timeout * 1000,
+            probe: opts.probe !== false,
+          });
+
+          spinner?.stop();
+          if (!result.ok) process.exitCode = 1;
+
+          if (json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          printBanner({ subtitle: "Deployment proof" });
+          console.log(
+            kvPanel([
+              { label: "deployment_id", value: chalk.dim(result.deployment_id) },
+              { label: "type", value: productLabel(result.deployment_product) },
+              {
+                label: "public_url",
+                value: result.public_url ? chalk.cyan(result.public_url) : chalk.dim("missing"),
+              },
+              {
+                label: "proof",
+                value: result.ok ? chalk.green("passed") : chalk.red("failed"),
+              },
+            ]),
+          );
+          console.log();
+          for (const check of result.checks) {
+            console.log(
+              `  ${check.ok ? chalk.green("✓") : chalk.red("✗")} ${check.id}: ${check.message}`,
+            );
+          }
+          if (result.next_actions.length > 0) {
+            console.log();
+            console.log(hintBlock("Next", result.next_actions));
+          }
+          console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
   // ── deploy metrics ──────────────────────────────────────────────────────────
 
   deploy
@@ -946,37 +1300,53 @@ Examples:
     .description("Manage environment variables for a deployment");
 
   envCmd
-    .command("set <pairs...>")
-    .description("Set one or more env vars (KEY=VALUE)")
+    .command("set [pairs...]")
+    .description(
+      `Set one or more env vars (KEY=VALUE). ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--id <id>", "Deployment ID (overrides .miosa.json)")
-    .action(async (pairs: string[], opts: { id?: string }) => {
-      try {
-        const cwd = process.cwd();
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const deploymentId = resolveDeploymentId(opts.id, cwd);
+    .action(
+      async (
+        pairs: string[],
+        opts: { id?: string; envFile?: string; envStdin?: boolean },
+      ) => {
+        try {
+          const cwd = process.cwd();
+          const config = loadConfig();
+          const client = new MiosaClient(config);
+          const deploymentId = resolveDeploymentId(opts.id, cwd);
 
-        const env: Record<string, string> = {};
-        for (const pair of pairs) {
-          const eq = pair.indexOf("=");
-          if (eq === -1) {
-            env[pair] = "";
-          } else {
-            env[pair.slice(0, eq)] = pair.slice(eq + 1);
+          const inline: Record<string, string> = {};
+          for (const pair of pairs ?? []) {
+            const eq = pair.indexOf("=");
+            if (eq === -1) {
+              inline[pair] = "";
+            } else {
+              inline[pair.slice(0, eq)] = pair.slice(eq + 1);
+            }
           }
-        }
+          const env = await resolveEnvInputs(inline, opts);
+          if (Object.keys(env).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
 
-        const spinner = spin("Setting env vars...");
-        const vars = await client.setDeploymentEnv(deploymentId, env);
-        spinner.succeed(`Set ${vars.length} env var(s)`);
+          const spinner = spin("Setting env vars...");
+          const vars = await client.setDeploymentEnv(deploymentId, env);
+          spinner.succeed(`Set ${vars.length} env var(s)`);
 
-        for (const v of vars) {
-          console.log(`  ${chalk.bold(v.name)}  ${chalk.dim(v.preview)}`);
+          for (const v of vars) {
+            console.log(`  ${chalk.bold(v.name)}  ${chalk.dim(v.preview)}`);
+          }
+        } catch (err) {
+          handleError(err);
         }
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   envCmd
     .command("list [id]")

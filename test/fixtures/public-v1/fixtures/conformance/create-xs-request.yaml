@@ -1,0 +1,9 @@
+path: /sandboxes
+method: post
+request: true
+body:
+  template_id: miosa-sandbox
+  size: xs
+  cpu_count: 1
+  memory_mb: 2048
+  disk_size_mb: 10240

@@ -42,12 +42,54 @@ miosa command-overview --json
 subcommands. Use `miosa capabilities --json` for the higher-level agent workflow
 contract.
 
+## AWS BYOC host pools
+
+The `cloud` command manages the public BYOC control-plane contract.
+It configures AWS trust, region networking and artifacts, host pool limits, server-run preflight, and provisioning.
+
+```bash
+miosa cloud accounts create \
+  --name "Production AWS" \
+  --external-account-id 123456789012 \
+  --default-region us-east-1 \
+  --json
+
+miosa cloud accounts attach-role <account-id> \
+  --role-arn arn:aws:iam::123456789012:role/MiosaByocRole \
+  --default-region us-east-1 \
+  --json
+
+miosa cloud regions create \
+  --account-id <account-id> \
+  --provider-region us-east-1 \
+  --name "N. Virginia" \
+  --subnet-ref subnet-0abc123 \
+  --security-group-refs sg-0def456 \
+  --instance-profile-ref MiosaByocHost \
+  --artifact-manifest-uri s3://miosa-byoc-artifacts/manifest.json \
+  --metadata '{"host_image_id":"ami-0123456789abcdef0"}' \
+  --json
+
+miosa cloud pools create \
+  --region-id <region-id> \
+  --instance-type m7i.4xlarge \
+  --max-nodes 4 \
+  --max-hourly-cents 250 \
+  --json
+
+miosa cloud pools provision <pool-id> --count 1 --json
+```
+
+New pools default to `m7i.4xlarge`, the verified production shape.
+Use `m7i.2xlarge` for the supported baseline tier.
+`miosa cloud preflights run --region-id <id>` resolves the customer role and verifies the region, network, AMI, instance type, quota, and runtime artifact contract on the server.
+
 ## Deploy — 60 seconds to first deploy
 
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
 
-For production app hosting, MIOSA recommends Docker Deploy. It runs apps on the
-workspace Docker Deploy runtime, which is the preferred path for teams deploying
+For production app hosting, MIOSA recommends App Engine. It runs apps on the
+workspace App Engine runtime, which is the preferred path for teams deploying
 many apps because it gives better runtime packing and lower resource overhead
 than one-off app runtimes.
 
@@ -108,7 +150,7 @@ miosa deploy
 miosa deploy redeploy
 ```
 
-For apps built inside a sandbox, promote the sandbox workspace through Docker Deploy:
+For apps built inside a sandbox, promote the sandbox workspace through App Engine:
 
 ```bash
 miosa sandbox publish <sandbox-id> \
@@ -125,7 +167,20 @@ miosa sandbox publish <sandbox-id> \
 
 ## Agentic sandbox app templates
 
-Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/stop preserves the filesystem and moves the session to `paused`; `destroy` is the permanent delete operation.
+Query the canonical product catalog before choosing a shape:
+
+```bash
+miosa templates catalog --product sandbox
+miosa templates readiness miosa-sandbox --product sandbox --json
+```
+
+The default sandbox is `small`: 2 vCPU, 4096 MiB RAM, and 10240 MiB disk.
+The `miosa-sandbox` input is a stable alias, while catalog and create responses expose the resolved immutable `image_id` generation.
+Legacy `--cpu`, `--memory`, and `--disk` values must be supplied together and exactly match one named size.
+
+Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/pause preserves the filesystem and moves the session to `paused`; `destroy --force` is a legacy API extension for permanent deletion and is not in the public V1 allowlist.
+
+Sandbox placement is server-owned. The public sandbox create contract uses MIOSA-managed capacity by default and has no per-sandbox provider or placement selector. BYOC accounts, regions, and pools are configured separately with `miosa cloud`; eligible placement remains a control-plane policy decision.
 
 For a working Next.js starter with a public preview:
 
@@ -209,11 +264,95 @@ miosa sandbox resume <sandbox-id> --json
 Checkpoint and fork:
 
 ```bash
-miosa sandbox snapshot <sandbox-id> --comment "before auth refactor" --json
-miosa sandbox snapshots list <sandbox-id> --json
-miosa sandbox create --snapshot <snapshot-id> --timeout 1h --wait --json
-miosa sandbox fork <sandbox-id> --name feature-branch --json
+miosa sandbox fork <sandbox-id> --timeout 1h --idempotency-key feature-branch --json
 ```
+
+### Canonical sandbox development contract
+
+`miosa sandbox dev up` runs a project from the canonical `miosa.app.yml` manifest.
+The command validates the manifest and CLI authentication, creates or reuses a persistent sandbox, overlay-syncs source files, installs locked dependencies once per lockfile fingerprint, starts named services, waits for internal and public health, and prints stable preview URLs.
+
+```yaml
+schema_version: 1
+name: clinic-intake
+
+sandbox:
+  name: clinic-intake-dev
+  template: node
+  workdir: /workspace
+
+sync:
+  exclude:
+    - coverage
+
+dependencies:
+  install: npm ci
+
+services:
+  web:
+    command: npm run dev -- --host 0.0.0.0
+    port: 3000
+    health:
+      path: /health
+      timeout: 120
+
+requirements:
+  config:
+    - NODE_ENV
+  secrets:
+    - SESSION_SECRET
+  database: true
+```
+
+Run the project with human-readable or stable JSON output:
+
+```bash
+miosa sandbox dev up
+miosa sandbox dev up --dir ./app --json
+miosa sandbox dev up --dir ./app --sandbox <sandbox-id> --json
+```
+
+The command writes `.miosa/sandbox.json` immediately after sandbox creation so a partial run can resume without creating another sandbox.
+A saved sandbox is reused only when its project name matches the manifest, unless `--sandbox` explicitly selects one.
+Sync is an overlay and never deletes remote files.
+It always excludes `.git`, `.miosa`, `.env`, `.env.*`, `node_modules`, `.venv`, `coverage`, and `dist`, plus entries in `sync.exclude`.
+This preserves runtime-owned dependency trees, virtual environments, install markers, service logs, and other files that exist only in the sandbox.
+
+Dependency commands must enforce a lockfile.
+Supported built-in validation recognizes `npm ci`, frozen pnpm and Bun installs, immutable or frozen Yarn installs, and hash-locked pip installs.
+An install marker under `/workspace/.miosa-runtime` makes retries idempotent for the same lockfile fingerprint.
+
+Service commands are sent as JSON data to the sandbox service endpoint.
+The CLI does not interpolate secret values into shell commands.
+Declare secret names under `requirements.secrets`; set values through the encrypted sandbox environment commands.
+
+Inspect the complete contract with:
+
+```bash
+miosa sandbox doctor --full --json
+miosa sandbox doctor <sandbox-id> --full --dir ./app --json
+```
+
+When no ID is passed, full doctor reads `.miosa/sandbox.json`.
+It checks sandbox API state, the exec channel, project filesystem access, named service state, internal listeners, public preview routing, managed database attachment state, required config and secret names, and snapshot capability.
+It never returns config or secret values.
+JSON output includes `ok`, `sandbox_id`, `manifest`, `checks`, and `failure_codes`.
+Each failed check has a stable code and an actionable `remediation` command.
+
+The development contract depends on these existing backend routes:
+
+- `POST /api/v1/sandboxes` and `GET /api/v1/sandboxes/:id` for persistent sandbox lifecycle and API state.
+- `POST /api/v1/sandboxes/:id/files` and `POST /api/v1/sandboxes/:id/exec` for source sync, deterministic install, filesystem checks, and internal health.
+- `GET`, `POST`, and restart routes under `/api/v1/sandboxes/:id/services` for idempotent named processes.
+- `POST /api/v1/sandboxes/:id/expose` for preview routing.
+- `GET /api/v1/sandboxes/:id/env` for name-only config and secret presence checks.
+- `GET /api/v1/sandboxes/:id/snapshots` for snapshot capability checks.
+- Database attachment fields on `GET /api/v1/sandboxes/:id` for attachment inspection.
+
+The CLI does not add release-candidate prepare or prove commands because the current backend contract has no release-candidate prepare endpoint.
+Use `miosa sandbox publish`, `miosa releases promote`, and `miosa deploy prove` for the deployment interfaces that do exist.
+
+The public V1 snapshot operation is `fork`: the service takes a copy-on-write snapshot of a running sandbox and creates the fork. The separate snapshot create/list/restore commands are legacy API extensions and are not part of the public V1 allowlist.
 
 Use a disposable sandbox only when you explicitly do not want preserved state:
 
@@ -272,12 +411,19 @@ miosa deploy destroy [id]                  # Tear down deployment
 
 ## OpenComputers hosts
 
+OpenComputers connects a machine you own to your MIOSA account.
+OSA runs on that machine as the local agent harness and keeps an outbound-only connection to MIOSA.
+MIOSA issues a one-time host credential, tracks the host, and can send scoped work to it.
+
 ```bash
 # Authenticate
 miosa login
 
-# List your hosts
-miosa hosts
+# Register a Linux or macOS machine and print its one-time OSA install command
+miosa opencomputers connect my-mac --platform macos
+
+# List connected machines
+miosa opencomputers list
 
 # Open an interactive terminal
 miosa ssh my-mac
@@ -348,13 +494,13 @@ echo "msk_u_yourkey" | miosa login   # non-TTY / CI
 
 Remove the stored API key.
 
-### `miosa hosts [--json]`
+### `miosa opencomputers list [--json]`
 
-List all registered hosts.
+List machines connected to your MIOSA account through OpenComputers.
 
 ```bash
-miosa hosts
-miosa hosts --json | jq '.[].name'
+miosa opencomputers list
+miosa opencomputers list --json | jq '.[].name'
 ```
 
 ### `miosa host <name-or-id> [--json]`
@@ -366,14 +512,19 @@ miosa host my-mac
 miosa host abc12345
 ```
 
-### `miosa connect [name]`
+### `miosa opencomputers connect [name]`
 
-Register a new host interactively. Prints the install command and waits for the host to come online.
+Register a machine, print its one-time OSA install command, and wait for it to come online.
+The command does not install OSA automatically because the target machine can be different from the machine where you run the CLI.
+Use `--no-wait` in automation.
+JSON output redacts the install command unless you explicitly pass `--show-install-command`.
 
 ```bash
-miosa connect
-miosa connect my-new-server
+miosa opencomputers connect my-new-server --platform linux
+miosa opencomputers connect ci-runner --platform linux --no-wait --json
 ```
+
+`miosa connect` and `miosa hosts` remain available as compatibility shortcuts.
 
 ### `miosa ssh <computer-or-host> [--cmd "..."]`
 
@@ -498,13 +649,13 @@ miosa status
 
 **"No API key configured"** — Run `miosa login`.
 
-**"Host not found"** — Check `miosa hosts` for the correct name or ID.
+**"Host not found"** — Check `miosa opencomputers list` for the correct name or ID.
 
 **"Insufficient credits"** — Top up at https://miosa.ai/billing.
 
 **Network errors** — Check your connection. Use `MIOSA_DEBUG=1 miosa <cmd>` for stack traces.
 
-**Custom endpoint** — `MIOSA_ENDPOINT=https://your-instance.ai miosa hosts`
+**Custom endpoint** — `MIOSA_ENDPOINT=https://your-instance.ai miosa opencomputers list`
 
 ## Links
 

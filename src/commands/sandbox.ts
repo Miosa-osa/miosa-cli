@@ -33,6 +33,13 @@ import {
   type JsonOptions,
 } from "./enterprise-util.js";
 import { loadConfig } from "../config.js";
+import { assertDeletableRemoteDir } from "./sandbox-delete-guard.js";
+import {
+  ENV_FILE_OPTION_HELP,
+  ENV_INLINE_SHELL_WARNING,
+  ENV_STDIN_OPTION_HELP,
+  resolveEnvInputs,
+} from "./env-input.js";
 import { handleError, isJsonMode } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -50,12 +57,26 @@ import {
   NetworkError,
   ServerError,
   UserError,
+  mapHttpError,
 } from "../errors.js";
-import { EXIT_USER_ERROR } from "../types.js";
+import { EXIT_USER_ERROR, type ApiErrorBody } from "../types.js";
+import {
+  registerSandboxDevCommands,
+  runFullSandboxDoctor,
+} from "./sandbox-dev.js";
 
 const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
 const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
 const EXPIRING_SANDBOX_THRESHOLD_SEC = 5 * 60;
+const SANDBOX_SIZE_CONTRACTS = {
+  xs: { cpu: 1, memory: 2_048, disk: 10_240 },
+  small: { cpu: 2, memory: 4_096, disk: 10_240 },
+  medium: { cpu: 4, memory: 8_192, disk: 20_480 },
+  large: { cpu: 8, memory: 16_384, disk: 40_960 },
+  xl: { cpu: 16, memory: 32_768, disk: 81_920 },
+} as const;
+
+type SandboxSize = keyof typeof SANDBOX_SIZE_CONTRACTS;
 
 export function register(program: Command): void {
   // -------------------------------------------------------------------------
@@ -69,6 +90,8 @@ export function register(program: Command): void {
     .description(
       "Manage Sandboxes — lightweight code-only Computers (Firecracker microVMs without a desktop)",
     );
+
+  registerSandboxDevCommands(sandbox);
 
   // list
   sandbox
@@ -115,7 +138,7 @@ export function register(program: Command): void {
           { header: "NAME", key: "name" as keyof Record<string, unknown> },
           {
             header: "STATUS",
-            key: "status" as keyof Record<string, unknown>,
+            key: "state" as keyof Record<string, unknown>,
             color: (val) => statusColor(val.trim()),
           },
           {
@@ -188,7 +211,7 @@ export function register(program: Command): void {
             { label: "Name", value: str(sb["name"]) },
             {
               label: "Status",
-              value: statusColor(str(sb["status"])),
+              value: statusColor(str(sb["state"])),
             },
           ];
           if (sb["template_id"]) {
@@ -258,6 +281,11 @@ export function register(program: Command): void {
         "Template / image ID (default: miosa-sandbox)",
       )
       .option("--name <name>", "Human-readable name for the Sandbox")
+      .option(
+        "--size <size>",
+        "Named size: xs, small, medium, large, or xl (default: small)",
+        parseSandboxSize,
+      )
       .option("--cpu <n>", "vCPU count", parseIntegerOption)
       .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
       .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
@@ -265,6 +293,15 @@ export function register(program: Command): void {
         "--timeout <duration>",
         "Wall-clock timeout, e.g. 300s, 1h",
         parseDurationSec,
+      )
+      .option(
+        "--idle-timeout <duration>",
+        "Idle timeout before pause; 0 disables it (default: 0)",
+        parseDurationSec,
+      )
+      .option(
+        "--idempotency-key <key>",
+        "Retry-safe create key retained by the service for 24 hours",
       )
       .option(
         "--publish-port <port>",
@@ -292,6 +329,18 @@ export function register(program: Command): void {
       )
       .option("--snapshot <id>", "Create from a sandbox snapshot")
       .option("--workspace <id-or-slug>", "Workspace ID/slug")
+      .option(
+        "--external-workspace <id>",
+        "White-label workspace/customer ID for billing attribution",
+      )
+      .option(
+        "--external-user <id>",
+        "White-label user ID for billing attribution",
+      )
+      .option(
+        "--external-project <id>",
+        "White-label project ID for billing attribution",
+      )
       .option(
         "--agent-profile <id>",
         "Agent runtime profile ID to mount into the sandbox",
@@ -336,15 +385,27 @@ export function register(program: Command): void {
       ),
   )
     .option("--json", "Output as JSON")
+    .addHelpText(
+      "after",
+      `
+Note:
+  White-label preview domains require external attribution at creation.
+  Pass --external-workspace / --external-user / --external-project when the
+  sandbox will be exposed on a white-label preview domain.
+`,
+    )
     .action(
       (
         opts: DataOptions & {
           template?: string;
           name?: string;
+          size?: SandboxSize;
           cpu?: number;
           memory?: number;
           disk?: number;
           timeout?: number;
+          idleTimeout?: number;
+          idempotencyKey?: string;
           publishPort?: number;
           wait?: boolean;
           probePath?: string;
@@ -353,6 +414,9 @@ export function register(program: Command): void {
           depth?: number;
           snapshot?: string;
           workspace?: string;
+          externalWorkspace?: string;
+          externalUser?: string;
+          externalProject?: string;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           networkPolicy?: string;
@@ -380,15 +444,21 @@ export function register(program: Command): void {
             return;
           }
 
-          const body: Record<string, unknown> = {};
-          if (opts.template) body["template_id"] = opts.template;
+          const body: Record<string, unknown> = {
+            template_id: opts.template ?? "miosa-sandbox",
+          };
           if (opts.name) body["name"] = opts.name;
-          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
-          if (opts.memory != null) body["memory_mb"] = opts.memory;
-          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
+          const resources = resolveSandboxResources(opts);
+          body["size"] = resources.size;
+          if (resources.legacy) {
+            body["cpu_count"] = resources.legacy.cpu;
+            body["memory_mb"] = resources.legacy.memory;
+            body["disk_size_mb"] = resources.legacy.disk;
+          }
           const timeoutSec =
             opts.timeout ?? DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC;
           body["timeout_sec"] = timeoutSec;
+          body["idle_timeout_sec"] = opts.idleTimeout ?? 0;
           if (opts.source) body["source"] = opts.source;
           if (opts.revision) body["revision"] = opts.revision;
           if (opts.depth != null) body["depth"] = opts.depth;
@@ -404,6 +474,15 @@ export function register(program: Command): void {
             (program.opts() as { workspace?: string }).workspace ??
             process.env["MIOSA_WORKSPACE"];
           if (workspace) body["workspace_id"] = workspace;
+          if (opts.externalWorkspace) {
+            body["external_workspace_id"] = opts.externalWorkspace;
+          }
+          if (opts.externalUser) {
+            body["external_user_id"] = opts.externalUser;
+          }
+          if (opts.externalProject) {
+            body["external_project_id"] = opts.externalProject;
+          }
           const networkPolicy = buildNetworkPolicy(opts);
           if (networkPolicy) {
             body["metadata"] = {
@@ -417,7 +496,13 @@ export function register(program: Command): void {
           if (opts.autoStart) body["auto_start"] = true;
 
           const raw = unwrap(
-            await client().apiPost<unknown>(apiPath("/sandboxes"), body),
+            await client().apiPost<unknown>(
+              apiPath("/sandboxes"),
+              body,
+              opts.idempotencyKey
+                ? { "Idempotency-Key": opts.idempotencyKey }
+                : undefined,
+            ),
           );
           const sb = (raw ?? {}) as Record<string, unknown>;
           const id = String(sb["id"] ?? "");
@@ -479,7 +564,8 @@ export function register(program: Command): void {
   // delete
   sandbox
     .command("delete <sandbox-id>")
-    .description("Delete a Sandbox")
+    .description("Permanently delete a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -489,7 +575,8 @@ export function register(program: Command): void {
   sandbox
     .command("destroy <sandbox-id>")
     .alias("rm")
-    .description("Destroy a Sandbox (alias for delete)")
+    .description("Permanently destroy a Sandbox (legacy API extension)")
+    .requiredOption("--force", "Confirm permanent filesystem deletion")
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => deleteAndPrint(`/sandboxes/${enc(id)}`, opts)),
@@ -514,6 +601,14 @@ export function register(program: Command): void {
       }),
     );
 
+  sandbox
+    .command("pause <sandbox-id>")
+    .description("Pause a running persistent Sandbox and preserve its workspace")
+    .option("--json", "Output as JSON")
+    .action((id: string, opts: JsonOptions) =>
+      runAction(() => postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {})),
+    );
+
   // stop — snapshot + pause (mirrors `box stop`)
   sandbox
     .command("stop <sandbox-id>")
@@ -529,7 +624,7 @@ export function register(program: Command): void {
       runAction(async () => {
         const stopped = unwrap(
           await client().apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/stop`),
+            apiPath(`/sandboxes/${enc(id)}/pause`),
             {},
           ),
         );
@@ -559,22 +654,48 @@ export function register(program: Command): void {
   sandbox
     .command("resume <sandbox-id>")
     .description("Resume a paused Sandbox")
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe lifecycle key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: JsonOptions) =>
+    .action((id: string, opts: JsonOptions & { idempotencyKey?: string }) =>
       runAction(() => resumeSandboxAndPrint(id, opts)),
     );
 
   // fork — clone from snapshot in one call (mirrors `box fork`)
   sandbox
     .command("fork <sandbox-id>")
-    .description("Clone (fork) a Sandbox from its current state")
-    .option("--name <name>", "Optional name for the forked Sandbox")
+    .description("Snapshot and fork a running Sandbox into a new Sandbox")
+    .option("--template <template>", "Template or immutable image override")
+    .option("--timeout <duration>", "Fork timeout", parseDurationSec)
+    .option(
+      "--idempotency-key <key>",
+      "Retry-safe fork key sent as Idempotency-Key",
+    )
     .option("--json", "Output as JSON")
-    .action((id: string, opts: { name?: string } & JsonOptions) =>
+    .action((
+      id: string,
+      opts: {
+        template?: string;
+        timeout?: number;
+        idempotencyKey?: string;
+      } & JsonOptions,
+    ) =>
       runAction(async () => {
         const body: Record<string, unknown> = {};
-        if (opts.name) body["name"] = opts.name;
-        await postAndPrint(`/sandboxes/${enc(id)}/fork`, opts, body);
+        if (opts.template) body["template_id"] = opts.template;
+        if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+        const result = unwrap(
+          await client().apiPost<unknown>(
+            apiPath(`/sandboxes/${enc(id)}/fork`),
+            body,
+            opts.idempotencyKey
+              ? { "Idempotency-Key": opts.idempotencyKey }
+              : undefined,
+          ),
+        );
+        printValue(result, opts);
       }),
     );
 
@@ -611,21 +732,21 @@ export function register(program: Command): void {
 
   registerSandboxConnectorCommands(sandbox);
 
-  // prompt — invoke an in-Sandbox AI agent CLI (mirrors `box prompt`).
-  // Implemented through Agent Runs so callers get a stable run response while
+  // run-agent - invoke an in-Sandbox AI runner CLI.
+  // Implemented through Runs so callers get a stable run response while
   // execution still happens inside the remote filesystem.
   sandbox
-    .command("prompt <sandbox-id> <instruction...>")
+    .command("run-agent <sandbox-id> <instruction...>")
     .description(
       "Run an in-Sandbox AI agent runtime with the given instruction",
     )
     .option(
-      "--provider <name>",
-      "Agent runtime: claude (default), claude-code, codex, pi, hermes, osa, custom",
+      "--runner <name>",
+      "Runner: claude (default), claude-code, codex, pi, hermes, osa, custom",
     )
     .option(
       "--runtime-command <command>",
-      "Executable command for --provider custom, e.g. 'hermes-agent run'",
+      "Executable command for --runner custom, e.g. 'hermes-agent run'",
     )
     .option("--model <name>", "Provider-specific model name")
     .option(
@@ -639,10 +760,12 @@ export function register(program: Command): void {
     .option("--cwd <path>", "Working directory inside the Sandbox")
     .option(
       "--env <KEY=VALUE>",
-      "Environment variable for the Agent Run. Repeatable.",
+      `Environment variable for the Agent Run. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
       collectOption,
       [],
     )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--agent-profile <id>", "Agent runtime profile ID")
     .option(
       "--skip-agent-profile",
@@ -667,13 +790,15 @@ export function register(program: Command): void {
         id: string,
         words: string[],
         opts: {
-          provider?: string;
+          runner?: string;
           runtimeCommand?: string;
           model?: string;
           connector?: string;
           preflight?: boolean;
           cwd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           agentProfile?: string;
           skipAgentProfile?: boolean;
           externalWorkspace?: string;
@@ -683,21 +808,21 @@ export function register(program: Command): void {
         } & JsonOptions,
       ) =>
         runAction(async () => {
-          const provider = opts.provider ?? "claude";
-          if (!isSupportedPromptProvider(provider)) {
-            const allowedProviders = supportedPromptProviders();
+          const runner = opts.runner ?? "claude";
+          if (!isSupportedRunAgentRunner(runner)) {
+            const allowedRunners = supportedRunAgentRunners();
             throw new Error(
-              `Unsupported provider "${provider}". Use: ${allowedProviders.join(", ")}`,
+              `Unsupported runner "${runner}". Use: ${allowedRunners.join(", ")}`,
             );
           }
-          if (opts.runtimeCommand && provider !== "custom") {
+          if (opts.runtimeCommand && runner !== "custom") {
             throw new Error(
-              "--runtime-command can only be used with --provider custom",
+              "--runtime-command can only be used with --runner custom",
             );
           }
           if (opts.connector || opts.preflight) {
             await preflightSandboxConnector(id, {
-              provider,
+              provider: runner,
               connector: opts.connector,
               model: opts.model,
               cwd: opts.cwd,
@@ -707,14 +832,18 @@ export function register(program: Command): void {
           const body: Record<string, unknown> = {
             target_kind: "sandbox",
             target_id: id,
-            provider,
-            prompt: instruction,
+            runner,
+            instruction,
           };
           if (opts.runtimeCommand) body["command"] = opts.runtimeCommand;
           if (opts.model) body["model"] = opts.model;
           if (opts.cwd) body["cwd"] = opts.cwd;
-          if (opts.env && opts.env.length > 0) {
-            body["env"] = parseEnvPairs(opts.env);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
+          if (Object.keys(env).length > 0) {
+            body["env"] = env;
           }
           if (opts.agentProfile) {
             body["agent_runtime_profile_id"] = opts.agentProfile;
@@ -734,7 +863,7 @@ export function register(program: Command): void {
           if (opts.timeout != null) body["timeout"] = opts.timeout;
 
           const run = unwrap(
-            await client().apiPost<unknown>(apiPath("/agent-runs"), body),
+            await client().apiPost<unknown>(apiPath("/runs"), body),
           ) as Record<string, unknown>;
 
           if (isJsonMode(opts)) {
@@ -747,7 +876,7 @@ export function register(program: Command): void {
             kvPanel([
               { label: "Run", value: chalk.bold(str(run["id"])) },
               { label: "Target", value: `${str(run["target_kind"])} ${id}` },
-              { label: "Provider", value: str(run["provider"]) },
+              { label: "Runner", value: str(run["runner"]) },
               { label: "Status", value: statusColor(str(run["status"])) },
               { label: "Exit", value: str(run["exit_code"]) },
             ]),
@@ -789,10 +918,12 @@ export function register(program: Command): void {
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -827,6 +958,8 @@ export function register(program: Command): void {
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -856,7 +989,10 @@ export function register(program: Command): void {
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -906,10 +1042,12 @@ export function register(program: Command): void {
       )
       .option(
         "--env <pair>",
-        "Environment variable KEY=VALUE. Repeatable.",
+        `Environment variable KEY=VALUE. Repeatable. ${ENV_INLINE_SHELL_WARNING}`,
         collectOption,
         [],
       )
+      .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+      .option("--env-stdin", ENV_STDIN_OPTION_HELP)
       .option(
         "--background",
         "Start the command in the background and return immediately",
@@ -944,6 +1082,8 @@ export function register(program: Command): void {
           command?: string;
           shellCmd?: string;
           env?: string[];
+          envFile?: string;
+          envStdin?: boolean;
           background?: boolean;
           detached?: boolean;
           follow?: boolean;
@@ -973,7 +1113,10 @@ export function register(program: Command): void {
             body["cwd"] = cwd;
             body["dir"] = cwd;
           }
-          const env = parseEnvPairs(opts.env ?? []);
+          const env = await resolveEnvInputs(
+            parseEnvPairs(opts.env ?? []),
+            opts,
+          );
           if (opts.detached) {
             const result = await createSandboxCommand(id, cmd, {
               cwd,
@@ -1307,7 +1450,7 @@ export function register(program: Command): void {
     .option("--run-command <cmd>", "Run command for dynamic/server deployments")
     .option(
       "--docker-deploy",
-      "Publish onto the workspace Docker Deploy runtime instead of standard app hosting",
+      "Publish onto the workspace App Engine runtime instead of standard app hosting",
     )
     .option("--domain <domain>", "Custom domain to attach")
     .option(
@@ -1677,28 +1820,48 @@ export function register(program: Command): void {
     );
 
   env
-    .command("set <sandbox-id> <pairs...>")
-    .description("Set encrypted sandbox env vars as KEY=VALUE")
+    .command("set <sandbox-id> [pairs...]")
+    .description(
+      `Set encrypted sandbox env vars as KEY=VALUE. ${ENV_INLINE_SHELL_WARNING}`,
+    )
+    .option("--env-file <path>", ENV_FILE_OPTION_HELP)
+    .option("--env-stdin", ENV_STDIN_OPTION_HELP)
     .option("--json", "Output as JSON")
-    .action((id: string, pairs: string[], opts: JsonOptions) =>
-      runAction(async () => {
-        const vars = Object.entries(parseEnvPairs(pairs)).map(
-          ([key, value]) => ({
+    .action(
+      (
+        id: string,
+        pairs: string[],
+        opts: JsonOptions & { envFile?: string; envStdin?: boolean },
+      ) =>
+        runAction(async () => {
+          const values = await resolveEnvInputs(
+            parseEnvPairs(pairs ?? []),
+            opts,
+          );
+          if (Object.keys(values).length === 0) {
+            throw new UserError(
+              "No env vars provided.",
+              "Pass KEY=VALUE pairs, --env-file <path>, or --env-stdin.",
+            );
+          }
+          const vars = Object.entries(values).map(([key, value]) => ({
             key,
             value,
-          }),
-        );
-        const result = unwrap(
-          await client().apiPut<unknown>(apiPath(`/sandboxes/${enc(id)}/env`), {
-            vars,
-          }),
-        );
-        if (isJsonMode(opts)) {
-          console.log(JSON.stringify(result, null, 2));
-          return;
-        }
-        console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
-      }),
+          }));
+          const result = unwrap(
+            await client().apiPut<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/env`),
+              {
+                vars,
+              },
+            ),
+          );
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(chalk.green(`Set ${vars.length} sandbox env var(s).`));
+        }),
     );
 
   env
@@ -1772,20 +1935,44 @@ export function register(program: Command): void {
     );
 
   sandbox
-    .command("doctor <sandbox-id>")
+    .command("doctor [sandbox-id]")
     .description(
       "Diagnose sandbox app readiness across sandbox state, internal HTTP, public route, and TLS/edge reachability",
     )
-    .requiredOption(
+    .option(
       "--port <port>",
       "Port inside the sandbox to check",
       parseIntegerOption,
     )
     .option("--probe-path <path>", "HTTP path to probe", "/")
+    .option("--full", "Inspect the complete canonical developer contract")
+    .option("--dir <path>", "Project directory for --full", ".")
     .option("--json", "Output as JSON")
     .action(
-      (id: string, opts: { port: number; probePath: string; json?: boolean }) =>
+      (id: string | undefined, opts: { port?: number; probePath: string; full?: boolean; dir: string; json?: boolean }) =>
         runAction(async () => {
+          if (opts.full) {
+            const report = await runFullSandboxDoctor(opts.dir, id);
+            if (!report.ok) process.exitCode = 1;
+            if (isJsonMode(opts)) {
+              console.log(JSON.stringify(report, null, 2));
+              return;
+            }
+            console.log();
+            console.log(chalk.bold("Sandbox Doctor Full"));
+            console.log();
+            for (const check of report.checks) {
+              console.log(`  ${check.ok ? chalk.green("ok") : chalk.red("fail")} ${check.id}: ${check.message}`);
+            }
+            console.log();
+            return;
+          }
+          if (!id || opts.port == null) {
+            throw new UserError(
+              "Sandbox ID and --port are required unless --full is used.",
+              "Use miosa sandbox doctor <sandbox-id> --port <port>, or miosa sandbox doctor --full.",
+            );
+          }
           const report = await doctorSandbox(id, opts.port, opts.probePath);
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(report, null, 2));
@@ -1865,7 +2052,7 @@ export function register(program: Command): void {
     .option("--json", "Output raw JSON response")
     .action(async (id: string, remotePath: string, opts: JsonOptions) => {
       try {
-        const result = await fetchApiRaw(
+        const result = await client().apiGet<unknown>(
           apiPath(`/sandboxes/${enc(id)}/files/read?path=${enc(remotePath)}`),
         );
         if (isJsonMode(opts)) {
@@ -1947,17 +2134,25 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         id: string,
         localDir: string,
         remoteDir: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(id, localDir, remoteDir, {
             delete: !!opts.delete,
+            force: !!(opts.force || opts.yes),
           });
           if (isJsonMode(opts)) {
             console.log(JSON.stringify(result, null, 2));
@@ -1980,12 +2175,20 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         localDir: string,
         remoteDir: string,
-        opts: { sandbox: string; delete?: boolean; json?: boolean },
+        opts: {
+          sandbox: string;
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           const result = await uploadDirToSandbox(
@@ -1994,6 +2197,7 @@ export function register(program: Command): void {
             remoteDir,
             {
               delete: !!opts.delete,
+              force: !!(opts.force || opts.yes),
             },
           );
           if (isJsonMode(opts)) {
@@ -2019,12 +2223,19 @@ export function register(program: Command): void {
       "--delete",
       "Delete the remote directory contents before extracting directories",
     )
+    .option("--force", "Skip the --delete confirmation prompt")
+    .option("--yes", "Alias for --force")
     .option("--json", "Output as JSON")
     .action(
       async (
         source: string,
         target: string,
-        opts: { delete?: boolean; json?: boolean },
+        opts: {
+          delete?: boolean;
+          force?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
       ) => {
         try {
           if (isSandboxTarget(source) && !isSandboxTarget(target)) {
@@ -2057,7 +2268,10 @@ export function register(program: Command): void {
               parsed.sandboxId,
               local,
               parsed.remotePath,
-              { delete: !!opts.delete },
+              {
+                delete: !!opts.delete,
+                force: !!(opts.force || opts.yes),
+              },
             );
             if (isJsonMode(opts)) {
               console.log(JSON.stringify(result, null, 2));
@@ -2211,7 +2425,9 @@ export function register(program: Command): void {
             }
             if (opts.filename) query.set("filename", opts.filename);
             const bytes = await client().apiGetBinary(
-              apiPath(`/sandboxes/${enc(id)}/exports/download?${query.toString()}`),
+              apiPath(
+                `/sandboxes/${enc(id)}/exports/download?${query.toString()}`,
+              ),
             );
             fs.writeFileSync(opts.output, bytes);
           }
@@ -2234,7 +2450,10 @@ export function register(program: Command): void {
             kvPanel([
               { label: "Export", value: chalk.bold(str(exportData["id"])) },
               { label: "Sandbox", value: id },
-              { label: "Status", value: statusColor(str(exportData["status"])) },
+              {
+                label: "Status",
+                value: statusColor(str(exportData["status"])),
+              },
               {
                 label: "Archive",
                 value: str(exportData["archive_download_url"]),
@@ -2641,8 +2860,7 @@ const SANDBOX_KEY_PATH = path.join(
 
 async function ensureSandboxSshKey(
   id: string,
-  apiKey: string,
-  endpoint: string,
+  config: ReturnType<typeof loadConfig>,
 ): Promise<void> {
   if (!fs.existsSync(SANDBOX_KEY_PATH)) {
     console.log(
@@ -2677,28 +2895,80 @@ async function ensureSandboxSshKey(
   // already exist from a previous sandbox, but a fresh sandbox still needs it
   // installed in authorized_keys before SSH auth can succeed.
   const pubKey = fs.readFileSync(`${SANDBOX_KEY_PATH}.pub`, "utf8").trim();
-  const base = endpoint.replace(/\/$/, "");
-  const res = await fetch(
-    `${base}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-keys`,
+  const endpoint = config.endpoint.replace(/\/$/, "");
+  const response = await fetch(
+    `${endpoint}${apiPath(`/sandboxes/${encodeURIComponent(id)}/ssh-keys`)}`,
     {
       method: "POST",
       headers: {
+        ...sandboxTransportHeaders(config),
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ public_key: pubKey }),
     },
   );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to register SSH key: ${res.status} ${body}`);
+  if (!response.ok) {
+    const rawBody = await response.text();
+    let body: ApiErrorBody = {};
+    try {
+      body = JSON.parse(rawBody) as ApiErrorBody;
+    } catch {
+      body = { message: rawBody || `HTTP ${response.status}` };
+    }
+    throw mapHttpError(
+      response.status,
+      body,
+      rawBody,
+      response.headers.get("x-request-id"),
+    );
   }
 
   console.log(chalk.green("SSH key registered."));
 }
 
-function bridgeSandboxWs(socket: Socket, wsUrl: string, apiKey: string): void {
+function sandboxTransportHeaders(
+  config: ReturnType<typeof loadConfig>,
+): Record<string, string> {
+  if (!config.api_key) throw new Error("Not authenticated. Run: miosa login");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${String(config.api_key)}`,
+  };
+  if (config.tenant) headers["X-MIOSA-Tenant"] = config.tenant;
+  if (config.workspace) headers["X-MIOSA-Workspace"] = config.workspace;
+  return headers;
+}
+
+export function buildSandboxWebSocketRequest(
+  config: ReturnType<typeof loadConfig>,
+  id: string,
+): {
+  url: string;
+  headers: Record<string, string>;
+} {
+  const base = config.endpoint.replace(/\/$/, "");
+  const wsBase = base.replace(/^https?/, (protocol) =>
+    protocol === "https" ? "wss" : "ws",
+  );
+  const url = new URL(
+    `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-tunnel`,
+  );
+  const headers = sandboxTransportHeaders(config);
+
+  if (config.tenant) {
+    url.searchParams.set("tenant", config.tenant);
+  }
+  if (config.workspace) {
+    url.searchParams.set("workspace", config.workspace);
+  }
+
+  return { url: url.toString(), headers };
+}
+
+function bridgeSandboxWs(
+  socket: Socket,
+  request: ReturnType<typeof buildSandboxWebSocketRequest>,
+): void {
   let closed = false;
 
   function cleanup(): void {
@@ -2707,8 +2977,8 @@ function bridgeSandboxWs(socket: Socket, wsUrl: string, apiKey: string): void {
     if (!socket.destroyed) socket.destroy();
   }
 
-  const ws = new WebSocket(wsUrl, {
-    headers: { Authorization: `Bearer ${apiKey}` },
+  const ws = new WebSocket(request.url, {
+    headers: request.headers,
   });
 
   ws.on("open", () => {
@@ -2739,15 +3009,9 @@ async function runSandboxSsh(
   opts: { port?: number; user?: string; spawn?: boolean; json?: boolean },
 ): Promise<void> {
   const config = loadConfig();
-  const apiKey = config.api_key;
-  if (!apiKey) throw new Error("Not authenticated. Run: miosa login");
+  const wsRequest = buildSandboxWebSocketRequest(config, id);
 
-  const endpoint = config.endpoint ?? "https://api.miosa.ai";
-  const base = endpoint.replace(/\/$/, "");
-  const wsBase = base.replace(/^https?/, (p) => (p === "https" ? "wss" : "ws"));
-  const wsUrl = `${wsBase}/api/v1/sandboxes/${encodeURIComponent(id)}/ssh-tunnel`;
-
-  await ensureSandboxSshKey(id, String(apiKey), endpoint);
+  await ensureSandboxSshKey(id, config);
 
   // Pick a free local port
   const localPort = opts.port ?? (await pickFreePort());
@@ -2759,7 +3023,7 @@ async function runSandboxSsh(
         sandbox_id: id,
         local_port: localPort,
         user,
-        ws_url: wsUrl,
+        ws_url: wsRequest.url,
         key_path: SANDBOX_KEY_PATH,
       }),
     );
@@ -2767,7 +3031,7 @@ async function runSandboxSsh(
   }
 
   const server = createServer((socket) => {
-    bridgeSandboxWs(socket, wsUrl, String(apiKey));
+    bridgeSandboxWs(socket, wsRequest);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -3625,7 +3889,7 @@ function parsePublishDatabase(value?: string): unknown {
     normalized === "create:postgres" ||
     normalized === "create:postgresql"
   ) {
-    return { engine: "postgresql", engine_version: "15" };
+    return { engine: "postgresql", engine_version: "16" };
   }
   if (normalized.startsWith("existing:")) {
     return { existing_database_id: value.slice("existing:".length) };
@@ -4053,10 +4317,19 @@ async function waitForSandboxRunning(
 
 async function resumeSandboxAndPrint(
   sandboxId: string,
-  opts: JsonOptions,
+  opts: JsonOptions & { idempotencyKey?: string },
 ): Promise<void> {
   try {
-    await postAndPrint(`/sandboxes/${enc(sandboxId)}/resume`, opts, {});
+    const result = unwrap(
+      await client().apiPost<unknown>(
+        apiPath(`/sandboxes/${enc(sandboxId)}/resume`),
+        {},
+        opts.idempotencyKey
+          ? { "Idempotency-Key": opts.idempotencyKey }
+          : undefined,
+      ),
+    );
+    printValue(result, opts);
   } catch (err) {
     if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_PAUSED") {
       throw await enrichSandboxLifecycleError(sandboxId, err);
@@ -4472,7 +4745,7 @@ async function uploadDirToSandbox(
   sandboxId: string,
   localDir: string,
   remoteDir: string,
-  opts: { delete: boolean },
+  opts: { delete: boolean; force?: boolean },
 ): Promise<{
   sandbox_id: string;
   local_dir: string;
@@ -4483,14 +4756,18 @@ async function uploadDirToSandbox(
   if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
     throw new UserError(`Local directory not found: ${sourceDir}`);
   }
+  const deleteTarget = opts.delete
+    ? await confirmRemoteDeleteDir(sandboxId, remoteDir, !!opts.force)
+    : null;
   const c = client();
   const archivePath = createDeployArchive(sourceDir);
   const remoteArchive = `/tmp/miosa-upload-${Date.now()}.tgz`;
   try {
     await uploadFileToSandbox(c, sandboxId, archivePath, remoteArchive);
-    const clean = opts.delete
-      ? `rm -rf ${shellQuote(remoteDir)} && mkdir -p ${shellQuote(remoteDir)}`
-      : `mkdir -p ${shellQuote(remoteDir)}`;
+    const clean =
+      deleteTarget != null
+        ? `rm -rf ${shellQuote(deleteTarget)} && mkdir -p ${shellQuote(deleteTarget)}`
+        : `mkdir -p ${shellQuote(remoteDir)}`;
     await execSandbox(
       c,
       sandboxId,
@@ -4506,6 +4783,42 @@ async function uploadDirToSandbox(
     remote_dir: remoteDir,
     files_label: path.basename(sourceDir) || sourceDir,
   };
+}
+
+// --delete runs `rm -rf` inside the sandbox. Refuse protected roots, then
+// require an explicit confirmation (interactive prompt, or --force/--yes)
+// before anything is wiped. Returns the normalized remote dir to delete.
+async function confirmRemoteDeleteDir(
+  sandboxId: string,
+  remoteDir: string,
+  force: boolean,
+): Promise<string> {
+  const target = assertDeletableRemoteDir(remoteDir);
+  if (force) return target;
+  if (!process.stdin.isTTY) {
+    throw new UserError(
+      `--delete will permanently wipe ${target} on sandbox ${sandboxId}.`,
+      "Non-interactive session: re-run with --force (or --yes) to confirm the wipe.",
+    );
+  }
+  console.log(
+    chalk.yellow(
+      `--delete will permanently wipe sandbox ${sandboxId}:${target} before uploading.`,
+    ),
+  );
+  const { default: inquirer } = await import("inquirer");
+  const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
+    {
+      type: "confirm",
+      name: "confirmed",
+      message: `Wipe ${sandboxId}:${target}?`,
+      default: false,
+    },
+  ]);
+  if (!confirmed) {
+    throw new UserError("Cancelled - nothing was deleted or uploaded.");
+  }
+  return target;
 }
 
 async function execSandbox(
@@ -5044,45 +5357,12 @@ async function readSandboxFile(
   throw new UserError(`Could not read sandbox file: ${remotePath}`);
 }
 
-async function fetchApiRaw(path: string, body?: unknown): Promise<unknown> {
-  const config = loadConfig();
-  const apiKey = config.api_key;
-  if (!apiKey) throw new UserError("Not authenticated. Run: miosa login");
-
-  const endpoint = (config.endpoint ?? "https://api.miosa.ai").replace(
-    /\/$/,
-    "",
-  );
-  const res = await fetch(`${endpoint}${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      Authorization: `Bearer ${String(apiKey)}`,
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      "User-Agent": "@miosa/cli",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new UserError(
-      `Server error (${res.status}): HTTP ${res.status}`,
-      text || res.statusText,
-    );
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
 function commandInCwd(command: string, cwd?: string): string {
   if (!cwd) return command;
   return `cd ${shellQuote(cwd)} && ${command}`;
 }
 
-function supportedPromptProviders(): string[] {
+function supportedRunAgentRunners(): string[] {
   return [
     "claude",
     "claude-code",
@@ -5094,15 +5374,15 @@ function supportedPromptProviders(): string[] {
   ];
 }
 
-function runtimeCommandForProvider(
-  provider: string,
+function runtimeCommandForRunner(
+  runner: string,
   runtimeCommand?: string,
 ): string | null {
-  const normalized = provider.trim().toLowerCase();
+  const normalized = runner.trim().toLowerCase();
   if (normalized === "custom") {
     if (!runtimeCommand?.trim()) {
       throw new Error(
-        "--provider custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
+        "--runner custom requires --runtime-command, e.g. --runtime-command 'hermes-agent run'",
       );
     }
     return runtimeCommand.trim();
@@ -5120,8 +5400,8 @@ function runtimeCommandForProvider(
   return builtIns[normalized] ?? null;
 }
 
-function isSupportedPromptProvider(provider: string): boolean {
-  return supportedPromptProviders().includes(provider.trim().toLowerCase());
+function isSupportedRunAgentRunner(runner: string): boolean {
+  return supportedRunAgentRunners().includes(runner.trim().toLowerCase());
 }
 
 function backgroundCommand(command: string): string {
@@ -5180,6 +5460,59 @@ function parseIntegerOption(value: string): number {
   const n = Number.parseInt(String(value), 10);
   if (!Number.isInteger(n)) throw new UserError(`Invalid integer: ${value}`);
   return n;
+}
+
+function parseSandboxSize(value: string): SandboxSize {
+  const size = String(value).trim().toLowerCase();
+  if (size in SANDBOX_SIZE_CONTRACTS) return size as SandboxSize;
+  throw new UserError(
+    `Invalid sandbox size: ${value}. Expected xs, small, medium, large, or xl.`,
+  );
+}
+
+function resolveSandboxResources(opts: {
+  size?: SandboxSize;
+  cpu?: number;
+  memory?: number;
+  disk?: number;
+}): {
+  size: SandboxSize;
+  legacy?: { cpu: number; memory: number; disk: number };
+} {
+  const legacyValues = [opts.cpu, opts.memory, opts.disk];
+  const legacyCount = legacyValues.filter((value) => value != null).length;
+
+  if (legacyCount === 0) return { size: opts.size ?? "small" };
+  if (legacyCount !== legacyValues.length) {
+    throw new UserError(
+      "Legacy resource overrides require --cpu, --memory, and --disk together. Prefer --size.",
+    );
+  }
+
+  const legacy = {
+    cpu: opts.cpu as number,
+    memory: opts.memory as number,
+    disk: opts.disk as number,
+  };
+  const matchingSize = Object.entries(SANDBOX_SIZE_CONTRACTS).find(
+    ([, contract]) =>
+      contract.cpu === legacy.cpu &&
+      contract.memory === legacy.memory &&
+      contract.disk === legacy.disk,
+  )?.[0] as SandboxSize | undefined;
+
+  if (!matchingSize) {
+    throw new UserError(
+      "Legacy --cpu/--memory/--disk values must exactly match a named sandbox size. Prefer --size.",
+    );
+  }
+  if (opts.size && opts.size !== matchingSize) {
+    throw new UserError(
+      `Legacy resource overrides match ${matchingSize}, not requested size ${opts.size}.`,
+    );
+  }
+
+  return { size: matchingSize, legacy };
 }
 
 function parseSizeMb(value: string): number {
@@ -5283,11 +5616,11 @@ function openUrl(url: string): void {
   child.unref();
 }
 
-// ── Sandbox render helpers ────────────────────────────────────────────────
+// Sandbox render helpers
 
 /** Coerce an unknown API field to a display string. */
 function str(v: unknown): string {
-  if (v === null || v === undefined) return chalk.dim("—");
+  if (v === null || v === undefined) return chalk.dim("-");
   return String(v);
 }
 

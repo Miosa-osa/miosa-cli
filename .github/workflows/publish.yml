@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to verify or publish"
+        required: true
+      dry_run:
+        description: "Verify without publishing to npm"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -15,12 +24,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Invalid CLI release tag: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Use Node.js 20
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Validate release tag and version
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          version="$(node -p "require('./package.json').version")"
+          semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+
+          if [[ ! "$version" =~ $semver_re ]]; then
+            echo "::error::package.json version is not semantic versioning: $version"
+            exit 1
+          fi
+          if [ "$tag" != "v${version}" ]; then
+            echo "::error::Tag $tag does not match package.json version $version"
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+          if [ "$(git rev-parse HEAD)" != "$tag_commit" ]; then
+            echo "::error::Checkout does not match tag $tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "::error::Tag $tag is not reachable from origin/main"
+            exit 1
+          fi
+
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -36,7 +88,26 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance
+      - name: Inspect package archive
+        run: npm pack --dry-run
+
+      - name: Verify npm credential
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is required for publication"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
+        # The existing v1.1.0 tag predates canonical repository metadata.
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verification-only notice
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run == 'true' }}
+        run: echo "Verification complete; npm publication was not requested"
