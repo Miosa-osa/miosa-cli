@@ -77,7 +77,7 @@ describe("miosa releases", () => {
       .intercept({
         path: `/api/v1/deployments/${app.id}/rollback`,
         method: "POST",
-        body: JSON.stringify({ version_id: release.deployment_version_id }),
+        body: JSON.stringify({ release_id: release.id }),
       })
       .reply(200, JSON.stringify({ data: { ...app, active_version_id: release.deployment_version_id } }), {
         headers: { "content-type": "application/json" },
@@ -130,7 +130,7 @@ describe("miosa releases", () => {
       .intercept({
         path: `/api/v1/deployments/${app.id}/rollback`,
         method: "POST",
-        body: JSON.stringify({ version_id: release.deployment_version_id }),
+        body: JSON.stringify({ release_id: release.id }),
       })
       .reply(200, JSON.stringify({ data: { ...app, active_version_id: release.deployment_version_id } }), {
         headers: { "content-type": "application/json" },

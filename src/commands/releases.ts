@@ -412,9 +412,6 @@ export function register(program: Command): void {
           const app = found.app;
           const release =
             found.release ?? (await getReleaseRow(client, app.id, releaseId));
-          const versionId =
-            textField(release, "deployment_version_id") ?? release.id;
-
           if (!opts.yes) {
             const { default: inquirer } = await import("inquirer");
             const { ok } = await inquirer.prompt<{ ok: boolean }>([
@@ -433,7 +430,7 @@ export function register(program: Command): void {
 
           const result = await client.apiPost<unknown>(
             `/api/v1/deployments/${encodeURIComponent(app.id)}/rollback`,
-            { version_id: versionId },
+            { release_id: release.id },
           );
 
           if (isJsonMode(opts)) {
