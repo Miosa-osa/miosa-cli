@@ -229,6 +229,7 @@ Examples:
     .option("--engine-version <version>", "Engine version")
     .option("--db-version <version>", "Alias for --engine-version")
     .option("--region <region>", "Region ID")
+    .option("--environment <environment-id>", "Deployment environment ID")
     .option("--wait", "Wait until the database is running/available")
     .option("--timeout <sec>", "Wait timeout in seconds", parseIntegerOption, 180)
     .option("--json", "Output raw JSON")
@@ -240,6 +241,7 @@ Examples:
           engineVersion?: string;
           dbVersion?: string;
           region?: string;
+          environment?: string;
           wait?: boolean;
           timeout: number;
           json?: boolean;
@@ -259,6 +261,7 @@ Examples:
           };
           if (engineVersion) body["engine_version"] = engineVersion;
           if (opts.region) body["region"] = opts.region;
+          if (opts.environment) body["environment_id"] = opts.environment;
 
           const spinner = opts.json ? null : spin(`Creating database ${opts.name}...`);
           let db = unwrapDatabase(await client.apiPost("/api/v1/databases", body));
