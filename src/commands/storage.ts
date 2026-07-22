@@ -8,7 +8,7 @@ import { MiosaClient } from "../client.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
-import { USER_AGENT } from "../version.js";
+import { CLI_USER_AGENT } from "../version.js";
 
 interface Bucket {
   id: string;
@@ -370,7 +370,7 @@ export function register(program: Command): void {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/octet-stream",
               "Content-Length": String(data.byteLength),
-              "User-Agent": USER_AGENT,
+              "User-Agent": CLI_USER_AGENT,
             },
             body: data,
           });
@@ -445,7 +445,7 @@ export function register(program: Command): void {
             method: "GET",
             headers: {
               Authorization: `Bearer ${apiKey}`,
-              "User-Agent": USER_AGENT,
+              "User-Agent": CLI_USER_AGENT,
             },
           });
 

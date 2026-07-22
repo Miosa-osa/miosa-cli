@@ -8,7 +8,7 @@ import { spin } from "../ui/spinner.js";
 import { formatBytes } from "../ui/progress.js";
 import { formatDuration } from "../ui/render.js";
 import { handleError, isJsonMode } from "./util.js";
-import { USER_AGENT } from "../version.js";
+import { CLI_USER_AGENT } from "../version.js";
 
 interface Database {
   id: string;
@@ -855,7 +855,7 @@ export function register(program: Command): void {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             Accept: "text/event-stream, application/json, */*",
-            "User-Agent": USER_AGENT,
+            "User-Agent": CLI_USER_AGENT,
           },
         });
 
