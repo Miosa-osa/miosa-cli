@@ -42,6 +42,7 @@ interface DatabaseRecord {
   engine_version?: string;
   state?: string;
   region?: string;
+  environment_id?: string;
 }
 
 interface BackupRecord {
@@ -283,6 +284,9 @@ Examples:
             `  ${chalk.bold("Engine")}  ${[db.engine ?? engine, db.engine_version ?? engineVersion].filter(Boolean).join(" ")}`,
           );
           console.log(`  ${chalk.bold("State")}   ${db.state ?? "creating"}`);
+          if (db.environment_id) {
+            console.log(`  ${chalk.bold("Environment")} ${db.environment_id}`);
+          }
           console.log();
         } catch (err) {
           handleError(err);

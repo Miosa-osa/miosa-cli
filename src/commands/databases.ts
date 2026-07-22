@@ -17,6 +17,7 @@ interface Database {
   engine_version?: string;
   state?: string;
   region?: string;
+  environment_id?: string;
   created_at?: string;
   updated_at?: string;
   connection_test?: {
@@ -329,6 +330,11 @@ export function register(program: Command): void {
           {
             header: "REGION",
             key: (d) => d.region ?? chalk.dim("default"),
+            width: 14,
+          },
+          {
+            header: "ENVIRONMENT",
+            key: (d) => d.environment_id?.slice(0, 12) ?? chalk.dim("-"),
             width: 14,
           },
           { header: "STATE", key: fmtState, width: 12 },
