@@ -99,12 +99,16 @@ export class MiosaClient {
     return res.body.json() as Promise<T>;
   }
 
-  private async post<T>(path: string, body?: unknown): Promise<T> {
+  private async post<T>(
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     let res: Dispatcher.ResponseData;
     try {
       res = await request(this.url(path), {
         method: "POST",
-        headers: this.headers(),
+        headers: { ...this.headers(), ...extraHeaders },
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
@@ -183,8 +187,12 @@ export class MiosaClient {
   }
 
   /** Generic POST for command groups that map directly to stable API routes. */
-  async apiPost<T>(path: string, body?: unknown): Promise<T> {
-    return this.post<T>(path, body);
+  async apiPost<T>(
+    path: string,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): Promise<T> {
+    return this.post<T>(path, body, headers);
   }
 
   /** Generic PUT for command groups that map directly to stable API routes. */
