@@ -96,7 +96,7 @@ const SUBCOMMANDS: Record<string, string[]> = {
     "connectors",
   ],
   connectors: ["list", "show", "create", "token"],
-  releases: ["list", "show", "get", "promote", "rollback"],
+  releases: ["list", "show", "get", "promote", "migration-backup", "rollback"],
   workspaces: [
     "list",
     "create",
