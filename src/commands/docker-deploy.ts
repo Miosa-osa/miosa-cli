@@ -84,8 +84,10 @@ function unwrapHosts(payload: unknown): DockerDeployHost[] {
   if (Array.isArray(payload)) return payload as DockerDeployHost[];
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
-    if (Array.isArray(record["data"])) return record["data"] as DockerDeployHost[];
-    if (Array.isArray(record["hosts"])) return record["hosts"] as DockerDeployHost[];
+    if (Array.isArray(record["data"]))
+      return record["data"] as DockerDeployHost[];
+    if (Array.isArray(record["hosts"]))
+      return record["hosts"] as DockerDeployHost[];
   }
   return [];
 }
@@ -94,8 +96,10 @@ function unwrapTemplates(payload: unknown): DockerDeployTemplate[] {
   if (Array.isArray(payload)) return payload as DockerDeployTemplate[];
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
-    if (Array.isArray(record["data"])) return record["data"] as DockerDeployTemplate[];
-    if (Array.isArray(record["templates"])) return record["templates"] as DockerDeployTemplate[];
+    if (Array.isArray(record["data"]))
+      return record["data"] as DockerDeployTemplate[];
+    if (Array.isArray(record["templates"]))
+      return record["templates"] as DockerDeployTemplate[];
   }
   return [];
 }
@@ -132,7 +136,9 @@ function printHost(host: DockerDeployHost): void {
   console.log(`  Computer:    ${host.computer_id ?? "—"}`);
   console.log(`  Status:      ${statusLabel(host.status)}`);
   console.log(`  Appliance:   ${host.appliance_status ?? "unknown"}`);
-  console.log(`  Ready:       ${hostReady(host) ? chalk.green("yes") : chalk.yellow("no")}`);
+  console.log(
+    `  Ready:       ${hostReady(host) ? chalk.green("yes") : chalk.yellow("no")}`,
+  );
   console.log(`  Size/region: ${host.size} / ${host.region}`);
   console.log(`  Portal:      ${host.portal_domain ?? "—"}`);
   console.log(`  Runtime:     ${host.runtime_base_url ?? "—"}`);
@@ -214,15 +220,23 @@ function deploymentPublicUrl(deployment: Deployment): string | null {
   );
 }
 
-function deploymentDockerDeployApp(deployment: Deployment): DockerDeployAppTruth | null {
-  const raw = asRecord(deployment as unknown as Record<string, unknown>)["docker_deploy_app"];
+function deploymentDockerDeployApp(
+  deployment: Deployment,
+): DockerDeployAppTruth | null {
+  const raw = asRecord(deployment as unknown as Record<string, unknown>)[
+    "docker_deploy_app"
+  ];
   return raw && typeof raw === "object" ? (raw as DockerDeployAppTruth) : null;
 }
 
-function classifyBody(contentType: string | null, body: string): DockerDeployProbe["body_kind"] {
+function classifyBody(
+  contentType: string | null,
+  body: string,
+): DockerDeployProbe["body_kind"] {
   const trimmed = body.trim();
   if (!trimmed) return "empty";
-  if (contentType?.includes("text/html") || /^<!doctype html/i.test(trimmed)) return "html";
+  if (contentType?.includes("text/html") || /^<!doctype html/i.test(trimmed))
+    return "html";
   if (contentType?.includes("application/json") || /^[{[]/.test(trimmed)) {
     try {
       const parsed = JSON.parse(trimmed) as unknown;
@@ -244,7 +258,10 @@ async function probeUrl(
   timeoutMs: number,
 ): Promise<DockerDeployProbe> {
   if (!baseUrl) return { ok: false, error: "deployment has no public_url" };
-  const url = new URL(probePath || "/", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const url = new URL(
+    probePath || "/",
+    baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`,
+  );
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -257,11 +274,16 @@ async function probeUrl(
     const body = await response.body.text();
     const contentType = response.headers["content-type"];
     const bodyKind = classifyBody(
-      Array.isArray(contentType) ? contentType.join(",") : contentType ?? null,
+      Array.isArray(contentType)
+        ? contentType.join(",")
+        : (contentType ?? null),
       body,
     );
     return {
-      ok: response.statusCode >= 200 && response.statusCode < 400 && bodyKind !== "miosa_gateway_json",
+      ok:
+        response.statusCode >= 200 &&
+        response.statusCode < 400 &&
+        bodyKind !== "miosa_gateway_json",
       status: response.statusCode,
       url: url.toString(),
       body_kind: bodyKind,
@@ -354,7 +376,9 @@ export function register(program: Command): void {
         const params = new URLSearchParams();
         if (opts.workspace) params.set("workspace_id", opts.workspace);
         const suffix = params.toString() ? `?${params.toString()}` : "";
-        const raw = await client.apiGet<unknown>(`/api/v1/docker-deploy/hosts${suffix}`);
+        const raw = await client.apiGet<unknown>(
+          `/api/v1/docker-deploy/hosts${suffix}`,
+        );
         const hosts = unwrapHosts(raw);
 
         if (isJsonMode(opts) || opts.json) {
@@ -367,9 +391,22 @@ export function register(program: Command): void {
         console.log();
         renderTable(hosts, [
           { header: "ID", key: (h) => shortId(h.id), width: 10 },
-          { header: "WORKSPACE", key: (h) => shortId(h.workspace_id), width: 12 },
-          { header: "STATUS", key: (h) => h.status, width: 14, color: (v) => statusLabel(v.trim()).padEnd(14) },
-          { header: "APPLIANCE", key: (h) => h.appliance_status ?? "unknown", width: 14 },
+          {
+            header: "WORKSPACE",
+            key: (h) => shortId(h.workspace_id),
+            width: 12,
+          },
+          {
+            header: "STATUS",
+            key: (h) => h.status,
+            width: 14,
+            color: (v) => statusLabel(v.trim()).padEnd(14),
+          },
+          {
+            header: "APPLIANCE",
+            key: (h) => h.appliance_status ?? "unknown",
+            width: 14,
+          },
           { header: "COMPUTER", key: (h) => shortId(h.computer_id), width: 12 },
           { header: "PORTAL", key: (h) => h.portal_domain ?? "—", width: 28 },
         ]);
@@ -386,7 +423,9 @@ export function register(program: Command): void {
     .action(async (opts: { json?: boolean }) => {
       try {
         const client = createClient();
-        const raw = await client.apiGet<unknown>("/api/v1/docker-deploy/templates");
+        const raw = await client.apiGet<unknown>(
+          "/api/v1/docker-deploy/templates",
+        );
         const templates = unwrapTemplates(raw);
 
         if (isJsonMode(opts) || opts.json) {
@@ -395,7 +434,9 @@ export function register(program: Command): void {
         }
 
         console.log();
-        console.log(`${chalk.bold(String(templates.length))} App Engine template(s)`);
+        console.log(
+          `${chalk.bold(String(templates.length))} App Engine template(s)`,
+        );
         console.log();
         renderTable(templates, [
           { header: "ID", key: (t) => t.id, width: 24 },
@@ -439,44 +480,56 @@ export function register(program: Command): void {
     .option("--workspace <id>", "Workspace ID")
     .option("--external-workspace <id>", "External workspace/customer ID")
     .option("--wait", "Wait until the appliance is active and healthy")
-    .option("--timeout <seconds>", "Wait timeout in seconds", parsePositiveInt, 600)
+    .option(
+      "--timeout <seconds>",
+      "Wait timeout in seconds",
+      parsePositiveInt,
+      600,
+    )
     .option("--json", "Output raw JSON")
-    .action(async (opts: {
-      workspace?: string;
-      externalWorkspace?: string;
-      wait?: boolean;
-      timeout: number;
-      json?: boolean;
-    }) => {
-      try {
-        const client = createClient();
-        const raw = await client.apiPost<unknown>("/api/v1/docker-deploy/hosts/ensure", {
-          ...(opts.workspace ? { workspace_id: opts.workspace } : {}),
-          ...(opts.externalWorkspace ? { external_workspace_id: opts.externalWorkspace } : {}),
-        });
-        let host = objectOf<DockerDeployHost>(raw, ["host"]);
-        if (opts.wait) host = await waitForHost(host, opts.timeout);
-
-        if (isJsonMode(opts) || opts.json) {
-          printJson(host);
-          return;
-        }
-
-        printHost(host);
-        if (!hostReady(host)) {
-          console.log(
-            chalk.dim(
-              "  The appliance is not ready yet. Re-run `miosa docker-deploy show " +
-                host.id +
-                "` until status=active and appliance=healthy.",
-            ),
+    .action(
+      async (opts: {
+        workspace?: string;
+        externalWorkspace?: string;
+        wait?: boolean;
+        timeout: number;
+        json?: boolean;
+      }) => {
+        try {
+          const client = createClient();
+          const raw = await client.apiPost<unknown>(
+            "/api/v1/docker-deploy/hosts/ensure",
+            {
+              ...(opts.workspace ? { workspace_id: opts.workspace } : {}),
+              ...(opts.externalWorkspace
+                ? { external_workspace_id: opts.externalWorkspace }
+                : {}),
+            },
           );
-          console.log();
+          let host = objectOf<DockerDeployHost>(raw, ["host"]);
+          if (opts.wait) host = await waitForHost(host, opts.timeout);
+
+          if (isJsonMode(opts) || opts.json) {
+            printJson(host);
+            return;
+          }
+
+          printHost(host);
+          if (!hostReady(host)) {
+            console.log(
+              chalk.dim(
+                "  The appliance is not ready yet. Re-run `miosa docker-deploy show " +
+                  host.id +
+                  "` until status=active and appliance=healthy.",
+              ),
+            );
+            console.log();
+          }
+        } catch (err) {
+          handleError(err);
         }
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   root
     .command("show")
@@ -504,239 +557,279 @@ export function register(program: Command): void {
 
   root
     .command("upgrade")
-    .description("Upgrade an existing App Engine in place to an exact immutable release")
+    .description(
+      "Upgrade an existing App Engine in place to an exact immutable release",
+    )
     .argument("<host-id>", "App Engine host ID")
-    .requiredOption("--release <sha>", "Exact appliance Git SHA or sha-* release tag")
+    .requiredOption(
+      "--release <sha>",
+      "Exact appliance Git SHA or sha-* release tag",
+    )
     .option("--no-wait", "Queue the upgrade without waiting for health")
-    .option("--timeout <seconds>", "Wait timeout in seconds", parsePositiveInt, 900)
+    .option(
+      "--timeout <seconds>",
+      "Wait timeout in seconds",
+      parsePositiveInt,
+      900,
+    )
     .option("--json", "Output raw JSON")
-    .action(async (
-      hostId: string,
-      opts: { release: string; wait?: boolean; timeout: number; json?: boolean },
-    ) => {
-      try {
-        const release = normalizeApplianceRelease(opts.release);
-        const applianceImage = `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`;
-        const agentImage = `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`;
-        const client = createClient();
-        const raw = await client.apiPost<unknown>(
-          `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}/upgrade`,
-          {
+    .action(
+      async (
+        hostId: string,
+        opts: {
+          release: string;
+          wait?: boolean;
+          timeout: number;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const release = normalizeApplianceRelease(opts.release);
+          const applianceImage = `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`;
+          const agentImage = `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`;
+          const client = createClient();
+          const raw = await client.apiPost<unknown>(
+            `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}/upgrade`,
+            {
+              appliance_image: applianceImage,
+              agent_image: agentImage,
+              appliance_version: release,
+            },
+          );
+          let host = objectOf<DockerDeployHost>(raw, ["host"]);
+
+          if (opts.wait !== false) {
+            host = await waitForHostRelease(host, release, opts.timeout);
+          }
+
+          const result = {
+            ok: true,
+            queued: true,
+            release,
             appliance_image: applianceImage,
             agent_image: agentImage,
-            appliance_version: release,
-          },
-        );
-        let host = objectOf<DockerDeployHost>(raw, ["host"]);
+            host,
+          };
 
-        if (opts.wait !== false) {
-          host = await waitForHostRelease(host, release, opts.timeout);
-        }
+          if (isJsonMode(opts) || opts.json) {
+            printJson(result);
+            return;
+          }
 
-        const result = {
-          ok:
+          printHost(host);
+          console.log(
             opts.wait === false
-              ? true
-              : hostReady(host) && host.appliance_version === release,
-          queued: true,
-          release,
-          appliance_image: applianceImage,
-          agent_image: agentImage,
-          host,
-        };
-
-        if (isJsonMode(opts) || opts.json) {
-          printJson(result);
-          return;
+              ? chalk.yellow(`  Upgrade to ${release} queued.`)
+              : chalk.green(`  Upgrade to ${release} is active and healthy.`),
+          );
+          console.log();
+        } catch (err) {
+          handleError(err);
         }
-
-        printHost(host);
-        console.log(
-          opts.wait === false
-            ? chalk.yellow(`  Upgrade to ${release} queued.`)
-            : chalk.green(`  Upgrade to ${release} is active and healthy.`),
-        );
-        console.log();
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   root
     .command("doctor")
     .description("Verify a App Engine deployment, host, route, and public URL")
     .argument("<deployment-id>", "Deployment/app ID to verify")
     .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
-    .option("--timeout <seconds>", "Public probe timeout in seconds", parsePositiveInt, 20)
+    .option(
+      "--timeout <seconds>",
+      "Public probe timeout in seconds",
+      parsePositiveInt,
+      20,
+    )
     .option("--no-probe", "Skip the public HTTP probe")
     .option("--json", "Output raw JSON")
-    .action(async (
-      deploymentId: string,
-      opts: { probePath: string; timeout: number; probe?: boolean; json?: boolean },
-    ) => {
-      try {
-        const client = createClient();
-        const deployment = objectOf<Record<string, unknown>>(
-          await client.apiGet<unknown>(
-            `/api/v1/deployments/${encodeURIComponent(deploymentId)}`,
-          ),
-          ["deployment"],
-        ) as unknown as Deployment;
-        const product = deploymentProduct(deployment);
-        const app = deploymentDockerDeployApp(deployment);
-        const hostId = deploymentHostId(deployment);
-        const runtime = deploymentRuntime(deployment);
-        const publicUrl = deploymentPublicUrl(deployment);
-        const activeVersionId = deployment.active_version_id ?? null;
-        const servingVersionId = app?.deployment_version_id ?? null;
-        let host: DockerDeployHost | null = null;
-
-        if (hostId) {
-          host = objectOf<DockerDeployHost>(
+    .action(
+      async (
+        deploymentId: string,
+        opts: {
+          probePath: string;
+          timeout: number;
+          probe?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const client = createClient();
+          const deployment = objectOf<Record<string, unknown>>(
             await client.apiGet<unknown>(
-              `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
+              `/api/v1/deployments/${encodeURIComponent(deploymentId)}`,
             ),
-            ["host"],
-          );
-        }
+            ["deployment"],
+          ) as unknown as Deployment;
+          const product = deploymentProduct(deployment);
+          const app = deploymentDockerDeployApp(deployment);
+          const hostId = deploymentHostId(deployment);
+          const runtime = deploymentRuntime(deployment);
+          const publicUrl = deploymentPublicUrl(deployment);
+          const activeVersionId = deployment.active_version_id ?? null;
+          const servingVersionId = app?.deployment_version_id ?? null;
+          let host: DockerDeployHost | null = null;
 
-        const probe =
-          opts.probe === false
-            ? null
-            : await probeUrl(publicUrl, opts.probePath, opts.timeout * 1000);
+          if (hostId) {
+            host = objectOf<DockerDeployHost>(
+              await client.apiGet<unknown>(
+                `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
+              ),
+              ["host"],
+            );
+          }
 
-        const checks: DockerDeployCheck[] = [
-          {
-            id: "deployment_product",
-            ok: product === "docker_deploy",
-            message:
-              product === "docker_deploy"
-                ? "Deployment is marked docker_deploy."
-                : `Deployment product is ${product}; expected docker_deploy.`,
-            recovery: ["Publish with --docker-deploy or inspect deployment metadata."],
-          },
-          {
-            id: "host_linked",
-            ok: Boolean(hostId),
-            message: hostId
-              ? `Deployment links to App Engine host ${hostId}.`
-              : "Deployment has no App Engine host id.",
-            recovery: ["Run miosa docker-deploy ensure --wait --json."],
-          },
-          {
-            id: "host_ready",
-            ok: Boolean(host && hostReady(host)),
-            message: host
-              ? `Host status=${host.status}, appliance=${host.appliance_status ?? "unknown"}.`
-              : "App Engine host could not be loaded.",
-            recovery: hostId
-              ? [`miosa docker-deploy show ${hostId} --json`, `miosa docker-deploy ensure --wait --json`]
-              : ["miosa docker-deploy ensure --wait --json"],
-          },
-          {
-            id: "appliance_route",
-            ok: Boolean(runtime.ip && runtime.port),
-            message: runtime.ip && runtime.port
-              ? `Route points to ${runtime.ip}:${runtime.port}.`
-              : "Deployment runtime route is missing ip/port metadata.",
-            recovery: ["Re-publish with miosa sandbox publish --docker-deploy --wait --json."],
-          },
-          {
-            id: "app_truth_row",
-            ok: Boolean(app),
-            message: app
-              ? `App Engine app row exists with status=${app.status ?? "unknown"}.`
-              : "Deployment has no App Engine app row.",
-            recovery: ["Re-publish with --docker-deploy --wait, then re-run doctor."],
-          },
-          {
-            id: "app_container_running",
-            ok: Boolean(
-              app &&
+          const probe =
+            opts.probe === false
+              ? null
+              : await probeUrl(publicUrl, opts.probePath, opts.timeout * 1000);
+
+          const checks: DockerDeployCheck[] = [
+            {
+              id: "deployment_product",
+              ok: product === "docker_deploy",
+              message:
+                product === "docker_deploy"
+                  ? "Deployment is marked docker_deploy."
+                  : `Deployment product is ${product}; expected docker_deploy.`,
+              recovery: [
+                "Publish with --docker-deploy or inspect deployment metadata.",
+              ],
+            },
+            {
+              id: "host_linked",
+              ok: Boolean(hostId),
+              message: hostId
+                ? `Deployment links to App Engine host ${hostId}.`
+                : "Deployment has no App Engine host id.",
+              recovery: ["Run miosa docker-deploy ensure --wait --json."],
+            },
+            {
+              id: "host_ready",
+              ok: Boolean(host && hostReady(host)),
+              message: host
+                ? `Host status=${host.status}, appliance=${host.appliance_status ?? "unknown"}.`
+                : "App Engine host could not be loaded.",
+              recovery: hostId
+                ? [
+                    `miosa docker-deploy show ${hostId} --json`,
+                    `miosa docker-deploy ensure --wait --json`,
+                  ]
+                : ["miosa docker-deploy ensure --wait --json"],
+            },
+            {
+              id: "appliance_route",
+              ok: Boolean(runtime.ip && runtime.port),
+              message:
+                runtime.ip && runtime.port
+                  ? `Route points to ${runtime.ip}:${runtime.port}.`
+                  : "Deployment runtime route is missing ip/port metadata.",
+              recovery: [
+                "Re-publish with miosa sandbox publish --docker-deploy --wait --json.",
+              ],
+            },
+            {
+              id: "app_truth_row",
+              ok: Boolean(app),
+              message: app
+                ? `App Engine app row exists with status=${app.status ?? "unknown"}.`
+                : "Deployment has no App Engine app row.",
+              recovery: [
+                "Re-publish with --docker-deploy --wait, then re-run doctor.",
+              ],
+            },
+            {
+              id: "app_container_running",
+              ok: Boolean(
+                app &&
                 app.status === "running" &&
                 stringField(app, "container_id") &&
                 numberField(app, "runtime_port") &&
                 stringField(app, "runtime_ip"),
-            ),
-            message: app
-              ? `App status=${app.status ?? "unknown"}, container=${app.container_id ?? "missing"}, route=${app.runtime_ip ?? "missing"}:${app.runtime_port ?? "missing"}.`
-              : "Cannot verify app container because the app row is missing.",
-            recovery: [
-              "Check the appliance container list.",
-              "Re-run miosa docker-deploy doctor <deployment-id> --json after the publish job completes.",
-            ],
-          },
-          {
-            id: "version_reconciled",
-            ok: Boolean(
-              activeVersionId &&
+              ),
+              message: app
+                ? `App status=${app.status ?? "unknown"}, container=${app.container_id ?? "missing"}, route=${app.runtime_ip ?? "missing"}:${app.runtime_port ?? "missing"}.`
+                : "Cannot verify app container because the app row is missing.",
+              recovery: [
+                "Check the appliance container list.",
+                "Re-run miosa docker-deploy doctor <deployment-id> --json after the publish job completes.",
+              ],
+            },
+            {
+              id: "version_reconciled",
+              ok: Boolean(
+                activeVersionId &&
                 servingVersionId &&
                 activeVersionId === servingVersionId,
-            ),
-            message:
-              activeVersionId === servingVersionId && activeVersionId
-                ? `Control plane and App Engine serve version ${activeVersionId}.`
-                : `Version mismatch: active=${activeVersionId ?? "missing"}, serving=${servingVersionId ?? "missing"}.`,
-            recovery: [
-              "Do not treat this promotion as live.",
-              "Re-run the exact version promotion after App Engine reconciliation is healthy.",
-            ],
-          },
-        ];
+              ),
+              message:
+                activeVersionId === servingVersionId && activeVersionId
+                  ? `Control plane and App Engine serve version ${activeVersionId}.`
+                  : `Version mismatch: active=${activeVersionId ?? "missing"}, serving=${servingVersionId ?? "missing"}.`,
+              recovery: [
+                "Do not treat this promotion as live.",
+                "Re-run the exact version promotion after App Engine reconciliation is healthy.",
+              ],
+            },
+          ];
 
-        if (probe) {
-          checks.push({
-            id: "public_probe",
-            ok: probe.ok,
-            message: probe.ok
-              ? `Public URL returned HTTP ${probe.status}.`
-              : `Public URL did not return a healthy app response: ${probe.error ?? `HTTP ${probe.status}, body=${probe.body_kind}`}.`,
-            recovery: [
-              "Check miosa deploy show <deployment-id> --json.",
-              "Check miosa docker-deploy show <host-id> --json.",
-              "Re-run miosa sandbox publish <sandbox-id> --docker-deploy --wait --json if the app container is gone.",
-            ],
-          });
+          if (probe) {
+            checks.push({
+              id: "public_probe",
+              ok: probe.ok,
+              message: probe.ok
+                ? `Public URL returned HTTP ${probe.status}.`
+                : `Public URL did not return a healthy app response: ${probe.error ?? `HTTP ${probe.status}, body=${probe.body_kind}`}.`,
+              recovery: [
+                "Check miosa deploy show <deployment-id> --json.",
+                "Check miosa docker-deploy show <host-id> --json.",
+                "Re-run miosa sandbox publish <sandbox-id> --docker-deploy --wait --json if the app container is gone.",
+              ],
+            });
+          }
+
+          const result = {
+            ok: checks.every((check) => check.ok),
+            deployment_id: deployment.id ?? deploymentId,
+            deployment_product: product,
+            docker_deploy_host_id: hostId,
+            host_ready: Boolean(host && hostReady(host)),
+            docker_deploy_app: app,
+            route: runtime,
+            public_url: publicUrl,
+            public_probe: probe,
+            checks,
+          };
+
+          if (!result.ok) process.exitCode = 1;
+
+          if (isJsonMode(opts) || opts.json) {
+            printJson(result);
+            return;
+          }
+
+          console.log();
+          console.log(chalk.bold("App Engine doctor"));
+          console.log();
+          console.log(`  Deployment: ${result.deployment_id}`);
+          console.log(`  Product:    ${result.deployment_product}`);
+          console.log(`  Host:       ${result.docker_deploy_host_id ?? "—"}`);
+          console.log(`  Container:  ${app?.container_id ?? "—"}`);
+          console.log(
+            `  Route:      ${runtime.ip && runtime.port ? `${runtime.ip}:${runtime.port}` : "—"}`,
+          );
+          console.log(`  URL:        ${result.public_url ?? "—"}`);
+          console.log();
+          for (const check of checks) {
+            console.log(
+              `  ${check.ok ? chalk.green("✓") : chalk.red("✗")} ${check.id}: ${check.message}`,
+            );
+          }
+          console.log();
+        } catch (err) {
+          handleError(err);
         }
-
-        const result = {
-          ok: checks.every((check) => check.ok),
-          deployment_id: deployment.id ?? deploymentId,
-          deployment_product: product,
-          docker_deploy_host_id: hostId,
-          host_ready: Boolean(host && hostReady(host)),
-          docker_deploy_app: app,
-          route: runtime,
-          public_url: publicUrl,
-          public_probe: probe,
-          checks,
-        };
-
-        if (!result.ok) process.exitCode = 1;
-
-        if (isJsonMode(opts) || opts.json) {
-          printJson(result);
-          return;
-        }
-
-        console.log();
-        console.log(chalk.bold("App Engine doctor"));
-        console.log();
-        console.log(`  Deployment: ${result.deployment_id}`);
-        console.log(`  Product:    ${result.deployment_product}`);
-        console.log(`  Host:       ${result.docker_deploy_host_id ?? "—"}`);
-        console.log(`  Container:  ${app?.container_id ?? "—"}`);
-        console.log(`  Route:      ${runtime.ip && runtime.port ? `${runtime.ip}:${runtime.port}` : "—"}`);
-        console.log(`  URL:        ${result.public_url ?? "—"}`);
-        console.log();
-        for (const check of checks) {
-          console.log(`  ${check.ok ? chalk.green("✓") : chalk.red("✗")} ${check.id}: ${check.message}`);
-        }
-        console.log();
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 }
 
 function parsePositiveInt(value: string): number {
