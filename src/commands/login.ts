@@ -26,6 +26,12 @@ interface CliAuthStart {
   interval: number;
 }
 
+export interface CliAuthTenant {
+  id?: string;
+  slug: string;
+  name?: string;
+}
+
 async function postJson<T>(
   endpoint: string,
   path: string,
@@ -76,7 +82,7 @@ function cacheIdentity(
 export async function browserLogin(
   config: ReturnType<typeof loadConfig>,
   requestedTenant?: string,
-): Promise<void> {
+): Promise<CliAuthTenant> {
   const start = await postJson<CliAuthStart>(
     config.endpoint,
     "/api/v1/auth/cli/start",
@@ -129,10 +135,18 @@ export async function browserLogin(
 
     if (poll.status === 200 && poll.body.api_key) {
       const apiKey = poll.body.api_key as ApiKey;
+      const mintedTenant = poll.body.tenant;
+
+      if (!mintedTenant?.slug) {
+        throw new UserError(
+          "The server did not identify the organization for this CLI key. Update the server and run miosa login again.",
+        );
+      }
+
       // CLI keys are tenant-bound. Persist the exact tenant returned by the
       // server so a prior context can never send this new key to a different
       // organization through X-MIOSA-Tenant.
-      saveConfig({ api_key: apiKey, tenant: poll.body.tenant?.slug ?? null });
+      saveConfig({ api_key: apiKey, tenant: mintedTenant.slug });
 
       // Fetch and cache identity for instant `whoami`. Cache failure is
       // non-fatal — the key still works, `whoami` will refetch on demand.
@@ -142,7 +156,7 @@ export async function browserLogin(
         const freshConfig = {
           ...config,
           api_key: apiKey,
-          tenant: poll.body.tenant?.slug ?? null,
+          tenant: mintedTenant.slug,
         };
         const client = new MiosaClient(freshConfig);
         const tenant = await client.getTenant();
@@ -179,7 +193,7 @@ export async function browserLogin(
         ]),
       );
       printElapsed(formatDuration(Date.now() - flowStart));
-      return;
+      return mintedTenant as CliAuthTenant;
     }
 
     if (poll.status === 428 || poll.body.error === "authorization_pending") {

@@ -28,7 +28,11 @@ vi.mock("../../src/ui/spinner.js", () => ({
   }),
 }));
 
-const browserLogin = vi.fn().mockResolvedValue(undefined);
+const browserLogin = vi.fn();
+
+function restoreBrowserLoginMock() {
+  browserLogin.mockImplementation(async (_config, tenant: string) => ({ slug: tenant }));
+}
 
 vi.mock("../../src/commands/login.js", () => ({
   browserLogin,
@@ -176,6 +180,7 @@ describe("miosa tenant list", () => {
 
 describe("miosa tenant switch", () => {
   beforeEach(() => {
+    restoreBrowserLoginMock();
     browserLogin.mockClear();
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
   });

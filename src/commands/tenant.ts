@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { loadConfig } from "../config.js";
+import { loadConfig, saveConfigForActiveContext } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { browserLogin } from "./login.js";
 import { renderTable } from "../ui/table.js";
@@ -106,7 +106,18 @@ export function register(program: Command): void {
         }
 
         spinner.stop();
-        await browserLogin({ ...config, tenant: null, workspace: null }, match.slug);
+        const authorizedTenant = await browserLogin(
+          { ...config, tenant: null, workspace: null },
+          match.slug,
+        );
+
+        if (authorizedTenant.slug !== match.slug) {
+          throw new Error(
+            `CLI authorization returned ${authorizedTenant.slug}, expected ${match.slug}`,
+          );
+        }
+
+        saveConfigForActiveContext({ tenant: match.slug });
         spinner.succeed(
           `Authorized for tenant ${chalk.bold(match.name)} (${match.slug})`,
         );
