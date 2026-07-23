@@ -37,7 +37,7 @@ interface ResourceCapability {
 }
 
 interface CapabilitiesManifest {
-  schema_version: "2026-06-01";
+  schema_version: "2026-07-23";
   cli: {
     name: "miosa";
     agent_entrypoint: string;
@@ -78,6 +78,12 @@ interface CapabilitiesManifest {
       promote: string;
       rollback: string;
       recover: string;
+      blueprint: string;
+      plan_change: string;
+      approve_change: string;
+      apply_change: string;
+      drift: string;
+      evidence: string;
       rules: string[];
     };
     token_budget: string[];
@@ -94,7 +100,7 @@ interface CapabilitiesManifest {
 }
 
 const manifest: CapabilitiesManifest = {
-  schema_version: "2026-06-01",
+  schema_version: "2026-07-23",
   cli: {
     name: "miosa",
     agent_entrypoint: "miosa capabilities --json",
@@ -106,6 +112,7 @@ const manifest: CapabilitiesManifest = {
       "--quiet",
       "--no-color",
       "--tenant <tenant>",
+      "--organization <organization>",
       "--workspace <workspace>",
     ],
     global_env: [
@@ -114,6 +121,7 @@ const manifest: CapabilitiesManifest = {
       "MIOSA_QUIET=1",
       "MIOSA_NO_COLOR=1",
       "MIOSA_TENANT=<tenant>",
+      "MIOSA_ORGANIZATION=<organization>",
       "MIOSA_WORKSPACE=<workspace-id>",
       "MIOSA_API_KEY=<msk_...>",
       "MIOSA_ENDPOINT=<url>",
@@ -166,6 +174,7 @@ const manifest: CapabilitiesManifest = {
       delete: "miosa context rm <name> --json",
       notes: [
         "Use miosa context use <name> --json to switch active API key, endpoint, tenant, workspace, region, and default host.",
+        "Organization is the canonical name for the existing tenant identity. MIOSA rejects conflicting organization and tenant scopes.",
         "Use miosa context set workspace <workspace-id> --json to pin the default workspace for later commands.",
         "Global --tenant and --workspace flags still override the saved context for one command.",
       ],
@@ -274,6 +283,7 @@ const manifest: CapabilitiesManifest = {
       notes: [
         "Use miosa docker-deploy templates --json before choosing a starter/template path.",
         "Upgrade an existing host in place with miosa docker-deploy upgrade <host-id> --release <git-sha> --json; this preserves its bound computers, apps, routes, databases, and volumes.",
+        "Upgrade the complete fleet sequentially with miosa docker-deploy upgrade-fleet --release <git-sha> --json. Every host reports the exact deployments verified before it returns active.",
         "App Engine upgrades require exact immutable portal and agent image SHAs. Mutable tags such as latest are rejected.",
         "After publish, run miosa docker-deploy doctor <deployment-id> --json to verify deployment_product, host readiness, route metadata, and public HTTP.",
         "A deployment is not proven healthy until the public probe passes; control-plane state alone is not enough.",
@@ -360,11 +370,20 @@ const manifest: CapabilitiesManifest = {
       promote: "miosa app promote <release-id> . --yes --json",
       rollback: "miosa app rollback <release-id> . --yes --json",
       recover: "miosa app recover <operation-id> . --resume --json",
+      blueprint: "miosa blueprint validate . --json",
+      plan_change: "miosa changes plan <release-id> . --json",
+      approve_change: "miosa changes approve <plan-id> . --actor <identity> --json",
+      apply_change: "miosa changes apply <plan-id> . --json",
+      drift: "miosa drift detect <plan-id> . --json",
+      evidence: "miosa evidence show <receipt-id> . --json",
       rules: [
         "Preview is the default safe mutation and never promotes production.",
         "Production promotion and rollback require one exact immutable release ID.",
         "A command is successful only when the durable release receipt verifies the active version, artifact digest, route contract, host placement, database, and required configuration.",
         "Retry interrupted mutations with the original operation ID and idempotency key.",
+        "Capability-gated mutation resolves one exact organization, workspace, application, environment, and deployment.",
+        "Exact apply requires an immutable saved plan, durable control-plane record, sufficient approvals, and passing pre-promotion gates.",
+        "Drift is reported separately for release, route, archive, host, database, connector, job, and policy state.",
       ],
     },
     token_budget: [
@@ -406,6 +425,50 @@ const manifest: CapabilitiesManifest = {
     ],
   },
   workflows: [
+    {
+      id: "capability_gated_release",
+      title: "Plan, Approve, Apply, Verify, And Reconcile One Exact Release",
+      goal: "Promote a candidate only after its declared capabilities and exact mutation scope are proven.",
+      status: "beta",
+      steps: [
+        {
+          command: "miosa blueprint validate . --json",
+          purpose: "Validate miosa.app.yml capabilities, services, bindings, and policy.",
+          json: true,
+        },
+        {
+          command: "miosa changes plan <release-id> . --json",
+          purpose: "Persist an immutable candidate plan locally and in the control-plane operation ledger.",
+          json: true,
+        },
+        {
+          command: "miosa changes approve <plan-id> . --actor <identity> --json",
+          purpose: "Record an approval bound to the exact plan fingerprint.",
+          json: true,
+        },
+        {
+          command: "miosa changes apply <plan-id> . --json",
+          purpose: "Run pre-promotion gates, exact idempotent promotion, acceptance, and automatic rollback on failure.",
+          json: true,
+          wait: true,
+        },
+        {
+          command: "miosa drift detect <plan-id> . --json",
+          purpose: "Compare release, route, archive, host, database, connector, job, and policy state.",
+          json: true,
+        },
+      ],
+      success_signals: [
+        "candidate state verified",
+        "durable receipt includes exact release, bindings, health, evidence, rollback, and next action",
+        "drifted false",
+      ],
+      failure_signals: [
+        "ambiguous organization/workspace/application/environment scope",
+        "plan fingerprint mismatch or insufficient approval",
+        "migration, secret, route, connector, job, policy, or business capability gate blocked",
+      ],
+    },
     {
       id: "choose_agent_device",
       title: "Choose The Correct MIOSA Device For An Agent Job",

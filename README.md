@@ -135,6 +135,75 @@ The default contract requires HTTP 200 from `/`.
 Each verification writes a durable, machine-readable receipt under `.miosa/receipts`.
 That receipt is the acceptance evidence for the release.
 
+### Capability-gated release contract
+
+Use `miosa.app.yml` as the primary typed contract when a release depends on routes, secrets, databases, migrations, connectors, jobs, business capabilities, or approval policy.
+
+Every mutation resolves one exact organization, workspace, application, environment, and deployment.
+
+The organization option is the canonical name for the existing tenant identity, while `--tenant` remains a compatibility alias.
+
+```yaml
+schema_version: 1
+name: clinic-intake
+organization: 06737e41-32a2-4c66-bf42-a2e123456789
+workspace: e0211a62-b08e-402a-a171-b6c123456789
+application: clinic-intake
+environment: production
+
+services:
+  web:
+    command: npm start
+    port: 3000
+
+capabilities:
+  routes:
+    - id: homepage
+      path: /
+      expected_status: [200]
+  secrets:
+    - SESSION_SECRET
+  database:
+    required: true
+    health_path: /api/health
+    migration:
+      required: true
+      compatibility: backward_compatible
+  connectors:
+    - id: oauth
+  jobs:
+    - id: daily-sync
+  business:
+    - id: customer-sync
+      path: /api/capabilities/customer-sync
+      expected_status: [200]
+
+policy:
+  approvals_required: 1
+  allowed_environments: [production]
+  require_immutable_release: true
+  require_rollback_path: true
+```
+
+The change workflow saves the same immutable plan locally and in the control-plane operation ledger.
+
+Approvals are bound to the plan fingerprint, and exact apply is idempotent.
+
+```bash
+miosa blueprint validate . --json
+miosa changes plan <release-id> . --json
+miosa changes approve <plan-id> . --actor <identity> --json
+miosa changes apply <plan-id> . --json
+miosa evidence show <receipt-id> . --json
+miosa drift detect <plan-id> . --json
+```
+
+Pre-promotion gates check immutable release identity, secrets, database attachment, migration evidence, connectors, jobs, policy, and declared business capability evidence.
+
+Post-promotion acceptance verifies the active release, running artifact, public routes, data bindings, placement, and declared capabilities.
+
+If acceptance fails, the CLI requests the exact saved rollback version and records whether restoration was confirmed.
+
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
 
 For production app hosting, MIOSA recommends App Engine. It runs apps on the

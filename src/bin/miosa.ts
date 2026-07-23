@@ -65,6 +65,10 @@ program
   .option("--quiet", "Suppress non-essential human-readable output")
   .option("--no-color", "Disable ANSI color output")
   .option("--tenant <tenant>", "Scope API requests to a tenant slug or ID")
+  .option(
+    "--organization <organization>",
+    "Scope API requests to one organization slug or ID",
+  )
   .option("--workspace <workspace>", "Scope API requests to a workspace ID")
   .addHelpText(
     "after",
@@ -121,6 +125,7 @@ Environment:
   MIOSA_DEBUG=1      Show request IDs and backend error details
   MIOSA_QUIET=1      Suppress non-essential human-readable output
   MIOSA_TENANT=...   Default tenant slug or ID request scope
+  MIOSA_ORGANIZATION=... Canonical organization slug or ID request scope
   MIOSA_WORKSPACE=... Default workspace ID request scope
 `,
   );
@@ -132,6 +137,7 @@ program.hook("preAction", (rootCommand, actionCommand) => {
     quiet?: boolean;
     noColor?: boolean;
     tenant?: string;
+    organization?: string;
     workspace?: string;
   }>();
   if (rootCommand.opts<{ json?: boolean }>().json || opts.json) {
@@ -144,6 +150,12 @@ program.hook("preAction", (rootCommand, actionCommand) => {
     process.env["NO_COLOR"] = process.env["NO_COLOR"] || "1";
     process.env["FORCE_COLOR"] = "0";
   }
+  if (opts.organization && opts.tenant && opts.organization !== opts.tenant) {
+    throw new Error(
+      "--organization and --tenant cannot identify different organizations.",
+    );
+  }
+  if (opts.organization) process.env["MIOSA_ORGANIZATION"] = opts.organization;
   if (opts.tenant) process.env["MIOSA_TENANT"] = opts.tenant;
   if (opts.workspace) process.env["MIOSA_WORKSPACE"] = opts.workspace;
 });
@@ -168,6 +180,7 @@ const commandModules = [
   "../commands/capabilities.js",
   "../commands/devices.js",
   "../commands/app.js",
+  "../commands/operating-contract.js",
   "../commands/command-overview.js",
   "../commands/opencomputers.js",
   "../commands/hosts.js",

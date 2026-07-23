@@ -15,6 +15,7 @@ const DEFAULTS: MiosaConfig = {
   region: null,
   output: "text",
   tenant: null,
+  organization: null,
   workspace: null,
   quiet: false,
   debug: false,
@@ -42,7 +43,18 @@ export function loadConfig(): MiosaConfig {
     default_host: fileConfig.default_host ?? null,
     region: process.env["MIOSA_REGION"] ?? fileConfig.region ?? null,
     output: fileConfig.output ?? DEFAULTS.output,
-    tenant: process.env["MIOSA_TENANT"] ?? fileConfig.tenant ?? null,
+    organization:
+      process.env["MIOSA_ORGANIZATION"] ??
+      process.env["MIOSA_TENANT"] ??
+      fileConfig.tenant ??
+      fileConfig.organization ??
+      null,
+    tenant:
+      process.env["MIOSA_ORGANIZATION"] ??
+      process.env["MIOSA_TENANT"] ??
+      fileConfig.tenant ??
+      fileConfig.organization ??
+      null,
     workspace: process.env["MIOSA_WORKSPACE"] ?? fileConfig.workspace ?? null,
     quiet: truthy(process.env["MIOSA_QUIET"]) || Boolean(fileConfig.quiet),
     debug: truthy(process.env["MIOSA_DEBUG"]) || Boolean(fileConfig.debug),
@@ -70,7 +82,13 @@ export function saveConfig(updates: Partial<MiosaConfig>): void {
     // Start fresh on corrupt config
   }
 
-  const merged = { ...existing, ...updates };
+  const normalized =
+    updates.tenant !== undefined && updates.organization === undefined
+      ? { ...updates, organization: updates.tenant }
+      : updates.organization !== undefined && updates.tenant === undefined
+        ? { ...updates, tenant: updates.organization }
+        : updates;
+  const merged = { ...existing, ...normalized };
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + "\n", {
     mode: 0o600,
   });
@@ -190,6 +208,7 @@ export interface MiosaContext {
   endpoint: string;
   api_key: ApiKey | null;
   tenant: string | null;
+  organization: string | null;
   workspace: string | null;
   region: string | null;
   default_host: string | null;
@@ -209,6 +228,7 @@ export type ContextConfigUpdates = Partial<
     | "endpoint"
     | "api_key"
     | "tenant"
+    | "organization"
     | "workspace"
     | "region"
     | "default_host"
@@ -247,7 +267,13 @@ export function saveContextStore(store: MiosaContextStore): void {
 export function saveConfigForActiveContext(
   updates: ContextConfigUpdates,
 ): MiosaContext | null {
-  saveConfig(updates);
+  const normalized =
+    updates.tenant !== undefined && updates.organization === undefined
+      ? { ...updates, organization: updates.tenant }
+      : updates.organization !== undefined && updates.tenant === undefined
+        ? { ...updates, tenant: updates.organization }
+        : updates;
+  saveConfig(normalized);
 
   const store = loadContextStore();
   if (!store.active) return null;
@@ -256,7 +282,7 @@ export function saveConfigForActiveContext(
 
   const updated: MiosaContext = {
     ...context,
-    ...updates,
+    ...normalized,
     updated_at: new Date().toISOString(),
   };
   store.contexts[store.active] = updated;
@@ -271,6 +297,7 @@ export function contextFromConfig(name: string, config = loadConfig()): MiosaCon
     endpoint: config.endpoint,
     api_key: config.api_key,
     tenant: config.tenant ?? null,
+    organization: config.organization ?? config.tenant ?? null,
     workspace: config.workspace ?? null,
     region: config.region ?? null,
     default_host: config.default_host ?? null,
@@ -311,7 +338,8 @@ export function applyNamedContext(name: string): MiosaContext | null {
   saveConfig({
     endpoint: context.endpoint,
     api_key: context.api_key,
-    tenant: context.tenant,
+    tenant: context.tenant ?? context.organization,
+    organization: context.tenant ?? context.organization,
     workspace: context.workspace,
     region: context.region,
     default_host: context.default_host,

@@ -32,6 +32,7 @@ function contextForOutput(context: MiosaContext): Record<string, unknown> {
     endpoint: context.endpoint,
     api_key: redactKey(context.api_key),
     tenant: context.tenant,
+    organization: context.organization,
     workspace: context.workspace,
     region: context.region,
     default_host: context.default_host,
@@ -226,7 +227,7 @@ export function register(program: Command): void {
     .option("--json", "Output as JSON")
     .action((key: string, value: string, opts: JsonOptions) => {
       try {
-        const allowed = ["tenant", "workspace", "region", "endpoint", "default_host"] as const;
+        const allowed = ["organization", "tenant", "workspace", "region", "endpoint", "default_host"] as const;
         if (!allowed.includes(key as (typeof allowed)[number])) {
           throw new UserError(
             `Unknown context key: ${key}`,
@@ -245,6 +246,7 @@ export function register(program: Command): void {
             context: updated ? contextForOutput(updated) : null,
             config: {
               tenant: config.tenant,
+              organization: config.organization,
               workspace: config.workspace,
               region: config.region,
               endpoint: config.endpoint,

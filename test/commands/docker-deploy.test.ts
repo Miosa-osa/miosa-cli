@@ -221,6 +221,84 @@ describe("miosa docker-deploy", () => {
     expect(parsed.host.appliance_status).toBe("needs_reconcile");
   });
 
+  it("upgrades every fleet host and returns per-host deployment evidence", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const release = "sha-3eedafc";
+    const secondHost = {
+      ...host,
+      id: "ddh-0000-0000-0000-000000000002",
+      workspace_id: "ws-0000-0000-0000-000000000002",
+    };
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({
+        path: "/api/v1/docker-deploy/hosts",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: [secondHost, host] }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    for (const [candidate, deploymentId] of [
+      [host, "dep_1"],
+      [secondHost, "dep_2"],
+    ] as const) {
+      pool
+        .intercept({
+          path: `/api/v1/docker-deploy/hosts/${candidate.id}/upgrade`,
+          method: "POST",
+          body: JSON.stringify({
+            appliance_image: `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`,
+            agent_image: `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`,
+            appliance_version: release,
+          }),
+        })
+        .reply(
+          202,
+          JSON.stringify({
+            host: {
+              ...candidate,
+              status: "active",
+              appliance_status: "healthy",
+              appliance_version: release,
+              metadata: {
+                fleet_upgrade_verified_deployment_ids: [deploymentId],
+                fleet_upgrade_verified_deployment_count: 1,
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+    }
+
+    const logged = captureLogs();
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "upgrade-fleet",
+      "--release",
+      "3eedafc",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join("")) as {
+      ok: boolean;
+      host_count: number;
+      verified_host_count: number;
+      results: Array<{ verified_deployment_ids: string[] }>;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.host_count).toBe(2);
+    expect(parsed.verified_host_count).toBe(2);
+    expect(parsed.results.flatMap((result) => result.verified_deployment_ids)).toEqual([
+      "dep_1",
+      "dep_2",
+    ]);
+  });
+
   it("lists Docker Deploy templates", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();

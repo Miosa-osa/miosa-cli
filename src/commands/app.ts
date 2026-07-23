@@ -38,16 +38,17 @@ interface AppPlanOptions extends AppCommandOptions {
   noDockerDeploy?: boolean;
 }
 
-interface ApplicationLink {
+export interface ApplicationLink {
   version: 2;
   deploymentId: string;
   name: string;
   environment: string;
   workspaceId?: string;
   projectId?: string;
+  organizationId?: string;
 }
 
-function requireApplicationLink(dir: string): ApplicationLink {
+export function requireApplicationLink(dir: string): ApplicationLink {
   const link = loadLocalLink(dir);
   if (!link?.deploymentId || !link.name) {
     throw new UserError(
@@ -62,6 +63,7 @@ function requireApplicationLink(dir: string): ApplicationLink {
     environment: link.environment,
     workspaceId: link.workspaceId,
     projectId: link.projectId,
+    organizationId: link.organizationId,
   };
 }
 
@@ -87,7 +89,7 @@ function boolValue(value: unknown, key: string): boolean | undefined {
   return typeof found === "boolean" ? found : undefined;
 }
 
-async function getRelease(
+export async function getRelease(
   client: MiosaClient,
   deploymentId: string,
   releaseId: string,
@@ -108,7 +110,7 @@ function releaseVersionId(
   );
 }
 
-async function inspectLinkedRelease(
+export async function inspectLinkedRelease(
   client: MiosaClient,
   deploymentId: string,
   releaseId: string,
@@ -249,6 +251,12 @@ async function inspectLinkedRelease(
       effective_env_names: envNames,
       healthy_connector_ids: healthyConnectorIds,
       healthy_scheduled_job_ids: healthyScheduledJobIds,
+      migration_verified:
+        boolValue(releaseMetadata, "migration_verified") === true ||
+        stringValue(releaseMetadata, "migration_status") === "succeeded",
+      policy_verified:
+        boolValue(releaseMetadata, "policy_verified") === true ||
+        stringValue(releaseMetadata, "policy_status") === "passed",
     },
   };
 }
@@ -259,6 +267,11 @@ async function verifyLinkedRelease(
   link: ApplicationLink,
   releaseId: string,
   contractPath?: string,
+  rollbackVersionId?: string | null,
+  verificationEvidence?: {
+    migration_verified?: boolean;
+    policy_verified?: boolean;
+  },
 ): Promise<{ receipt: ReleaseReceipt; receiptPath: string }> {
   const contract = loadAcceptanceContract(dir, contractPath);
   const { inspection, versionId } = await inspectLinkedRelease(
@@ -267,6 +280,11 @@ async function verifyLinkedRelease(
     releaseId,
     contract,
   );
+  inspection.migration_verified =
+    inspection.migration_verified ||
+    verificationEvidence?.migration_verified === true;
+  inspection.policy_verified =
+    inspection.policy_verified || verificationEvidence?.policy_verified === true;
   const receipt = await verifyApplicationRelease(
     {
       application: link.name,
@@ -274,6 +292,8 @@ async function verifyLinkedRelease(
       expected_release_id: releaseId,
       expected_version_id: versionId,
       expected_workspace_id: link.workspaceId,
+      expected_organization_id: link.organizationId,
+      rollback_version_id: rollbackVersionId,
       contract,
     },
     {
@@ -344,7 +364,7 @@ function releaseArtifactDigest(
   );
 }
 
-async function activateLinkedRelease(input: {
+export async function activateLinkedRelease(input: {
   action: "promote" | "rollback";
   dir: string;
   link: ApplicationLink;
@@ -352,6 +372,10 @@ async function activateLinkedRelease(input: {
   contractPath?: string;
   timeout: number;
   idempotencyKey?: string;
+  verificationEvidence?: {
+    migration_verified?: boolean;
+    policy_verified?: boolean;
+  };
 }): Promise<{
   operation: ReturnType<typeof createApplicationOperation>;
   receipt: ReleaseReceipt;
@@ -436,6 +460,8 @@ async function activateLinkedRelease(input: {
       input.link,
       input.releaseId,
       input.contractPath,
+      operation.previous_version_id,
+      input.verificationEvidence,
     );
     let rollbackPerformed = false;
     let rollbackConfirmed = false;
@@ -662,6 +688,9 @@ export function register(program: Command): void {
             ...(stringValue(deployment, "project_id")
               ? { projectId: stringValue(deployment, "project_id") }
               : {}),
+            ...(stringValue(deployment, "tenant_id")
+              ? { organizationId: stringValue(deployment, "tenant_id") }
+              : {}),
           };
           saveApplicationLink(dir, link);
           const result = {
@@ -671,6 +700,7 @@ export function register(program: Command): void {
             environment: opts.environment,
             workspace_id: link.workspaceId ?? null,
             project_id: link.projectId ?? null,
+            organization_id: link.organizationId ?? null,
             config: path.join(dir, ".miosa.json"),
           };
           if (isJsonMode(opts)) {

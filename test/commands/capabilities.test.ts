@@ -46,7 +46,7 @@ describe("miosa capabilities", () => {
       probing: { docker_in_sandbox: unknown[] };
     };
 
-    expect(manifest.schema_version).toBe("2026-06-01");
+    expect(manifest.schema_version).toBe("2026-07-23");
     expect(manifest.cli.agent_entrypoint).toBe("miosa capabilities --json");
     expect(manifest.cli.global_env).toContain("MIOSA_JSON=1");
     expect(manifest.contract.errors.shape).toBeTruthy();

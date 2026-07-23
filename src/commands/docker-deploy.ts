@@ -40,6 +40,7 @@ interface DockerDeployHost {
   appliance_status?: string | null;
   agent_last_seen_at?: string | null;
   updated_at?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 interface DockerDeployTemplate {
@@ -358,6 +359,30 @@ async function waitForHostRelease(
   return current;
 }
 
+async function upgradeHostToRelease(
+  hostId: string,
+  release: string,
+  timeout: number,
+): Promise<DockerDeployHost> {
+  const client = createClient();
+  const applianceImage = `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`;
+  const agentImage = `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`;
+  const raw = await client.apiPost<unknown>(
+    `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}/upgrade`,
+    {
+      appliance_image: applianceImage,
+      agent_image: agentImage,
+      appliance_version: release,
+    },
+    { "Idempotency-Key": `fleet-upgrade:${hostId}:${release}` },
+  );
+  return waitForHostRelease(
+    objectOf<DockerDeployHost>(raw, ["host"]),
+    release,
+    timeout,
+  );
+}
+
 export function register(program: Command): void {
   const root = program
     .command("docker-deploy")
@@ -623,6 +648,88 @@ export function register(program: Command): void {
               : chalk.green(`  Upgrade to ${release} is active and healthy.`),
           );
           console.log();
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  root
+    .command("upgrade-fleet")
+    .description(
+      "Roll an exact immutable release through every App Engine host and verify every assigned deployment",
+    )
+    .requiredOption(
+      "--release <sha>",
+      "Exact appliance Git SHA or sha-* release tag",
+    )
+    .option(
+      "--timeout <seconds>",
+      "Per-host wait timeout in seconds",
+      parsePositiveInt,
+      900,
+    )
+    .option("--json", "Output raw JSON")
+    .action(
+      async (opts: {
+        release: string;
+        timeout: number;
+        json?: boolean;
+      }) => {
+        try {
+          const release = normalizeApplianceRelease(opts.release);
+          const hosts = unwrapHosts(
+            await createClient().apiGet<unknown>(
+              "/api/v1/docker-deploy/hosts",
+            ),
+          ).sort((left, right) => left.id.localeCompare(right.id));
+          if (hosts.length === 0) {
+            throw new Error("No App Engine hosts were returned by the fleet.");
+          }
+          const results: Array<Record<string, unknown>> = [];
+          for (const host of hosts) {
+            try {
+              const verified = await upgradeHostToRelease(
+                host.id,
+                release,
+                opts.timeout,
+              );
+              const metadata = verified.metadata ?? {};
+              results.push({
+                host_id: host.id,
+                status: "verified",
+                release,
+                verified_deployment_ids:
+                  metadata["fleet_upgrade_verified_deployment_ids"] ?? [],
+                verified_deployment_count:
+                  metadata["fleet_upgrade_verified_deployment_count"] ?? 0,
+              });
+            } catch (error) {
+              results.push({
+                host_id: host.id,
+                status: "failed",
+                release,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          const failures = results.filter(
+            (result) => result["status"] === "failed",
+          );
+          const result = {
+            ok: failures.length === 0,
+            release,
+            host_count: hosts.length,
+            verified_host_count: results.length - failures.length,
+            failed_host_count: failures.length,
+            results,
+          };
+          if (isJsonMode(opts) || opts.json) {
+            printJson(result);
+          } else {
+            console.log(JSON.stringify(result, null, 2));
+          }
+          if (failures.length > 0) process.exitCode = 1;
         } catch (err) {
           handleError(err);
         }

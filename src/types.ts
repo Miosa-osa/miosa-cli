@@ -56,6 +56,7 @@ export interface MiosaConfig {
   output: string;
   tenant?: string | null;
   workspace?: string | null;
+  organization?: string | null;
   quiet?: boolean;
   debug?: boolean;
 }
@@ -300,6 +301,7 @@ export interface LocalProjectLink {
   environment: string;
   workspaceId?: string;
   projectId?: string;
+  organizationId?: string;
 }
 
 // ── Computer event stream types ───────────────────────────────────────────────
