@@ -28,6 +28,12 @@ vi.mock("../../src/ui/spinner.js", () => ({
   }),
 }));
 
+const browserLogin = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("../../src/commands/login.js", () => ({
+  browserLogin,
+}));
+
 const { register } = await import("../../src/commands/tenant.js");
 
 function buildProgram(): Command {
@@ -170,6 +176,7 @@ describe("miosa tenant list", () => {
 
 describe("miosa tenant switch", () => {
   beforeEach(() => {
+    browserLogin.mockClear();
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
   });
 
@@ -189,14 +196,10 @@ describe("miosa tenant switch", () => {
         headers: { "content-type": "application/json" },
       });
 
-    const { saveConfigForActiveContext } = await import("../../src/config.js");
-
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "tenant", "switch", "acme"]);
 
-    expect(saveConfigForActiveContext).toHaveBeenCalledWith(
-      expect.objectContaining({ tenant: "acme" }),
-    );
+    expect(browserLogin).toHaveBeenCalledWith(expect.anything(), "acme");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
@@ -221,9 +224,7 @@ describe("miosa tenant switch", () => {
     const program = buildProgram();
     await program.parseAsync(["node", "miosa", "tenant", "switch", "beta"]);
 
-    expect(
-      (await import("../../src/config.js")).saveConfigForActiveContext,
-    ).toHaveBeenCalledWith(expect.objectContaining({ tenant: "beta" }));
+    expect(browserLogin).toHaveBeenCalledWith(expect.anything(), "beta");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
