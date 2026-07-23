@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { UserError } from "./errors.js";
+import { loadAppManifest } from "./app-manifest.js";
 
 export interface RouteRequirement {
   id: string;
@@ -22,6 +23,9 @@ export interface AcceptanceContract {
   };
   connectors?: Array<{ id: string; required?: boolean }>;
   scheduled_jobs?: Array<{ id: string; required?: boolean }>;
+  migration?: { required: boolean };
+  policy?: { required: boolean };
+  business_capabilities?: RouteRequirement[];
 }
 
 export interface ReleaseInspection {
@@ -43,6 +47,8 @@ export interface ReleaseInspection {
   effective_env_names: string[];
   healthy_connector_ids: string[];
   healthy_scheduled_job_ids: string[];
+  migration_verified: boolean;
+  policy_verified: boolean;
 }
 
 export interface ProbeResponse {
@@ -80,6 +86,7 @@ export interface ReleaseReceipt {
     host_id: string | null;
     tenant_id: string | null;
     workspace_id: string | null;
+    organization_id: string | null;
   };
   release: {
     id: string;
@@ -87,6 +94,27 @@ export interface ReleaseReceipt {
     artifact_sha256: string | null;
   };
   checks: VerificationCheck[];
+  bindings: {
+    environment_names: string[];
+    database_attached: boolean;
+    connector_ids: string[];
+    scheduled_job_ids: string[];
+  };
+  health: {
+    deployment_state: string;
+    host_status: string | null;
+    appliance_status: string | null;
+  };
+  evidence: Array<{
+    check_id: string;
+    status: VerificationCheck["status"];
+    details: Record<string, unknown>;
+  }>;
+  rollback: {
+    version_id: string | null;
+    command: string | null;
+  };
+  next_action: string | null;
   next_actions: string[];
   verified_at: string;
 }
@@ -97,6 +125,8 @@ export interface VerifyApplicationReleaseInput {
   expected_release_id: string;
   expected_version_id: string;
   expected_workspace_id?: string;
+  expected_organization_id?: string;
+  rollback_version_id?: string | null;
   contract: AcceptanceContract;
 }
 
@@ -122,6 +152,30 @@ export function loadAcceptanceContract(
         path.join(appDir, ".miosa", "acceptance.json"),
         path.join(appDir, "miosa.app.json"),
       ];
+  if (!explicitPath) {
+    const manifest = loadAppManifest(appDir)?.manifest;
+    if (manifest?.capabilities) {
+      return {
+        schema_version: 1,
+        routes:
+          manifest.capabilities.routes.length > 0
+            ? manifest.capabilities.routes
+            : DEFAULT_CONTRACT.routes,
+        required_env: manifest.capabilities.secrets
+          .filter((secret) => secret.required !== false)
+          .map((secret) => secret.name),
+        database: manifest.capabilities.database,
+        connectors: manifest.capabilities.connectors,
+        scheduled_jobs: manifest.capabilities.jobs,
+        migration: {
+          required:
+            manifest.capabilities.database?.migration?.required === true,
+        },
+        policy: { required: Boolean(manifest.policy) },
+        business_capabilities: manifest.capabilities.business,
+      };
+    }
+  }
   const found = candidates.find((candidate) => fs.existsSync(candidate));
   if (!found) return DEFAULT_CONTRACT;
 
@@ -237,6 +291,19 @@ export async function verifyApplicationRelease(
       },
     );
   }
+  if (input.expected_organization_id) {
+    check(
+      checks,
+      "organization_scope",
+      inspection.tenant_id === input.expected_organization_id,
+      "The deployment is attached to the intended organization.",
+      "The deployment organization does not match the application contract.",
+      {
+        expected_organization_id: input.expected_organization_id,
+        actual_organization_id: inspection.tenant_id,
+      },
+    );
+  }
   check(
     checks,
     "exact_release",
@@ -315,6 +382,24 @@ export async function verifyApplicationRelease(
       "The application does not have a durable database attachment.",
     );
   }
+  if (input.contract.migration?.required) {
+    check(
+      checks,
+      "database_migration",
+      inspection.migration_verified,
+      "Required database migrations are verified for this release.",
+      "Required database migrations are not verified for this release.",
+    );
+  }
+  if (input.contract.policy?.required) {
+    check(
+      checks,
+      "policy",
+      inspection.policy_verified,
+      "Deployment policy checks passed.",
+      "Deployment policy checks did not pass.",
+    );
+  }
 
   for (const connector of input.contract.connectors ?? []) {
     const healthy = inspection.healthy_connector_ids.includes(connector.id);
@@ -345,7 +430,10 @@ export async function verifyApplicationRelease(
   if (!inspection.public_url) {
     check(checks, "public_url", false, "", "The deployment has no public URL.");
   } else {
-    for (const requirement of input.contract.routes) {
+    for (const requirement of [
+      ...input.contract.routes,
+      ...(input.contract.business_capabilities ?? []),
+    ]) {
       const required = requirement.required !== false;
       try {
         const response = await adapter.probe(
@@ -421,6 +509,11 @@ export async function verifyApplicationRelease(
   const nextActions = checks
     .flatMap((item) => item.recovery ?? [])
     .filter((value, index, all) => all.indexOf(value) === index);
+  if (blocked && nextActions.length === 0) {
+    nextActions.push(
+      `miosa app verify ${input.expected_release_id} . --json`,
+    );
+  }
 
   return {
     schema_version: 1,
@@ -437,6 +530,7 @@ export async function verifyApplicationRelease(
       host_id: inspection.host_id,
       tenant_id: inspection.tenant_id,
       workspace_id: inspection.workspace_id,
+      organization_id: inspection.tenant_id,
     },
     release: {
       id: input.expected_release_id,
@@ -444,6 +538,29 @@ export async function verifyApplicationRelease(
       artifact_sha256: inspection.expected_artifact_sha256,
     },
     checks,
+    bindings: {
+      environment_names: [...inspection.effective_env_names].sort(),
+      database_attached: inspection.database_attached,
+      connector_ids: [...inspection.healthy_connector_ids].sort(),
+      scheduled_job_ids: [...inspection.healthy_scheduled_job_ids].sort(),
+    },
+    health: {
+      deployment_state: inspection.deployment_state,
+      host_status: inspection.host_status,
+      appliance_status: inspection.appliance_status,
+    },
+    evidence: checks.map((item) => ({
+      check_id: item.id,
+      status: item.status,
+      details: item.details ?? { message: item.message },
+    })),
+    rollback: {
+      version_id: input.rollback_version_id ?? null,
+      command: input.rollback_version_id
+        ? `miosa app rollback ${input.expected_release_id} . --yes`
+        : null,
+    },
+    next_action: nextActions[0] ?? null,
     next_actions: nextActions,
     verified_at: new Date().toISOString(),
   };

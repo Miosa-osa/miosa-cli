@@ -12,6 +12,10 @@ export const APP_MANIFEST_FILES = [
 export interface MiosaAppManifest {
   schema_version?: number;
   name?: string;
+  organization?: string;
+  workspace?: string;
+  application?: string;
+  environment?: string;
   template?: string;
   framework?: string;
   workdir?: string;
@@ -39,6 +43,45 @@ export interface MiosaAppManifest {
   dependencies?: ProjectDependenciesManifest;
   services?: Record<string, ProjectServiceManifest>;
   requirements?: ProjectRequirementsManifest;
+  capabilities?: AppCapabilitiesManifest;
+  policy?: AppPolicyManifest;
+}
+
+export interface AppCapabilitiesManifest {
+  routes: Array<{
+    id: string;
+    path: string;
+    expected_status: number[];
+    body_contains?: string[];
+    content_type?: string;
+    required?: boolean;
+  }>;
+  secrets: Array<{ name: string; required?: boolean }>;
+  database?: {
+    required: boolean;
+    health_path?: string;
+    migration?: {
+      required?: boolean;
+      command?: string;
+      compatibility?: "backward_compatible" | "incompatible";
+    };
+  };
+  connectors: Array<{ id: string; required?: boolean }>;
+  jobs: Array<{ id: string; required?: boolean }>;
+  business: Array<{
+    id: string;
+    path: string;
+    expected_status: number[];
+    body_contains?: string[];
+    required?: boolean;
+  }>;
+}
+
+export interface AppPolicyManifest {
+  approvals_required: number;
+  allowed_environments: string[];
+  require_immutable_release: boolean;
+  require_rollback_path: boolean;
 }
 
 export interface ProjectSandboxManifest {
@@ -222,6 +265,29 @@ export function validateProjectManifest(
       usedPorts.set(service.port, name);
     }
   }
+  const capabilityIds = new Set<string>();
+  for (const capability of [
+    ...(manifest.capabilities?.routes ?? []),
+    ...(manifest.capabilities?.business ?? []),
+  ]) {
+    if (capabilityIds.has(capability.id)) {
+      issues.push({
+        code: "CAPABILITY_ID_DUPLICATE",
+        path: `capabilities.${capability.id}`,
+        message: `capability ID ${capability.id} is duplicated`,
+        fix: "Give every route and business capability a unique stable ID.",
+      });
+    }
+    capabilityIds.add(capability.id);
+    if (!capability.path.startsWith("/")) {
+      issues.push({
+        code: "CAPABILITY_PATH_INVALID",
+        path: `capabilities.${capability.id}.path`,
+        message: "capability probe paths must start with /",
+        fix: `Set the ${capability.id} probe to an absolute application path.`,
+      });
+    }
+  }
   return issues;
 }
 
@@ -285,6 +351,8 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
   const dependencies = recordValue(row["dependencies"]);
   const requirements = recordValue(row["requirements"]);
   const services = normalizeServices(recordValue(row["services"]));
+  const capabilities = normalizeCapabilities(recordValue(row["capabilities"]));
+  const policy = normalizePolicy(recordValue(row["policy"]));
   const workdir = stringValue(
     sandbox?.["workdir"] ?? row["workdir"] ?? row["workspace"] ?? row["root"],
   ) ?? "/workspace";
@@ -298,6 +366,10 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
   return {
     schema_version: numberValue(row["schema_version"]),
     name: stringValue(row["name"]),
+    organization: stringValue(row["organization"]),
+    workspace: stringValue(row["workspace"]),
+    application: stringValue(row["application"]),
+    environment: stringValue(row["environment"]),
     template: stringValue(row["template"] ?? row["template_id"]),
     framework: stringValue(row["framework"]),
     workdir,
@@ -335,6 +407,98 @@ function normalizeManifest(value: unknown): MiosaAppManifest {
       secrets: stringArray(requirements?.["secrets"]),
       database: requirements?.["database"] === true,
     },
+    capabilities,
+    policy,
+  };
+}
+
+function normalizeCapabilities(
+  value: Record<string, unknown> | null,
+): AppCapabilitiesManifest | undefined {
+  if (!value) return undefined;
+  const database = recordValue(value["database"]);
+  const migration = recordValue(database?.["migration"]);
+  return {
+    routes: normalizeProbeCapabilities(value["routes"]),
+    secrets: normalizeNamedCapabilities(value["secrets"], "name"),
+    database: database
+      ? {
+          required: database["required"] === true,
+          health_path: stringValue(database["health_path"]),
+          migration: migration
+            ? {
+                required: migration["required"] === true,
+                command: stringValue(migration["command"]),
+                compatibility:
+                  migration["compatibility"] === "backward_compatible" ||
+                  migration["compatibility"] === "incompatible"
+                    ? migration["compatibility"]
+                    : undefined,
+              }
+            : undefined,
+        }
+      : undefined,
+    connectors: normalizeNamedCapabilities(value["connectors"], "id"),
+    jobs: normalizeNamedCapabilities(value["jobs"], "id"),
+    business: normalizeProbeCapabilities(value["business"]),
+  };
+}
+
+function normalizeProbeCapabilities(
+  value: unknown,
+): AppCapabilitiesManifest["routes"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    const row = recordValue(candidate);
+    const id = stringValue(row?.["id"]);
+    const routePath = stringValue(row?.["path"]);
+    const statuses = Array.isArray(row?.["expected_status"])
+      ? row["expected_status"].filter(
+          (status): status is number =>
+            typeof status === "number" && Number.isInteger(status),
+        )
+      : [];
+    if (!id || !routePath || statuses.length === 0) return [];
+    return [{
+      id,
+      path: routePath,
+      expected_status: statuses,
+      body_contains: stringArray(row?.["body_contains"]),
+      content_type: stringValue(row?.["content_type"]),
+      required: row?.["required"] !== false,
+    }];
+  });
+}
+
+function normalizeNamedCapabilities<T extends "name" | "id">(
+  value: unknown,
+  key: T,
+): Array<Record<T, string> & { required?: boolean }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return [{ [key]: candidate.trim(), required: true }] as Array<
+        Record<T, string> & { required?: boolean }
+      >;
+    }
+    const row = recordValue(candidate);
+    const name = stringValue(row?.[key]);
+    if (!name) return [];
+    return [{ [key]: name, required: row?.["required"] !== false }] as Array<
+      Record<T, string> & { required?: boolean }
+    >;
+  });
+}
+
+function normalizePolicy(
+  value: Record<string, unknown> | null,
+): AppPolicyManifest | undefined {
+  if (!value) return undefined;
+  return {
+    approvals_required: numberValue(value["approvals_required"]) ?? 1,
+    allowed_environments: stringArray(value["allowed_environments"]),
+    require_immutable_release: value["require_immutable_release"] !== false,
+    require_rollback_path: value["require_rollback_path"] !== false,
   };
 }
 
