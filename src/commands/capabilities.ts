@@ -273,6 +273,8 @@ const manifest: CapabilitiesManifest = {
       show: "miosa docker-deploy show <host-id> --json",
       notes: [
         "Use miosa docker-deploy templates --json before choosing a starter/template path.",
+        "Upgrade an existing host in place with miosa docker-deploy upgrade <host-id> --release <git-sha> --json; this preserves its bound computers, apps, routes, databases, and volumes.",
+        "App Engine upgrades require exact immutable portal and agent image SHAs. Mutable tags such as latest are rejected.",
         "After publish, run miosa docker-deploy doctor <deployment-id> --json to verify deployment_product, host readiness, route metadata, and public HTTP.",
         "A deployment is not proven healthy until the public probe passes; control-plane state alone is not enough.",
       ],
@@ -374,7 +376,8 @@ const manifest: CapabilitiesManifest = {
     playbooks: [
       {
         id: "nextjs-docker-deploy",
-        use_when: "Next.js, server-rendered app, API routes, or DATABASE_URL/env needs.",
+        use_when:
+          "Next.js, server-rendered app, API routes, or DATABASE_URL/env needs.",
         command: "miosa app plan ./app --goal docker-deploy --json",
       },
       {
@@ -384,17 +387,20 @@ const manifest: CapabilitiesManifest = {
       },
       {
         id: "debug-preview-not-ready",
-        use_when: "Preview URL is missing, TLS pending, or public URL returns gateway JSON/wrong body.",
+        use_when:
+          "Preview URL is missing, TLS pending, or public URL returns gateway JSON/wrong body.",
         command: "miosa sandbox doctor <sandbox-id> --port <port> --json",
       },
       {
         id: "debug-deploy-runtime",
-        use_when: "Production URL returns 502, stale placeholder, or control-plane state disagrees with public HTTP.",
+        use_when:
+          "Production URL returns 502, stale placeholder, or control-plane state disagrees with public HTTP.",
         command: "miosa docker-deploy doctor <deployment-id> --json",
       },
       {
         id: "database-backed-app",
-        use_when: "App needs DATABASE_URL, Prisma, Drizzle, pg, Postgres, or persistence.",
+        use_when:
+          "App needs DATABASE_URL, Prisma, Drizzle, pg, Postgres, or persistence.",
         command: "miosa app plan ./app --goal docker-deploy --json",
       },
     ],
@@ -428,7 +434,7 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox run-agent <sandbox-id> --runner codex --cwd /workspace --json -- \"Build and test the requested change\"",
+            'miosa sandbox run-agent <sandbox-id> --runner codex --cwd /workspace --json -- "Build and test the requested change"',
           purpose:
             "Run the coding agent inside the sandbox filesystem instead of building locally and downloading files manually.",
           json: true,
@@ -452,8 +458,7 @@ const manifest: CapabilitiesManifest = {
       status: "beta",
       steps: [
         {
-          command:
-            "miosa connectors list --json",
+          command: "miosa connectors list --json",
           purpose:
             "Discover tenant BYOK connectors and MIOSA-managed built-ins such as refero/design-research.",
           json: true,
@@ -488,15 +493,14 @@ const manifest: CapabilitiesManifest = {
           json: true,
         },
         {
-          command:
-            "miosa sandbox connectors sync <sandbox-id> --json",
+          command: "miosa sandbox connectors sync <sandbox-id> --json",
           purpose:
             "Push connector placeholder env vars into a currently running sandbox after attach/resume.",
           json: true,
         },
         {
           command:
-            "miosa sandbox run-agent <sandbox-id> --runner claude-code --connector refero/design-research --preflight --cwd /workspace --json -- \"Research the UX references, then build the requested page and run the tests\"",
+            'miosa sandbox run-agent <sandbox-id> --runner claude-code --connector refero/design-research --preflight --cwd /workspace --json -- "Research the UX references, then build the requested page and run the tests"',
           purpose:
             "Preflight the managed connector, then run the agent CLI inside the sandbox workspace.",
           json: true,
@@ -524,9 +528,9 @@ const manifest: CapabilitiesManifest = {
       status: "beta",
       steps: [
         {
-          command:
-            "miosa connectors list --json",
-          purpose: "Find the connector UID or ID available to the current tenant/workspace.",
+          command: "miosa connectors list --json",
+          purpose:
+            "Find the connector UID or ID available to the current tenant/workspace.",
           json: true,
         },
         {
@@ -598,7 +602,8 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command: "miosa context use <name> --json",
-          purpose: "Switch active endpoint, API key, tenant, workspace, region, and default host.",
+          purpose:
+            "Switch active endpoint, API key, tenant, workspace, region, and default host.",
           json: true,
         },
         {
@@ -710,14 +715,14 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox exec <sandbox-id> --cwd /workspace --json -- bash -lc \"ls package.json app/page.jsx && npm run build\"",
+            'miosa sandbox exec <sandbox-id> --cwd /workspace --json -- bash -lc "ls package.json app/page.jsx && npm run build"',
           purpose:
             "Verify the scaffold exists and the app builds before publishing.",
           json: true,
         },
         {
           command:
-            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --docker-deploy --wait --timeout 900 --json",
+            'miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command "npm run build" --run-command "npm run start" --port 3000 --docker-deploy --wait --timeout 900 --json',
           purpose:
             "Recommended: promote the working Next.js sandbox into the workspace App Engine runtime.",
           json: true,
@@ -732,7 +737,7 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            "miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command \"npm run build\" --run-command \"npm run start\" --port 3000 --wait --timeout 900 --json",
+            'miosa sandbox publish <sandbox-id> --path /workspace --slug <slug> --build-command "npm run build" --run-command "npm run start" --port 3000 --wait --timeout 900 --json',
           purpose:
             "Use standard MIOSA Deploy only when App Engine is not desired for this app.",
           json: true,
@@ -796,8 +801,7 @@ const manifest: CapabilitiesManifest = {
           wait: true,
         },
         {
-          command:
-            "miosa databases wait <db-id> --ready --timeout 120 --json",
+          command: "miosa databases wait <db-id> --ready --timeout 120 --json",
           purpose:
             "Re-check readiness before attaching to a sandbox or deployment.",
           json: true,
@@ -814,8 +818,7 @@ const manifest: CapabilitiesManifest = {
           json: true,
         },
         {
-          command:
-            "miosa sandbox db attach <sandbox-id> <db-id> --json",
+          command: "miosa sandbox db attach <sandbox-id> <db-id> --json",
           purpose:
             "Persist DATABASE_URL and PG* vars in encrypted sandbox env and sync them into the live VM.",
           json: true,
@@ -935,7 +938,7 @@ const manifest: CapabilitiesManifest = {
         },
         {
           command:
-            'miosa logs --deployment <app-id> --lines 200 --contains error --json',
+            "miosa logs --deployment <app-id> --lines 200 --contains error --json",
           purpose:
             "Fetch recent deployment logs filtered for a specific text signal.",
           json: true,
@@ -1107,19 +1110,26 @@ export function register(program: Command): void {
     .description(
       "Print agent-readable CLI capabilities, resources, and workflow recipes",
     )
-    .option("--live", "Fetch live backend runtime capabilities from /api/v1/runtime-capabilities")
+    .option(
+      "--live",
+      "Fetch live backend runtime capabilities from /api/v1/runtime-capabilities",
+    )
     .option("--json", "Output machine-readable JSON")
     .action(async (opts: { live?: boolean; json?: boolean }) => {
       if (opts.live) {
         const client = new MiosaClient(loadConfig());
-        const capabilities = await client.apiGet<unknown>("/api/v1/runtime-capabilities");
+        const capabilities = await client.apiGet<unknown>(
+          "/api/v1/runtime-capabilities",
+        );
         if (opts.json || process.env["MIOSA_JSON"] === "1") {
           printJson(capabilities);
           return;
         }
 
         console.log(chalk.bold("MIOSA Runtime Capabilities"));
-        console.log(chalk.dim("Machine-readable form: miosa capabilities --live --json"));
+        console.log(
+          chalk.dim("Machine-readable form: miosa capabilities --live --json"),
+        );
         printJson(capabilities);
         return;
       }
