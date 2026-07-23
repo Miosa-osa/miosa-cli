@@ -83,7 +83,7 @@ policy:
       environment: "production",
       deployment_id: "dep_123",
     };
-    const plan = createSavedPlan(dir, {
+    const input = {
       scope,
       release: {
         id: "rel_123",
@@ -119,9 +119,13 @@ policy:
         require_immutable_release: true,
         require_rollback_path: true,
       },
-    });
+    };
+    const plan = createSavedPlan(dir, input);
+    const retriedPlan = createSavedPlan(dir, input);
     const approved = approvePlan(dir, plan, "roberto@example.com");
 
+    expect(retriedPlan.plan_id).not.toBe(plan.plan_id);
+    expect(retriedPlan.fingerprint).toBe(plan.fingerprint);
     expect(approved.state).toBe("approved");
     expect(() => assertPlanApplicable(loadPlan(dir, plan.plan_id), scope)).not.toThrow();
 

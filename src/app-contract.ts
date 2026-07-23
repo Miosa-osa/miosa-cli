@@ -195,7 +195,6 @@ function planPayload(
 ): unknown {
   return {
     schema_version: plan.schema_version,
-    plan_id: plan.plan_id,
     scope: plan.scope,
     release: plan.release,
     desired_state: plan.desired_state,
