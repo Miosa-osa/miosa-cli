@@ -26,6 +26,12 @@ interface CliAuthStart {
   interval: number;
 }
 
+export interface CliAuthTenant {
+  id?: string;
+  slug: string;
+  name?: string;
+}
+
 async function postJson<T>(
   endpoint: string,
   path: string,
@@ -73,13 +79,17 @@ function cacheIdentity(
   });
 }
 
-async function browserLogin(
+export async function browserLogin(
   config: ReturnType<typeof loadConfig>,
-): Promise<void> {
+  requestedTenant?: string,
+): Promise<CliAuthTenant> {
   const start = await postJson<CliAuthStart>(
     config.endpoint,
     "/api/v1/auth/cli/start",
-    { client_name: "MIOSA CLI" },
+    {
+      client_name: "MIOSA CLI",
+      ...(requestedTenant ? { tenant: requestedTenant } : {}),
+    },
   );
 
   if (start.status >= 400) {
@@ -118,21 +128,36 @@ async function browserLogin(
     const poll = await postJson<{
       api_key?: string;
       error?: string;
-      tenant?: { id?: string; slug?: string };
+      tenant?: { id?: string; slug?: string; name?: string };
     }>(config.endpoint, "/api/v1/auth/cli/token", {
       device_code: flow.device_code,
     });
 
     if (poll.status === 200 && poll.body.api_key) {
       const apiKey = poll.body.api_key as ApiKey;
-      saveConfig({ api_key: apiKey });
+      const mintedTenant = poll.body.tenant;
+
+      if (!mintedTenant?.slug) {
+        throw new UserError(
+          "The server did not identify the organization for this CLI key. Update the server and run miosa login again.",
+        );
+      }
+
+      // CLI keys are tenant-bound. Persist the exact tenant returned by the
+      // server so a prior context can never send this new key to a different
+      // organization through X-MIOSA-Tenant.
+      saveConfig({ api_key: apiKey, tenant: mintedTenant.slug });
 
       // Fetch and cache identity for instant `whoami`. Cache failure is
       // non-fatal — the key still works, `whoami` will refetch on demand.
       let tenantName: string | undefined;
       let tenantPlan: string | undefined;
       try {
-        const freshConfig = { ...config, api_key: apiKey };
+        const freshConfig = {
+          ...config,
+          api_key: apiKey,
+          tenant: mintedTenant.slug,
+        };
         const client = new MiosaClient(freshConfig);
         const tenant = await client.getTenant();
         cacheIdentity(tenant, freshConfig);
@@ -168,7 +193,7 @@ async function browserLogin(
         ]),
       );
       printElapsed(formatDuration(Date.now() - flowStart));
-      return;
+      return mintedTenant as CliAuthTenant;
     }
 
     if (poll.status === 428 || poll.body.error === "authorization_pending") {
@@ -205,7 +230,11 @@ export function register(program: Command): void {
       "--stdin",
       "Read API key from stdin (for piping: echo 'msk_...' | miosa login --stdin)",
     )
-    .action(async (opts: { apiKey?: string; stdin?: boolean }) => {
+    .option(
+      "--tenant <tenant>",
+      "Authorize this CLI session for a specific organization",
+    )
+    .action(async (opts: { apiKey?: string; stdin?: boolean; tenant?: string }) => {
       // Inside a sandbox the CLI is pre-authenticated via env; block interactive login.
       const sandboxId = process.env["MIOSA_SANDBOX_ID"];
       if (sandboxId) {
@@ -252,7 +281,7 @@ export function register(program: Command): void {
         } else {
           // TTY — browser OAuth flow
           try {
-            await browserLogin(loadConfig());
+            await browserLogin(loadConfig(), opts.tenant);
           } catch (err) {
             if (err instanceof UserError || err instanceof AuthError) {
               console.log();

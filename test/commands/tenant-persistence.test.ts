@@ -23,6 +23,16 @@ vi.mock("../../src/ui/spinner.js", () => ({
   }),
 }));
 
+const browserLogin = vi.fn();
+
+function restoreBrowserLoginMock() {
+  browserLogin.mockImplementation(async (_config, tenant: string) => ({ slug: tenant }));
+}
+
+vi.mock("../../src/commands/login.js", () => ({
+  browserLogin,
+}));
+
 const {
   applyNamedContext,
   contextFromConfig,
@@ -99,6 +109,8 @@ async function switchTenant(slug: string): Promise<void> {
 
 describe("miosa tenant switch context persistence", () => {
   beforeEach(() => {
+    restoreBrowserLoginMock();
+    browserLogin.mockClear();
     fs.rmSync(path.join(TEST_HOME, ".miosa"), {
       recursive: true,
       force: true,

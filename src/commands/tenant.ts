@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { loadConfig, saveConfigForActiveContext } from "../config.js";
 import { MiosaClient } from "../client.js";
+import { browserLogin } from "./login.js";
 import { renderTable } from "../ui/table.js";
 import { spin } from "../ui/spinner.js";
 import { handleError } from "./util.js";
@@ -74,12 +75,13 @@ export function register(program: Command): void {
       }
     });
 
-  // switch — writes the active tenant slug to config. The API verifies the
-  // caller is a member before honoring X-MIOSA-Tenant on requests.
+  // CLI API keys are deliberately tenant-bound. Switching organizations must
+  // mint a fresh personal key through the browser, not just rewrite a header
+  // and pretend the existing key can cross an organization boundary.
   tenant
     .command("switch <slug>")
     .description(
-      "Switch the active tenant context (writes to ~/.miosa/config.json)",
+      "Authorize and switch this CLI to another organization",
     )
     .option("--json", "Output raw JSON")
     .action(async (slug: string, opts: { json?: boolean }) => {
@@ -103,9 +105,21 @@ export function register(program: Command): void {
           process.exit(1);
         }
 
+        spinner.stop();
+        const authorizedTenant = await browserLogin(
+          { ...config, tenant: null, workspace: null },
+          match.slug,
+        );
+
+        if (authorizedTenant.slug !== match.slug) {
+          throw new Error(
+            `CLI authorization returned ${authorizedTenant.slug}, expected ${match.slug}`,
+          );
+        }
+
         saveConfigForActiveContext({ tenant: match.slug });
         spinner.succeed(
-          `Switched to tenant ${chalk.bold(match.name)} (${match.slug})`,
+          `Authorized for tenant ${chalk.bold(match.name)} (${match.slug})`,
         );
 
         if (opts.json) {
