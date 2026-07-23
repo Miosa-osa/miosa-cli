@@ -44,7 +44,10 @@ contract.
 
 ## Unified action authority
 
-Every CLI, OSA, MCP, scheduled, and OpenComputers action uses the same server-owned capability catalog.
+> Requires a control plane that publishes the action authority contract (miosa-compute PR 558).
+> Against control planes without that support these commands and the related `miosa doctor` check fail closed.
+
+When available, every CLI, OSA, MCP, scheduled, and OpenComputers action uses the same server-owned capability catalog.
 The control plane pins each action to a version and fingerprint, records every decision, and fails closed when a capability is unknown or stale.
 
 ```bash

@@ -81,14 +81,17 @@ export function register(program: Command): void {
           if (decision.approval_request_id) {
             console.log(`Approval request: ${decision.approval_request_id}`);
           }
-          if (decision.receipt_id) console.log(`Receipt: ${decision.receipt_id}`);
+          if (decision.receipt_id)
+            console.log(`Receipt: ${decision.receipt_id}`);
         } catch (error) {
           handleError(error);
         }
       },
     );
 
-  const approvals = actions.command("approvals").description("Manage one-time approvals");
+  const approvals = actions
+    .command("approvals")
+    .description("Manage one-time approvals");
   approvals
     .command("list")
     .option("--status <status>", "Filter by status")
@@ -100,7 +103,11 @@ export function register(program: Command): void {
         renderTable(rows, [
           { header: "ID", key: "id", width: 12 },
           { header: "ACTION", key: "capability_name", width: 28 },
-          { header: "PRINCIPAL", key: (row) => `${row.principal_type}:${row.principal_id}`, width: 28 },
+          {
+            header: "PRINCIPAL",
+            key: (row) => `${row.principal_type}:${row.principal_id}`,
+            width: 28,
+          },
           { header: "STATUS", key: "status", width: 12 },
           { header: "CREATED", key: "inserted_at", width: 24 },
         ]);
@@ -112,7 +119,9 @@ export function register(program: Command): void {
   for (const decision of ["approve", "deny"] as const) {
     approvals
       .command(`${decision} <id>`)
-      .description(`${decision === "approve" ? "Approve" : "Deny"} one exact invocation`)
+      .description(
+        `${decision === "approve" ? "Approve" : "Deny"} one exact invocation`,
+      )
       .option("--json", "Output JSON")
       .action(async (id: string, opts: { json?: boolean }) => {
         try {
@@ -125,7 +134,9 @@ export function register(program: Command): void {
       });
   }
 
-  const grants = actions.command("grants").description("Manage standing action grants");
+  const grants = actions
+    .command("grants")
+    .description("Manage standing action grants");
   grants
     .command("list")
     .option("--status <status>", "Filter by status")
@@ -137,9 +148,17 @@ export function register(program: Command): void {
         renderTable(rows, [
           { header: "ID", key: "id", width: 12 },
           { header: "ACTION", key: "capability_name", width: 28 },
-          { header: "PRINCIPAL", key: (row) => `${row.principal_type}:${row.principal_id}`, width: 28 },
+          {
+            header: "PRINCIPAL",
+            key: (row) => `${row.principal_type}:${row.principal_id}`,
+            width: 28,
+          },
           { header: "STATUS", key: "status", width: 12 },
-          { header: "EXPIRES", key: (row) => row.expires_at ?? "never", width: 24 },
+          {
+            header: "EXPIRES",
+            key: (row) => row.expires_at ?? "never",
+            width: 24,
+          },
         ]);
       } catch (error) {
         handleError(error);
@@ -148,7 +167,10 @@ export function register(program: Command): void {
 
   grants
     .command("create <capability>")
-    .requiredOption("--principal-type <type>", "user, api_key, osa, optimal, schedule, opencomputer, mcp, or service")
+    .requiredOption(
+      "--principal-type <type>",
+      "user, api_key, osa, optimal, schedule, opencomputer, mcp, or service",
+    )
     .requiredOption("--principal-id <id>", "Exact principal ID")
     .option("--workspace <id>", "Optional workspace restriction")
     .option("--expires-at <iso8601>", "Optional expiration")
@@ -209,7 +231,10 @@ export function register(program: Command): void {
     .option("--json", "Output JSON")
     .action(async (opts: { limit?: string; json?: boolean }) => {
       try {
-        const rows = await authority().receipts(Number.parseInt(opts.limit ?? "100", 10));
+        const parsedLimit = Number.parseInt(opts.limit ?? "100", 10);
+        const limit =
+          Number.isNaN(parsedLimit) || parsedLimit <= 0 ? 100 : parsedLimit;
+        const rows = await authority().receipts(limit);
         if (isJsonMode(opts)) return printJson({ data: rows });
         renderTable(rows, [
           { header: "TIME", key: "occurred_at", width: 24 },
