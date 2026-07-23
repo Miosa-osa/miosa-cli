@@ -3206,7 +3206,7 @@ async function runSandboxPortForward(
 
 // ── sandbox deploy / doctor implementation ─────────────────────────────────
 
-interface SandboxDeployOptions {
+export interface SandboxDeployOptions {
   sandbox?: string;
   template?: string;
   name?: string;
@@ -3224,7 +3224,7 @@ interface SandboxDeployOptions {
   json?: boolean;
 }
 
-interface SandboxDeployResult {
+export interface SandboxDeployResult {
   sandbox_id: string;
   port: number;
   preview_url: string;
@@ -3519,7 +3519,7 @@ function validateServiceName(name: string): void {
   }
 }
 
-async function deploySandbox(
+export async function deploySandbox(
   localDir: string,
   opts: SandboxDeployOptions,
 ): Promise<SandboxDeployResult> {

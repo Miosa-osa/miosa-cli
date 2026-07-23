@@ -84,6 +84,11 @@ Examples:
   miosa capabilities --json                    Print agent-readable workflows and command recipes
   miosa app inspect . --json                   Detect framework, commands, ports, env, and risks
   miosa app plan . --goal deploy --json        Generate the exact agent-safe deploy sequence
+  miosa app link . --app <deployment-id>       Bind source to one exact application
+  miosa app pull . --json                      Pull linked application configuration
+  miosa app preview . --json                   Create and verify a safe preview
+  miosa app promote <release-id> . --yes        Promote and prove one exact release
+  miosa app rollback <release-id> . --yes       Roll back and prove one exact release
   miosa computers list                          List all Computers
   miosa computers vnc <id>                      Open a Computer's VNC viewer
   miosa sandbox list                            List all Sandboxes

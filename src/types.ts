@@ -218,6 +218,8 @@ export interface Deployment {
   runtime_image: string | null;
   current_build_id: BuildId | null;
   active_version_id?: string | null;
+  active_release_id?: string | null;
+  running_artifact_sha256?: string | null;
   state: DeploymentState;
   auto_deploy: boolean;
   custom_domain_id: string | null;
@@ -292,10 +294,12 @@ export interface MiosaProjectConfig {
 
 /** Shape of the on-disk .miosa.json written by `miosa link` */
 export interface LocalProjectLink {
-  version: 1;
+  version: 1 | 2;
   deploymentId: DeploymentId;
   name: string;
   environment: string;
+  workspaceId?: string;
+  projectId?: string;
 }
 
 // ── Computer event stream types ───────────────────────────────────────────────

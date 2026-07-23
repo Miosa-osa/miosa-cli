@@ -56,7 +56,9 @@ async function findRelease(
   releaseId: string,
 ): Promise<{ app: Deployment; release: ReleaseRow }> {
   for (const app of await client.listDeployments()) {
-    const release = (await listReleaseRows(client, app.id)).find((row) => row.id === releaseId);
+    const release = (await listReleaseRows(client, app.id)).find(
+      (row) => row.id === releaseId,
+    );
     if (release) return { app, release };
   }
   throw new UserError(`Release not found: ${releaseId}`);
@@ -71,7 +73,9 @@ function responseRows(body: unknown, key: string): ReleaseRow[] {
         ? value["data"]
         : [];
   return rows
-    .filter((row): row is Record<string, unknown> => !!row && typeof row === "object")
+    .filter(
+      (row): row is Record<string, unknown> => !!row && typeof row === "object",
+    )
     .filter((row): row is ReleaseRow => typeof row["id"] === "string");
 }
 
@@ -84,7 +88,9 @@ function renderRelease(app: Deployment, release: ReleaseRow): void {
   console.log();
   console.log(`  ${chalk.bold("Release")}  ${release.id}`);
   console.log(`  ${chalk.bold("App")}      ${app.name} (${app.id})`);
-  console.log(`  ${chalk.bold("State")}    ${stateColor(textField(release, "state"))}`);
+  console.log(
+    `  ${chalk.bold("State")}    ${stateColor(textField(release, "state"))}`,
+  );
 
   const versionNumber = release["version_number"];
   if (versionNumber !== undefined && versionNumber !== null) {
@@ -108,7 +114,9 @@ function renderRelease(app: Deployment, release: ReleaseRow): void {
   const error = textField(release, "error_message");
   if (error) console.log(`  ${chalk.bold("Error")}    ${chalk.red(error)}`);
 
-  console.log(`  ${chalk.bold("Created")}  ${textField(release, "created_at") ?? chalk.dim("unknown")}`);
+  console.log(
+    `  ${chalk.bold("Created")}  ${textField(release, "created_at") ?? chalk.dim("unknown")}`,
+  );
   console.log();
 }
 
@@ -142,7 +150,11 @@ async function getReleaseRow(
       `/api/v1/deployments/${encodeURIComponent(appId)}/releases/${encodeURIComponent(releaseId)}`,
     );
     const data = (body as Record<string, unknown> | null)?.["data"];
-    if (data && typeof data === "object" && typeof (data as Record<string, unknown>)["id"] === "string") {
+    if (
+      data &&
+      typeof data === "object" &&
+      typeof (data as Record<string, unknown>)["id"] === "string"
+    ) {
       return data as ReleaseRow;
     }
   } catch {
@@ -154,7 +166,11 @@ async function getReleaseRow(
       `/api/v1/deployments/${encodeURIComponent(appId)}/versions/${encodeURIComponent(releaseId)}`,
     );
     const data = (body as Record<string, unknown> | null)?.["data"];
-    if (data && typeof data === "object" && typeof (data as Record<string, unknown>)["id"] === "string") {
+    if (
+      data &&
+      typeof data === "object" &&
+      typeof (data as Record<string, unknown>)["id"] === "string"
+    ) {
       return data as ReleaseRow;
     }
   } catch {
@@ -343,23 +359,33 @@ export function register(program: Command): void {
     .command("migration-backup <deployment-id> <version-id>")
     .description("Queue the required database backup before a risky promotion")
     .option("--json", "Output as JSON")
-    .action(async (deploymentId: string, versionId: string, opts: { json?: boolean }) => {
-      try {
-        const client = new MiosaClient(loadConfig());
-        const app = await resolveApp(client, deploymentId);
-        const result = await client.apiPost<unknown>(
-          `/api/v1/deployments/${encodeURIComponent(app.id)}/versions/${encodeURIComponent(versionId)}/migration-backup`,
-          {},
-        );
-        if (isJsonMode(opts)) {
-          console.log(JSON.stringify(result, null, 2));
-        } else {
-          console.log(chalk.green(`Migration backup queued for ${app.name} version ${shortId(versionId)}.`));
+    .action(
+      async (
+        deploymentId: string,
+        versionId: string,
+        opts: { json?: boolean },
+      ) => {
+        try {
+          const client = new MiosaClient(loadConfig());
+          const app = await resolveApp(client, deploymentId);
+          const result = await client.apiPost<unknown>(
+            `/api/v1/deployments/${encodeURIComponent(app.id)}/versions/${encodeURIComponent(versionId)}/migration-backup`,
+            {},
+          );
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(
+              chalk.green(
+                `Migration backup queued for ${app.name} version ${shortId(versionId)}.`,
+              ),
+            );
+          }
+        } catch (err) {
+          handleError(err);
         }
-      } catch (err) {
-        handleError(err);
-      }
-    });
+      },
+    );
 
   releases
     .command("promote-release <deployment-id> <release-id>")
@@ -394,6 +420,8 @@ export function register(program: Command): void {
 
           const result = await client.apiPost<unknown>(
             `/api/v1/deployments/${encodeURIComponent(app.id)}/releases/${encodeURIComponent(releaseId)}/promote`,
+            undefined,
+            { "Idempotency-Key": `promote:${app.id}:${releaseId}` },
           );
 
           if (isJsonMode(opts)) {
@@ -452,7 +480,13 @@ export function register(program: Command): void {
 
           const result = await client.apiPost<unknown>(
             `/api/v1/deployments/${encodeURIComponent(app.id)}/rollback`,
-            { release_id: release.id },
+            {
+              version_id:
+                textField(release, "deployment_version_id") ??
+                textField(release, "version_id") ??
+                release.id,
+            },
+            { "Idempotency-Key": `rollback:${app.id}:${release.id}` },
           );
 
           if (isJsonMode(opts)) {

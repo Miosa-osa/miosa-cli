@@ -12,13 +12,13 @@ import type { EnvVarPreview } from "../types.js";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-interface RevealedSecret {
+export interface RevealedSecret {
   name: string;
   value: string;
 }
 
 /** Fetch revealed secret values via the secrets API. */
-async function fetchSecretValues(
+export async function fetchSecretValues(
   client: MiosaClient,
   deploymentId: string,
 ): Promise<RevealedSecret[]> {
@@ -73,7 +73,7 @@ async function fetchSecretValues(
 }
 
 /** Serialise key-value pairs to dotenv format. */
-function toDotenv(secrets: RevealedSecret[]): string {
+export function toDotenv(secrets: RevealedSecret[]): string {
   const lines = secrets.map(({ name, value }) => {
     // Quote values containing spaces, newlines, or special shell characters
     const needsQuotes = /[\s"'\\#]/.test(value);
@@ -86,7 +86,7 @@ function toDotenv(secrets: RevealedSecret[]): string {
 }
 
 /** Ensure .env.local is listed in .gitignore. */
-function ensureGitignored(dir: string, filename: string): void {
+export function ensureGitignored(dir: string, filename: string): void {
   const gitignore = path.join(dir, ".gitignore");
   try {
     const existing = fs.existsSync(gitignore)
