@@ -296,6 +296,46 @@ async function waitForHost(
   return current;
 }
 
+function normalizeApplianceRelease(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  const release = trimmed.startsWith("sha-") ? trimmed : `sha-${trimmed}`;
+  if (!/^sha-[0-9a-f]{7,40}$/.test(release)) {
+    throw new Error(
+      "Release must be an exact Git commit SHA with 7 to 40 hexadecimal characters.",
+    );
+  }
+  return release;
+}
+
+async function waitForHostRelease(
+  host: DockerDeployHost,
+  release: string,
+  timeoutSec: number,
+): Promise<DockerDeployHost> {
+  const client = createClient();
+  const deadline = Date.now() + timeoutSec * 1000;
+  let current = host;
+
+  while (
+    (!hostReady(current) || current.appliance_version !== release) &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const raw = await client.apiGet<unknown>(
+      `/api/v1/docker-deploy/hosts/${encodeURIComponent(host.id)}`,
+    );
+    current = objectOf<DockerDeployHost>(raw, ["host"]);
+  }
+
+  if (!hostReady(current) || current.appliance_version !== release) {
+    throw new Error(
+      `App Engine upgrade did not become healthy on ${release} within ${timeoutSec} seconds.`,
+    );
+  }
+
+  return current;
+}
+
 export function register(program: Command): void {
   const root = program
     .command("docker-deploy")
@@ -457,6 +497,66 @@ export function register(program: Command): void {
         }
 
         printHost(host);
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  root
+    .command("upgrade")
+    .description("Upgrade an existing App Engine in place to an exact immutable release")
+    .argument("<host-id>", "App Engine host ID")
+    .requiredOption("--release <sha>", "Exact appliance Git SHA or sha-* release tag")
+    .option("--no-wait", "Queue the upgrade without waiting for health")
+    .option("--timeout <seconds>", "Wait timeout in seconds", parsePositiveInt, 900)
+    .option("--json", "Output raw JSON")
+    .action(async (
+      hostId: string,
+      opts: { release: string; wait?: boolean; timeout: number; json?: boolean },
+    ) => {
+      try {
+        const release = normalizeApplianceRelease(opts.release);
+        const applianceImage = `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`;
+        const agentImage = `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`;
+        const client = createClient();
+        const raw = await client.apiPost<unknown>(
+          `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}/upgrade`,
+          {
+            appliance_image: applianceImage,
+            agent_image: agentImage,
+            appliance_version: release,
+          },
+        );
+        let host = objectOf<DockerDeployHost>(raw, ["host"]);
+
+        if (opts.wait !== false) {
+          host = await waitForHostRelease(host, release, opts.timeout);
+        }
+
+        const result = {
+          ok:
+            opts.wait === false
+              ? true
+              : hostReady(host) && host.appliance_version === release,
+          queued: true,
+          release,
+          appliance_image: applianceImage,
+          agent_image: agentImage,
+          host,
+        };
+
+        if (isJsonMode(opts) || opts.json) {
+          printJson(result);
+          return;
+        }
+
+        printHost(host);
+        console.log(
+          opts.wait === false
+            ? chalk.yellow(`  Upgrade to ${release} queued.`)
+            : chalk.green(`  Upgrade to ${release} is active and healthy.`),
+        );
+        console.log();
       } catch (err) {
         handleError(err);
       }

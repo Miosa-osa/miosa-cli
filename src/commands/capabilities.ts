@@ -273,6 +273,8 @@ const manifest: CapabilitiesManifest = {
       show: "miosa docker-deploy show <host-id> --json",
       notes: [
         "Use miosa docker-deploy templates --json before choosing a starter/template path.",
+        "Upgrade an existing host in place with miosa docker-deploy upgrade <host-id> --release <git-sha> --json; this preserves its bound computer, apps, routes, and volumes.",
+        "App Engine upgrades require exact immutable portal and agent image SHAs. Mutable tags such as latest are rejected.",
         "After publish, run miosa docker-deploy doctor <deployment-id> --json to verify deployment_product, host readiness, route metadata, and public HTTP.",
         "A deployment is not proven healthy until the public probe passes; control-plane state alone is not enough.",
       ],

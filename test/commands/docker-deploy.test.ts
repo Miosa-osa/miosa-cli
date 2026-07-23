@@ -175,6 +175,52 @@ describe("miosa docker-deploy", () => {
     expect(parsed.appliance_status).toBe("healthy");
   });
 
+  it("queues an in-place upgrade with exact immutable portal and agent images", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const release = "sha-3eedafc";
+    const upgradingHost = {
+      ...host,
+      appliance_status: "needs_reconcile",
+      appliance_version: release,
+    };
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/docker-deploy/hosts/${host.id}/upgrade`,
+        method: "POST",
+        body: JSON.stringify({
+          appliance_image: `ghcr.io/miosa-osa/docker-deploy-appliance:${release}`,
+          agent_image: `ghcr.io/miosa-osa/docker-deploy-appliance-agent:${release}`,
+          appliance_version: release,
+        }),
+      })
+      .reply(202, JSON.stringify({ host: upgradingHost, queued: true }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "docker-deploy",
+      "upgrade",
+      host.id,
+      "--release",
+      "3eedafc",
+      "--no-wait",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logged.join(""));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.release).toBe(release);
+    expect(parsed.host.appliance_status).toBe("needs_reconcile");
+  });
+
   it("lists Docker Deploy templates", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
