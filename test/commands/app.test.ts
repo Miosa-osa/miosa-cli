@@ -1,7 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
+import { MockAgent, setGlobalDispatcher } from "undici";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+vi.mock("../../src/config.js", () => ({
+  loadConfig: () => ({
+    endpoint: "https://api.miosa.ai",
+    api_key: "msk_test",
+    tenant: "osa",
+    workspace: "ws_123",
+  }),
+}));
+
+vi.mock("../../src/ui/spinner.js", () => ({
+  spin: () => ({ stop: vi.fn(), succeed: vi.fn(), fail: vi.fn(), text: "" }),
+}));
+
+const sandboxMocks = vi.hoisted(() => ({
+  deploySandbox: vi.fn(),
+}));
+
+vi.mock("../../src/commands/sandbox.js", () => sandboxMocks);
 
 const { register } = await import("../../src/commands/app.js");
 
@@ -30,6 +52,7 @@ describe("miosa app", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env["MIOSA_JSON"];
+    sandboxMocks.deploySandbox.mockReset();
   });
 
   it("inspects a Next.js app with compact agent context", async () => {
@@ -96,6 +119,150 @@ describe("miosa app", () => {
     );
     expect(payload.data.edge_cases.map((edge) => edge.code)).toContain(
       "DOCKER_DEPLOY_ROUTE_UNHEALTHY",
+    );
+  });
+
+  it("links a local directory to one exact deployment and workspace", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          id: "dep_123",
+          name: "ClinicIQ",
+          workspace_id: "ws_123",
+          project_id: "proj_123",
+        },
+      });
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-app-link-"));
+    const previous = process.cwd();
+    process.chdir(dir);
+    try {
+      const payload = (await runJson([
+        "app",
+        "link",
+        ".",
+        "--app",
+        "dep_123",
+        "--environment",
+        "production",
+        "--json",
+      ])) as {
+        ok: boolean;
+        data: { deployment_id: string; workspace_id: string };
+      };
+      const saved = JSON.parse(
+        fs.readFileSync(path.join(dir, ".miosa.json"), "utf8"),
+      ) as Record<string, unknown>;
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data.deployment_id).toBe("dep_123");
+      expect(payload.data.workspace_id).toBe("ws_123");
+      expect(saved).toMatchObject({
+        version: 2,
+        deploymentId: "dep_123",
+        workspaceId: "ws_123",
+        environment: "production",
+      });
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pulls configuration through the linked application workflow", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/deployments/dep_123/env",
+        method: "GET",
+      })
+      .reply(200, {
+        data: [{ name: "DATABASE_URL", preview: "pos...db" }],
+      });
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/opencomputers/secrets",
+        method: "GET",
+      })
+      .reply(200, { data: [] });
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-app-pull-"));
+    fs.writeFileSync(
+      path.join(dir, ".miosa.json"),
+      JSON.stringify({
+        version: 2,
+        deploymentId: "dep_123",
+        name: "ClinicIQ",
+        environment: "preview",
+      }),
+    );
+    try {
+      const payload = (await runJson([
+        "app",
+        "pull",
+        dir,
+        "--json",
+      ])) as {
+        ok: boolean;
+        data: {
+          deployment_id: string;
+          environment: string;
+          configuration: Record<string, string>;
+        };
+      };
+      expect(payload).toMatchObject({
+        ok: true,
+        data: {
+          deployment_id: "dep_123",
+          environment: "preview",
+          configuration: { DATABASE_URL: "pos...db" },
+        },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a ready preview through one app command", async () => {
+    sandboxMocks.deploySandbox.mockResolvedValue({
+      sandbox_id: "sbx_123",
+      port: 3000,
+      preview_url: "https://3000-sbx.sandbox.miosa.ai",
+      preview_ready: true,
+    });
+
+    const payload = (await runJson([
+      "app",
+      "preview",
+      fixture("nextjs"),
+      "--json",
+    ])) as {
+      ok: boolean;
+      data: { sandbox_id: string; status: string; promotion_allowed: boolean };
+    };
+    expect(payload).toMatchObject({
+      ok: true,
+      data: {
+        sandbox_id: "sbx_123",
+        status: "ready",
+        promotion_allowed: false,
+      },
+    });
+    expect(sandboxMocks.deploySandbox).toHaveBeenCalledWith(
+      path.resolve(fixture("nextjs")),
+      expect.objectContaining({ wait: true, timeout: 600 }),
     );
   });
 });

@@ -452,7 +452,12 @@ export function register(program: Command): void {
 
           const result = await client.apiPost<unknown>(
             `/api/v1/deployments/${encodeURIComponent(app.id)}/rollback`,
-            { release_id: release.id },
+            {
+              version_id:
+                textField(release, "deployment_version_id") ??
+                textField(release, "version_id") ??
+                release.id,
+            },
           );
 
           if (isJsonMode(opts)) {

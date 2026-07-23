@@ -86,6 +86,55 @@ Use `m7i.2xlarge` for the supported baseline tier.
 
 ## Deploy — 60 seconds to first deploy
 
+### Safe application release workflow
+
+Use the application workflow for normal preview, production, and recovery operations.
+It keeps the source directory linked to one exact MIOSA deployment and refuses to report production success until the immutable release, artifact digest, route contract, App Engine placement, database attachment, and required configuration are proven.
+
+```bash
+miosa app link . --app <deployment-id> --environment production
+miosa app pull .
+miosa app preview . --json
+miosa app verify <release-id> . --json
+miosa app promote <release-id> . --yes --json
+```
+
+Promotion and rollback always target an exact release ID.
+They persist an operation record and idempotency key under `.miosa/operations`, so a request timeout can be inspected or resumed without creating duplicate deployment work.
+
+```bash
+miosa app recover <operation-id> . --json
+miosa app recover <operation-id> . --resume --json
+miosa app rollback <release-id> . --yes --json
+```
+
+Declare application-specific acceptance requirements in `.miosa/acceptance.json`.
+The default contract requires HTTP 200 from `/`.
+
+```json
+{
+  "schema_version": 1,
+  "routes": [
+    {
+      "id": "access",
+      "path": "/access",
+      "expected_status": [200],
+      "body_contains": ["Open the working brief"],
+      "content_type": "text/html",
+      "required": true
+    }
+  ],
+  "required_env": ["DATABASE_URL", "BRIEF_AUTH_SECRET"],
+  "database": {
+    "required": true,
+    "health_path": "/api/health"
+  }
+}
+```
+
+Each verification writes a durable, machine-readable receipt under `.miosa/receipts`.
+That receipt is the acceptance evidence for the release.
+
 Point the CLI at any repo and it handles the rest: framework detection, build wiring, GitHub webhook setup, and live log streaming.
 
 For production app hosting, MIOSA recommends App Engine. It runs apps on the

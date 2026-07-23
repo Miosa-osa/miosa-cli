@@ -70,6 +70,16 @@ interface CapabilitiesManifest {
   advisor: {
     inspect: CommandRecipe;
     plan: CommandRecipe;
+    application_release: {
+      link: string;
+      pull: string;
+      preview: string;
+      verify: string;
+      promote: string;
+      rollback: string;
+      recover: string;
+      rules: string[];
+    };
     token_budget: string[];
     playbooks: Array<{
       id: string;
@@ -340,10 +350,26 @@ const manifest: CapabilitiesManifest = {
       json: true,
       wait: false,
     },
+    application_release: {
+      link: "miosa app link . --app <deployment-id> --environment production --json",
+      pull: "miosa app pull . --json",
+      preview: "miosa app preview . --json",
+      verify: "miosa app verify <release-id> . --json",
+      promote: "miosa app promote <release-id> . --yes --json",
+      rollback: "miosa app rollback <release-id> . --yes --json",
+      recover: "miosa app recover <operation-id> . --resume --json",
+      rules: [
+        "Preview is the default safe mutation and never promotes production.",
+        "Production promotion and rollback require one exact immutable release ID.",
+        "A command is successful only when the durable release receipt verifies the active version, artifact digest, route contract, host placement, database, and required configuration.",
+        "Retry interrupted mutations with the original operation ID and idempotency key.",
+      ],
+    },
     token_budget: [
       "Use app inspect/plan before loading docs or asking the user what framework the app uses.",
       "Default to compact JSON; only request logs with --lines/--tail and only request full output when diagnosing.",
       "Treat edge_cases in app plan as the recovery playbook instead of pasting long runbooks into the prompt.",
+      "Use the app workflow for normal releases. Do not reconstruct sandbox publish, release promotion, and proof manually.",
     ],
     playbooks: [
       {
