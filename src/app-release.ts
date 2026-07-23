@@ -160,7 +160,10 @@ export function loadAcceptanceContract(
   return contract as AcceptanceContract;
 }
 
-export function saveReleaseReceipt(appDir: string, receipt: ReleaseReceipt): string {
+export function saveReleaseReceipt(
+  appDir: string,
+  receipt: ReleaseReceipt,
+): string {
   const receiptDir = path.join(appDir, ".miosa", "receipts");
   fs.mkdirSync(receiptDir, { recursive: true, mode: 0o700 });
   const receiptPath = path.join(receiptDir, `${receipt.receipt_id}.json`);
@@ -188,7 +191,10 @@ function check(
   });
 }
 
-function receiptId(input: VerifyApplicationReleaseInput, inspection: ReleaseInspection): string {
+function receiptId(
+  input: VerifyApplicationReleaseInput,
+  inspection: ReleaseInspection,
+): string {
   return `rcpt_${createHash("sha256")
     .update(
       [
@@ -253,7 +259,8 @@ export async function verifyApplicationRelease(
     checks,
     "artifact_integrity",
     digestComparable &&
-      inspection.expected_artifact_sha256 === inspection.running_artifact_sha256,
+      inspection.expected_artifact_sha256 ===
+        inspection.running_artifact_sha256,
     "The running artifact digest matches the immutable release.",
     digestComparable
       ? "The running artifact digest does not match the immutable release."
@@ -270,8 +277,8 @@ export async function verifyApplicationRelease(
       "placement",
       Boolean(
         inspection.host_id &&
-          inspection.host_status === "active" &&
-          inspection.appliance_status === "healthy",
+        inspection.host_status === "active" &&
+        inspection.appliance_status === "healthy",
       ),
       "App Engine placement is active and healthy.",
       "App Engine placement is missing, inactive, or unhealthy.",
@@ -294,7 +301,9 @@ export async function verifyApplicationRelease(
     `All ${requiredEnv.length} required configuration names are present.`,
     `Missing required configuration: ${missingEnv.join(", ")}.`,
     { required: requiredEnv, missing: missingEnv },
-    missingEnv.map((name) => `miosa secrets set ${name} --app ${input.application}`),
+    missingEnv.map(
+      (name) => `miosa secrets set ${name} --app ${input.application}`,
+    ),
   );
 
   if (input.contract.database?.required) {
@@ -311,7 +320,11 @@ export async function verifyApplicationRelease(
     const healthy = inspection.healthy_connector_ids.includes(connector.id);
     checks.push({
       id: `connector:${connector.id}`,
-      status: healthy ? "pass" : connector.required === false ? "warning" : "fail",
+      status: healthy
+        ? "pass"
+        : connector.required === false
+          ? "warning"
+          : "fail",
       message: healthy
         ? `Connector ${connector.id} is bound and healthy.`
         : `Connector ${connector.id} is not bound and healthy.`,
@@ -330,27 +343,24 @@ export async function verifyApplicationRelease(
   }
 
   if (!inspection.public_url) {
-    check(
-      checks,
-      "public_url",
-      false,
-      "",
-      "The deployment has no public URL.",
-    );
+    check(checks, "public_url", false, "", "The deployment has no public URL.");
   } else {
     for (const requirement of input.contract.routes) {
       const required = requirement.required !== false;
       try {
-        const response = await adapter.probe(inspection.public_url, requirement.path);
+        const response = await adapter.probe(
+          inspection.public_url,
+          requirement.path,
+        );
         const statusOk = requirement.expected_status.includes(response.status);
         const bodyMissing = (requirement.body_contains ?? []).filter(
           (marker) => !response.body.includes(marker),
         );
         const typeOk =
           !requirement.content_type ||
-          response.content_type?.toLowerCase().includes(
-            requirement.content_type.toLowerCase(),
-          );
+          response.content_type
+            ?.toLowerCase()
+            .includes(requirement.content_type.toLowerCase());
         const ok = statusOk && bodyMissing.length === 0 && Boolean(typeOk);
         checks.push({
           id: `route:${requirement.id}`,
@@ -383,8 +393,8 @@ export async function verifyApplicationRelease(
       try {
         const response = await adapter.probe(inspection.public_url, healthPath);
         const bodyHealthy =
-          response.body.includes('"status":"ok"') &&
-          response.body.includes('"database":"ok"');
+          /"status"\s*:\s*"ok"/.test(response.body) &&
+          /"database"\s*:\s*"ok"/.test(response.body);
         check(
           checks,
           "database_health",

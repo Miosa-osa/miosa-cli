@@ -190,6 +190,30 @@ async function inspectLinkedRelease(
       }),
     )
   ).filter((id): id is string => Boolean(id));
+  const declaredJobIds = new Set(
+    (contract.scheduled_jobs ?? []).map((job) => job.id),
+  );
+  const healthyScheduledJobIds = [
+    deployment["scheduled_jobs"],
+    metadata["scheduled_jobs"],
+    dockerApp["scheduled_jobs"],
+  ]
+    .flatMap((value) => (Array.isArray(value) ? value : []))
+    .map((value) => record(value))
+    .map((job) => {
+      const id = stringValue(job, "id") ?? stringValue(job, "name");
+      if (!id || !declaredJobIds.has(id)) return null;
+      const healthy =
+        boolValue(job, "enabled") !== false &&
+        boolValue(job, "paused") !== true &&
+        (stringValue(job, "status") ??
+          stringValue(job, "state") ??
+          "active") !== "failed" &&
+        (stringValue(job, "last_run_status") ?? "ok") !== "failed";
+      return healthy ? id : null;
+    })
+    .filter((id): id is string => Boolean(id))
+    .filter((id, index, all) => all.indexOf(id) === index);
   return {
     versionId,
     inspection: {
@@ -224,7 +248,7 @@ async function inspectLinkedRelease(
         ),
       effective_env_names: envNames,
       healthy_connector_ids: healthyConnectorIds,
-      healthy_scheduled_job_ids: [],
+      healthy_scheduled_job_ids: healthyScheduledJobIds,
     },
   };
 }
@@ -414,6 +438,7 @@ async function activateLinkedRelease(input: {
       input.contractPath,
     );
     let rollbackPerformed = false;
+    let rollbackConfirmed = false;
     if (
       receipt.result === "blocked" &&
       operation.previous_version_id &&
@@ -432,17 +457,27 @@ async function activateLinkedRelease(input: {
         },
       );
       rollbackPerformed = true;
+      try {
+        await waitForActiveVersion(
+          client,
+          input.link.deploymentId,
+          operation.previous_version_id,
+          input.timeout,
+        );
+        rollbackConfirmed = true;
+      } catch {
+        rollbackConfirmed = false;
+      }
     }
+    const blockedError = rollbackConfirmed
+      ? "The activated release failed acceptance and production was restored to the previous version."
+      : rollbackPerformed
+        ? "The activated release failed acceptance; restoration of the previous version was requested but did not become active within the timeout. Production may require manual recovery."
+        : "The activated release failed acceptance and no previous version was available for automatic restoration.";
     operation = updateApplicationOperation(input.dir, operation, {
       state: receipt.result === "verified" ? "succeeded" : "blocked",
       receipt_id: receipt.receipt_id,
-      ...(receipt.result === "blocked"
-        ? {
-            error: rollbackPerformed
-              ? "The activated release failed acceptance and production was restored to the previous version."
-              : "The activated release failed acceptance and no previous version was available for automatic restoration.",
-          }
-        : {}),
+      ...(receipt.result === "blocked" ? { error: blockedError } : {}),
     });
     return { operation, receipt, receiptPath };
   } catch (error) {
