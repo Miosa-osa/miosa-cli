@@ -13,6 +13,7 @@ import {
   redactKey,
 } from "../config.js";
 import { MiosaClient } from "../client.js";
+import { ActionAuthorityClient } from "../action-authority.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
 import {
   banner,
@@ -33,7 +34,7 @@ interface Check {
   /** When true the row renders with icon.warn instead of icon.fail */
   warn?: boolean;
   /** Section this check belongs to — used to group output */
-  section: "Identity" | "Network" | "Toolchain" | "Project";
+  section: "Identity" | "Network" | "Authority" | "Toolchain" | "Project";
 }
 
 interface McpJsonCheck {
@@ -332,6 +333,40 @@ export function register(program: Command): void {
               detail: `valid (${tenant.name}, ${tenant.slug})`,
               section: "Identity",
             });
+
+            try {
+              const catalog = await new ActionAuthorityClient(client).catalog();
+              const complete = catalog.every(
+                (capability) =>
+                  capability.name &&
+                  capability.version &&
+                  capability.fingerprint.startsWith("sha256:") &&
+                  capability.risk &&
+                  capability.scope &&
+                  capability.approval,
+              );
+              checks.push({
+                name: "Action authority",
+                ok: catalog.length > 0 && complete,
+                detail:
+                  catalog.length > 0 && complete
+                    ? `${catalog.length} version-pinned capabilities`
+                    : "catalog is empty or malformed",
+                fix:
+                  catalog.length > 0 && complete
+                    ? undefined
+                    : "Upgrade the control plane before enabling agent actions.",
+                section: "Authority",
+              });
+            } catch (err) {
+              checks.push({
+                name: "Action authority",
+                ok: false,
+                detail: err instanceof Error ? err.message : String(err),
+                fix: "Upgrade the control plane and run: miosa actions catalog",
+                section: "Authority",
+              });
+            }
           } catch (err) {
             checks.push({
               name: "Authentication",
@@ -436,6 +471,7 @@ export function register(program: Command): void {
         const sections = [
           "Identity",
           "Network",
+          "Authority",
           "Toolchain",
           "Project",
         ] as const;

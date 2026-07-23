@@ -42,6 +42,27 @@ miosa command-overview --json
 subcommands. Use `miosa capabilities --json` for the higher-level agent workflow
 contract.
 
+## Unified action authority
+
+Every CLI, OSA, MCP, scheduled, and OpenComputers action uses the same server-owned capability catalog.
+The control plane pins each action to a version and fingerprint, records every decision, and fails closed when a capability is unknown or stale.
+
+```bash
+miosa actions catalog
+miosa actions check computer.destroy \
+  --params '{"computer_id":"computer_123"}' \
+  --invocation-id cleanup-2026-07-23
+
+miosa actions approvals list --status pending
+miosa actions approvals approve <approval-id>
+miosa actions grants list
+miosa actions receipts --limit 50
+```
+
+Owners and administrators can create exact standing grants for a principal, capability version, and optional workspace.
+One-time approvals are consumed atomically and cannot be replayed.
+`miosa doctor` verifies that the authenticated control plane publishes a complete version-pinned authority catalog.
+
 ## AWS BYOC host pools
 
 The `cloud` command manages the public BYOC control-plane contract.
