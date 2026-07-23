@@ -104,15 +104,20 @@ describe("miosa app", () => {
     expect(payload.data.steps.map((step) => step.id)).toEqual(
       expect.arrayContaining(["auth_health", "sandbox_deploy", "publish"]),
     );
-    expect(payload.data.steps.every((step) => step.json || step.id === "production_probe")).toBe(true);
-    expect(payload.data.steps.find((step) => step.id === "publish")?.command).toContain(
-      "--docker-deploy",
-    );
-    expect(payload.data.steps.find((step) => step.id === "publish")?.command).toContain(
-      "--timeout 900",
-    );
     expect(
-      payload.data.steps.find((step) => step.id === "production_probe")?.command,
+      payload.data.steps.every(
+        (step) => step.json || step.id === "production_probe",
+      ),
+    ).toBe(true);
+    expect(
+      payload.data.steps.find((step) => step.id === "publish")?.command,
+    ).toContain("--docker-deploy");
+    expect(
+      payload.data.steps.find((step) => step.id === "publish")?.command,
+    ).toContain("--timeout 900");
+    expect(
+      payload.data.steps.find((step) => step.id === "production_probe")
+        ?.command,
     ).toContain("miosa docker-deploy doctor <deployment-id>");
     expect(payload.data.edge_cases.map((edge) => edge.code)).toContain(
       "PORT_NOT_LISTENING",
@@ -209,12 +214,7 @@ describe("miosa app", () => {
       }),
     );
     try {
-      const payload = (await runJson([
-        "app",
-        "pull",
-        dir,
-        "--json",
-      ])) as {
+      const payload = (await runJson(["app", "pull", dir, "--json"])) as {
         ok: boolean;
         data: {
           deployment_id: string;
@@ -264,5 +264,34 @@ describe("miosa app", () => {
       path.resolve(fixture("nextjs")),
       expect.objectContaining({ wait: true, timeout: 600 }),
     );
+  });
+
+  it("reads durable server operation status", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/operations/op_123",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          id: "op_123",
+          status: "succeeded",
+          current_step: "verified",
+        },
+      });
+
+    const payload = (await runJson(["app", "status", "op_123", "--json"])) as {
+      ok: boolean;
+      data: { id: string; status: string };
+    };
+
+    expect(payload).toMatchObject({
+      ok: true,
+      data: { id: "op_123", status: "succeeded" },
+    });
   });
 });

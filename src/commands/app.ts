@@ -3,11 +3,7 @@ import chalk from "chalk";
 import fs from "node:fs";
 import path from "node:path";
 import { request } from "undici";
-import {
-  inspectApp,
-  planApp,
-  type AppGoal,
-} from "../app-advisor.js";
+import { inspectApp, planApp, type AppGoal } from "../app-advisor.js";
 import { MiosaClient } from "../client.js";
 import { loadConfig } from "../config.js";
 import { UserError } from "../errors.js";
@@ -18,6 +14,7 @@ import {
   loadAcceptanceContract,
   saveReleaseReceipt,
   verifyApplicationRelease,
+  type AcceptanceContract,
   type ReleaseInspection,
   type ReleaseReceipt,
 } from "../app-release.js";
@@ -101,7 +98,9 @@ async function getRelease(
   return deploymentPayload(raw);
 }
 
-function releaseVersionId(release: Record<string, unknown>): string | undefined {
+function releaseVersionId(
+  release: Record<string, unknown>,
+): string | undefined {
   return (
     stringValue(release, "deployment_version_id") ??
     stringValue(release, "version_id") ??
@@ -113,8 +112,9 @@ async function inspectLinkedRelease(
   client: MiosaClient,
   deploymentId: string,
   releaseId: string,
+  contract: AcceptanceContract,
 ): Promise<{ inspection: ReleaseInspection; versionId: string }> {
-  const [rawDeployment, release, env, connectors] = await Promise.all([
+  const [rawDeployment, release, env] = await Promise.all([
     client.apiGet<unknown>(
       `/api/v1/deployments/${encodeURIComponent(deploymentId)}`,
     ),
@@ -122,11 +122,6 @@ async function inspectLinkedRelease(
     client.apiGet<{ data?: Array<{ name?: string }> }>(
       `/api/v1/deployments/${encodeURIComponent(deploymentId)}/env`,
     ),
-    client
-      .apiGet<{ data?: Array<Record<string, unknown>> }>(
-        `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors`,
-      )
-      .catch(() => ({ data: [] })),
   ]);
   const deployment = deploymentPayload(rawDeployment);
   const dockerApp = record(deployment["docker_deploy_app"]);
@@ -179,6 +174,22 @@ async function inspectLinkedRelease(
             .catch(() => ({})),
         )
       : {};
+  const healthyConnectorIds = (
+    await Promise.all(
+      (contract.connectors ?? []).map(async (connector) => {
+        const response = deploymentPayload(
+          await client
+            .apiPost<unknown>(
+              `/api/v1/deployments/${encodeURIComponent(deploymentId)}/connectors/preflight`,
+              { connector: connector.id },
+            )
+            .catch(() => ({})),
+        );
+        const connectorStatus = record(response["status"]);
+        return boolValue(connectorStatus, "bound") ? connector.id : null;
+      }),
+    )
+  ).filter((id): id is string => Boolean(id));
   return {
     versionId,
     inspection: {
@@ -207,19 +218,12 @@ async function inspectLinkedRelease(
         envNames.includes("DATABASE_URL") ||
         Boolean(
           stringValue(deployment, "database_id") ??
-            stringValue(deployment, "linked_database_id") ??
-            stringValue(metadata, "database_id") ??
-            boolValue(metadata, "database_attached"),
+          stringValue(deployment, "linked_database_id") ??
+          stringValue(metadata, "database_id") ??
+          boolValue(metadata, "database_attached"),
         ),
       effective_env_names: envNames,
-      healthy_connector_ids: (connectors.data ?? []).flatMap((connector) =>
-        [
-          stringValue(connector, "id"),
-          stringValue(connector, "secret_id"),
-          stringValue(connector, "name"),
-          stringValue(connector, "provider"),
-        ].filter((value): value is string => Boolean(value)),
-      ),
+      healthy_connector_ids: healthyConnectorIds,
       healthy_scheduled_job_ids: [],
     },
   };
@@ -232,10 +236,12 @@ async function verifyLinkedRelease(
   releaseId: string,
   contractPath?: string,
 ): Promise<{ receipt: ReleaseReceipt; receiptPath: string }> {
+  const contract = loadAcceptanceContract(dir, contractPath);
   const { inspection, versionId } = await inspectLinkedRelease(
     client,
     link.deploymentId,
     releaseId,
+    contract,
   );
   const receipt = await verifyApplicationRelease(
     {
@@ -244,7 +250,7 @@ async function verifyLinkedRelease(
       expected_release_id: releaseId,
       expected_version_id: versionId,
       expected_workspace_id: link.workspaceId,
-      contract: loadAcceptanceContract(dir, contractPath),
+      contract,
     },
     {
       inspect: async () => inspection,
@@ -289,7 +295,10 @@ async function waitForActiveVersion(
     const active =
       stringValue(deployment, "active_version_id") ??
       stringValue(dockerApp, "deployment_version_id");
-    if (active === versionId && stringValue(deployment, "state") === "running") {
+    if (
+      active === versionId &&
+      stringValue(deployment, "state") === "running"
+    ) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -300,7 +309,9 @@ async function waitForActiveVersion(
   );
 }
 
-function releaseArtifactDigest(release: Record<string, unknown>): string | undefined {
+function releaseArtifactDigest(
+  release: Record<string, unknown>,
+): string | undefined {
   const metadata = record(release["metadata"]);
   return (
     stringValue(release, "artifact_sha256") ??
@@ -374,11 +385,21 @@ async function activateLinkedRelease(input: {
       input.action === "promote"
         ? `/api/v1/deployments/${encodeURIComponent(input.link.deploymentId)}/releases/${encodeURIComponent(input.releaseId)}/promote`
         : `/api/v1/deployments/${encodeURIComponent(input.link.deploymentId)}/rollback`;
-    await client.apiPost<unknown>(
-      endpoint,
-      input.action === "rollback" ? { version_id: versionId } : undefined,
-      { "Idempotency-Key": idempotencyKey },
+    const activationResponse = record(
+      await client.apiPost<unknown>(
+        endpoint,
+        input.action === "rollback" ? { version_id: versionId } : undefined,
+        { "Idempotency-Key": idempotencyKey },
+      ),
     );
+    const serverOperationId =
+      stringValue(activationResponse, "operation_id") ??
+      stringValue(record(activationResponse["operation"]), "id");
+    if (serverOperationId) {
+      operation = updateApplicationOperation(input.dir, operation, {
+        server_operation_id: serverOperationId,
+      });
+    }
     await waitForActiveVersion(
       client,
       input.link.deploymentId,
@@ -392,11 +413,35 @@ async function activateLinkedRelease(input: {
       input.releaseId,
       input.contractPath,
     );
+    let rollbackPerformed = false;
+    if (
+      receipt.result === "blocked" &&
+      operation.previous_version_id &&
+      operation.previous_version_id !== operation.target_version_id
+    ) {
+      await client.apiPost<unknown>(
+        `/api/v1/deployments/${encodeURIComponent(input.link.deploymentId)}/rollback`,
+        { version_id: operation.previous_version_id },
+        {
+          "Idempotency-Key": applicationIdempotencyKey(
+            "rollback",
+            input.link.deploymentId,
+            input.releaseId,
+            operation.previous_version_id,
+          ),
+        },
+      );
+      rollbackPerformed = true;
+    }
     operation = updateApplicationOperation(input.dir, operation, {
       state: receipt.result === "verified" ? "succeeded" : "blocked",
       receipt_id: receipt.receipt_id,
       ...(receipt.result === "blocked"
-        ? { error: "The activated release failed its acceptance contract." }
+        ? {
+            error: rollbackPerformed
+              ? "The activated release failed acceptance and production was restored to the previous version."
+              : "The activated release failed acceptance and no previous version was available for automatic restoration.",
+          }
         : {}),
     });
     return { operation, receipt, receiptPath };
@@ -672,7 +717,12 @@ export function register(program: Command): void {
     .option("--start <command>", "Application start command")
     .option("--install-command <command>", "Dependency install command")
     .option("--no-install", "Skip dependency installation")
-    .option("--timeout <seconds>", "Readiness timeout", (value) => Number(value), 600)
+    .option(
+      "--timeout <seconds>",
+      "Readiness timeout",
+      (value) => Number(value),
+      600,
+    )
     .option("--probe-path <path>", "Readiness probe path", "/")
     .option("--json", "Output compact machine-readable JSON")
     .action(
@@ -830,7 +880,12 @@ export function register(program: Command): void {
       "Atomically promote one exact immutable release and verify it end to end",
     )
     .option("--contract <file>", "Acceptance contract JSON path")
-    .option("--timeout <seconds>", "Activation timeout", (value) => Number(value), 600)
+    .option(
+      "--timeout <seconds>",
+      "Activation timeout",
+      (value) => Number(value),
+      600,
+    )
     .option("--idempotency-key <key>", "Reuse an operation idempotency key")
     .option("-y, --yes", "Skip confirmation")
     .option("--json", "Output the stable operation and release receipt")
@@ -883,16 +938,15 @@ export function register(program: Command): void {
                   ? null
                   : {
                       code: "RELEASE_ACCEPTANCE_BLOCKED",
-                      message: "Promotion completed but acceptance was blocked.",
+                      message:
+                        "Promotion completed but acceptance was blocked.",
                     },
             });
             return;
           }
           console.log(
             result.receipt.result === "verified"
-              ? chalk.green.bold(
-                  `Release ${releaseId} is active and verified.`,
-                )
+              ? chalk.green.bold(`Release ${releaseId} is active and verified.`)
               : chalk.red.bold(
                   `Release ${releaseId} activated but failed acceptance.`,
                 ),
@@ -911,7 +965,12 @@ export function register(program: Command): void {
     .argument("[path]", "Local app directory", ".")
     .description("Rollback code to one exact immutable release and verify it")
     .option("--contract <file>", "Acceptance contract JSON path")
-    .option("--timeout <seconds>", "Activation timeout", (value) => Number(value), 600)
+    .option(
+      "--timeout <seconds>",
+      "Activation timeout",
+      (value) => Number(value),
+      600,
+    )
     .option("--idempotency-key <key>", "Reuse an operation idempotency key")
     .option(
       "--acknowledge-data-risk",
@@ -982,10 +1041,13 @@ export function register(program: Command): void {
                 receipt: result.receipt,
                 receipt_path: result.receiptPath,
               },
-              error: result.receipt.result === "verified" ? null : {
-                code: "ROLLBACK_ACCEPTANCE_BLOCKED",
-                message: "Rollback completed but acceptance was blocked.",
-              },
+              error:
+                result.receipt.result === "verified"
+                  ? null
+                  : {
+                      code: "ROLLBACK_ACCEPTANCE_BLOCKED",
+                      message: "Rollback completed but acceptance was blocked.",
+                    },
             });
             return;
           }
@@ -1003,12 +1065,38 @@ export function register(program: Command): void {
     );
 
   app
+    .command("status <operation-id>")
+    .description("Read durable deployment operation status from MIOSA")
+    .option("--json", "Output machine-readable operation state")
+    .action(async (operationId: string, opts: { json?: boolean }) => {
+      try {
+        const payload = deploymentPayload(
+          await new MiosaClient(loadConfig()).apiGet<unknown>(
+            `/api/v1/operations/${encodeURIComponent(operationId)}`,
+          ),
+        );
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: payload, error: null });
+          return;
+        }
+        console.log(JSON.stringify(payload, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  app
     .command("recover <operation-id>")
     .argument("[path]", "Local app directory", ".")
     .description("Inspect or safely resume an interrupted app operation")
     .option("--resume", "Retry the operation with its original idempotency key")
     .option("--contract <file>", "Acceptance contract JSON path")
-    .option("--timeout <seconds>", "Activation timeout", (value) => Number(value), 600)
+    .option(
+      "--timeout <seconds>",
+      "Activation timeout",
+      (value) => Number(value),
+      600,
+    )
     .option("--json", "Output machine-readable operation state")
     .action(
       async (
@@ -1025,7 +1113,26 @@ export function register(program: Command): void {
           const dir = path.resolve(inputPath);
           const existing = loadApplicationOperation(dir, operationId);
           if (!existing) {
-            throw new UserError(`Application operation not found: ${operationId}`);
+            throw new UserError(
+              `Application operation not found: ${operationId}`,
+            );
+          }
+          if (existing.server_operation_id && !opts.resume) {
+            const remote = deploymentPayload(
+              await new MiosaClient(loadConfig()).apiGet<unknown>(
+                `/api/v1/operations/${encodeURIComponent(existing.server_operation_id)}`,
+              ),
+            );
+            if (isJsonMode(opts)) {
+              printJson({
+                ok: true,
+                data: { local: existing, remote },
+                error: null,
+              });
+            } else {
+              console.log(JSON.stringify({ local: existing, remote }, null, 2));
+            }
+            return;
           }
           if (!opts.resume || existing.state === "succeeded") {
             if (isJsonMode(opts)) {
@@ -1048,9 +1155,7 @@ export function register(program: Command): void {
             printJson({ ok: true, data: result, error: null });
           } else {
             console.log(
-              chalk.green(
-                `Operation resumed and ${result.receipt.result}.`,
-              ),
+              chalk.green(`Operation resumed and ${result.receipt.result}.`),
             );
           }
         } catch (err) {

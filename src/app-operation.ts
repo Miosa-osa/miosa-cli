@@ -3,14 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 export type ApplicationOperationState =
-  | "pending"
-  | "succeeded"
-  | "failed"
-  | "blocked";
+  "pending" | "succeeded" | "failed" | "blocked";
 
 export interface ApplicationOperation {
   schema_version: 1;
   operation_id: string;
+  server_operation_id?: string;
   idempotency_key: string;
   action: "promote" | "rollback";
   deployment_id: string;
