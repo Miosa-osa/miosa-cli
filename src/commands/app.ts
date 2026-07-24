@@ -90,7 +90,10 @@ function boolValue(value: unknown, key: string): boolean | undefined {
   return typeof found === "boolean" ? found : undefined;
 }
 
-function parseJsonObject(value: string | undefined, option: string): Record<string, unknown> {
+function parseJsonObject(
+  value: string | undefined,
+  option: string,
+): Record<string, unknown> {
   if (!value) return {};
 
   let parsed: unknown;
@@ -319,7 +322,8 @@ async function verifyLinkedRelease(
     inspection.migration_verified ||
     verificationEvidence?.migration_verified === true;
   inspection.policy_verified =
-    inspection.policy_verified || verificationEvidence?.policy_verified === true;
+    inspection.policy_verified ||
+    verificationEvidence?.policy_verified === true;
   const receipt = await verifyApplicationRelease(
     {
       application: link.name,
@@ -850,14 +854,18 @@ export function register(program: Command): void {
   documents
     .command("approve <id>")
     .description("Approve the current exact app version for release publishing")
+    .requiredOption("--release <id>", "Immutable candidate release ID")
     .option("--reason <reason>", "Review reason")
     .option("--json", "Output the exact approval")
     .action(
-      async (id: string, opts: { reason?: string; json?: boolean }) => {
+      async (
+        id: string,
+        opts: { release: string; reason?: string; json?: boolean },
+      ) => {
         try {
           const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
             `/api/v1/builder/apps/${encodeURIComponent(id)}/approvals`,
-            { reason: opts.reason },
+            { reason: opts.reason, release_id: opts.release },
           );
           if (isJsonMode(opts)) {
             printJson({ ok: true, data: payload, error: null });
@@ -875,31 +883,26 @@ export function register(program: Command): void {
     .description("Revoke one exact-version review approval")
     .requiredOption("--approval <id>", "Approval ID")
     .option("--json", "Output machine-readable result")
-    .action(
-      async (
-        id: string,
-        opts: { approval: string; json?: boolean },
-      ) => {
-        try {
-          await new MiosaClient(loadConfig()).apiPost<unknown>(
-            `/api/v1/builder/apps/${encodeURIComponent(id)}/approvals/${encodeURIComponent(opts.approval)}/revoke`,
-            {},
-          );
-          const result = {
-            app_document_id: id,
-            approval_id: opts.approval,
-            revoked: true,
-          };
-          if (isJsonMode(opts)) {
-            printJson({ ok: true, data: result, error: null });
-            return;
-          }
-          console.log(JSON.stringify(result, null, 2));
-        } catch (err) {
-          handleError(err);
+    .action(async (id: string, opts: { approval: string; json?: boolean }) => {
+      try {
+        await new MiosaClient(loadConfig()).apiPost<unknown>(
+          `/api/v1/builder/apps/${encodeURIComponent(id)}/approvals/${encodeURIComponent(opts.approval)}/revoke`,
+          {},
+        );
+        const result = {
+          app_document_id: id,
+          approval_id: opts.approval,
+          revoked: true,
+        };
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: result, error: null });
+          return;
         }
-      },
-    );
+        console.log(JSON.stringify(result, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
 
   const data = documents
     .command("data")
