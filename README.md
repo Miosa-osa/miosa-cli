@@ -64,7 +64,8 @@ miosa actions receipts --limit 50
 
 Owners and administrators can create exact standing grants for a principal, capability version, and optional workspace.
 One-time approvals are consumed atomically and cannot be replayed.
-`miosa doctor` verifies that the authenticated control plane publishes a complete version-pinned authority catalog.
+`miosa doctor` compares the authenticated control plane against the CLI's generated portable identity contract.
+It fails when a capability is missing, stale, or unexpected instead of treating a merely nonempty catalog as healthy.
 
 ## AWS BYOC host pools
 

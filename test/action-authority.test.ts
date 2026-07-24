@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
 import {
+  ACTION_CAPABILITY_IDENTITIES,
   ActionAuthorityClient,
+  actionCatalogConformance,
   canonicalJson,
   fingerprint,
 } from "../src/action-authority.js";
@@ -93,5 +95,57 @@ describe("ActionAuthorityClient", () => {
     await expect(client().authorize("unknown.action", {})).rejects.toThrow(
       "is not registered",
     );
+  });
+
+  it("proves the live server catalog exactly matches the pinned identity contract", () => {
+    const liveCatalog = ACTION_CAPABILITY_IDENTITIES.map((identity) => ({
+      ...identity,
+      risk: "read" as const,
+      scope: "workspace" as const,
+      approval: "never" as const,
+    }));
+
+    expect(actionCatalogConformance(liveCatalog)).toEqual({
+      ok: true,
+      missing: [],
+      stale: [],
+      unexpected: [],
+    });
+  });
+
+  it("reports missing, stale, and unexpected live capabilities separately", () => {
+    const [first, second, ...remaining] = ACTION_CAPABILITY_IDENTITIES;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    const liveCatalog = [
+      {
+        ...second!,
+        fingerprint: `sha256:${"0".repeat(64)}`,
+        risk: "read" as const,
+        scope: "workspace" as const,
+        approval: "never" as const,
+      },
+      ...remaining.map((identity) => ({
+        ...identity,
+        risk: "read" as const,
+        scope: "workspace" as const,
+        approval: "never" as const,
+      })),
+      {
+        name: "unexpected.capability",
+        version: "1.0.0",
+        fingerprint: `sha256:${"f".repeat(64)}`,
+        risk: "read" as const,
+        scope: "workspace" as const,
+        approval: "never" as const,
+      },
+    ];
+
+    expect(actionCatalogConformance(liveCatalog)).toMatchObject({
+      ok: false,
+      missing: [first!.name],
+      stale: [second!.name],
+      unexpected: ["unexpected.capability"],
+    });
   });
 });
