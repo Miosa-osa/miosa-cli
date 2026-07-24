@@ -25,6 +25,7 @@ import {
   updateApplicationOperation,
 } from "../app-operation.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
+import { diagnoseAppDocument } from "../app-document.js";
 
 interface AppCommandOptions {
   json?: boolean;
@@ -710,6 +711,149 @@ export function register(program: Command): void {
           console.log(chalk.green(`Linked ${name} to ${dir}.`));
           console.log(chalk.dim(`Deployment: ${id}`));
           console.log(chalk.dim(`Environment: ${opts.environment}`));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  const documents = app
+    .command("documents")
+    .description("Inspect durable generated App Documents");
+
+  documents
+    .command("list")
+    .description("List durable apps in the selected workspace")
+    .option("--workspace <id>", "Workspace ID")
+    .option("--json", "Output machine-readable App Documents")
+    .action(async (opts: { workspace?: string; json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const workspaceId = opts.workspace ?? config.workspace;
+        if (!workspaceId) {
+          throw new UserError(
+            "A workspace is required to list App Documents.",
+            "Pass --workspace <id> or select a CLI workspace context.",
+          );
+        }
+        const query = new URLSearchParams({ workspace_id: workspaceId });
+        const payload = await new MiosaClient(config).apiGet<unknown>(
+          `/api/v1/builder/apps?${query.toString()}`,
+        );
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: payload, error: null });
+          return;
+        }
+        console.log(JSON.stringify(payload, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  documents
+    .command("show <id>")
+    .description("Show one durable App Document")
+    .option("--json", "Output machine-readable App Document")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      try {
+        const payload = await new MiosaClient(loadConfig()).apiGet<unknown>(
+          `/api/v1/builder/apps/${encodeURIComponent(id)}`,
+        );
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: payload, error: null });
+          return;
+        }
+        console.log(JSON.stringify(payload, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  documents
+    .command("doctor <id>")
+    .description("Verify workspace, venue, declarations, and exact approval")
+    .option("--workspace <id>", "Expected workspace ID")
+    .option("--json", "Output a stable diagnostic contract")
+    .action(
+      async (id: string, opts: { workspace?: string; json?: boolean }) => {
+        try {
+          const config = loadConfig();
+          const payload = await new MiosaClient(config).apiGet<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}`,
+          );
+          const result = diagnoseAppDocument(
+            payload,
+            opts.workspace ?? config.workspace,
+          );
+          if (isJsonMode(opts)) {
+            printJson({
+              ok: result.ok,
+              data: result,
+              error: result.ok
+                ? null
+                : {
+                    code: "APP_DOCUMENT_DIAGNOSTIC_FAILED",
+                    message: "One or more App Document checks failed.",
+                  },
+            });
+          } else {
+            console.log(JSON.stringify(result, null, 2));
+          }
+          if (!result.ok) process.exitCode = 1;
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  documents
+    .command("approve <id>")
+    .description("Approve the current exact app version for release publishing")
+    .option("--reason <reason>", "Review reason")
+    .option("--json", "Output the exact approval")
+    .action(
+      async (id: string, opts: { reason?: string; json?: boolean }) => {
+        try {
+          const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/approvals`,
+            { reason: opts.reason },
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  documents
+    .command("revoke <id>")
+    .description("Revoke one exact-version review approval")
+    .requiredOption("--approval <id>", "Approval ID")
+    .option("--json", "Output machine-readable result")
+    .action(
+      async (
+        id: string,
+        opts: { approval: string; json?: boolean },
+      ) => {
+        try {
+          await new MiosaClient(loadConfig()).apiPost<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/approvals/${encodeURIComponent(opts.approval)}/revoke`,
+            {},
+          );
+          const result = {
+            app_document_id: id,
+            approval_id: opts.approval,
+            revoked: true,
+          };
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: result, error: null });
+            return;
+          }
+          console.log(JSON.stringify(result, null, 2));
         } catch (err) {
           handleError(err);
         }

@@ -133,6 +133,19 @@ miosa app recover <operation-id> . --resume --json
 miosa app rollback <release-id> . --yes --json
 ```
 
+MIOSA App Builder stores generated apps as durable, workspace-scoped App Documents.
+Use the CLI to inspect the same records, verify their venue and declared authority, and manage exact-version review approvals.
+
+```bash
+miosa app documents list --workspace <workspace-id> --json
+miosa app documents show <app-document-id> --json
+miosa app documents doctor <app-document-id> --workspace <workspace-id> --json
+miosa app documents approve <app-document-id> --reason "Reviewed" --json
+miosa app documents revoke <app-document-id> --approval <approval-id> --json
+```
+
+The doctor fails when the workspace does not match, a published version lacks an exact release binding, the document shape is invalid, or an approval belongs to an older edited version.
+
 Declare application-specific acceptance requirements in `.miosa/acceptance.json`.
 The default contract requires HTTP 200 from `/`.
 

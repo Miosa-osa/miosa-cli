@@ -127,6 +127,49 @@ describe("miosa app", () => {
     );
   });
 
+  it("doctors a durable App Document in the selected workspace", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          id: "app_123",
+          workspace_id: "ws_123",
+          version_hash: "sha256:exact",
+          version_approved: true,
+          approval: { version_hash: "sha256:exact" },
+          document: {
+            format: "miosa-app/v1",
+            view: { kind: "generated", source: "<main />" },
+            capabilities: ["computer.exec"],
+            connectors: ["github"],
+            automations: [],
+          },
+        },
+      });
+
+    const payload = (await runJson([
+      "app",
+      "documents",
+      "doctor",
+      "app_123",
+      "--json",
+    ])) as {
+      ok: boolean;
+      data: { workspace_id: string; version_hash: string };
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.data.workspace_id).toBe("ws_123");
+    expect(payload.data.version_hash).toBe("sha256:exact");
+  });
+
   it("links a local directory to one exact deployment and workspace", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
