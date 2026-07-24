@@ -90,6 +90,40 @@ function boolValue(value: unknown, key: string): boolean | undefined {
   return typeof found === "boolean" ? found : undefined;
 }
 
+function parseJsonObject(value: string | undefined, option: string): Record<string, unknown> {
+  if (!value) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new UserError(
+      `${option} must be valid JSON.`,
+      `Pass a JSON object, for example ${option} '{"enabled":true}'.`,
+    );
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new UserError(
+      `${option} must be a JSON object.`,
+      `Pass an object, not ${Array.isArray(parsed) ? "an array" : typeof parsed}.`,
+    );
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+function parseNonNegativeInteger(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new UserError(
+      `${option} must be a non-negative integer.`,
+      `Received ${JSON.stringify(value)}.`,
+    );
+  }
+  return parsed;
+}
+
 export async function getRelease(
   client: MiosaClient,
   deploymentId: string,
@@ -861,6 +895,286 @@ export function register(program: Command): void {
             return;
           }
           console.log(JSON.stringify(result, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  const data = documents
+    .command("data")
+    .description("Read and write declared durable app collections");
+
+  data
+    .command("list <id> <collection>")
+    .description("List records in one declared app collection")
+    .option("--limit <count>", "Maximum records", "100")
+    .option("--json", "Output machine-readable records")
+    .action(
+      async (
+        id: string,
+        collection: string,
+        opts: { limit: string; json?: boolean },
+      ) => {
+        try {
+          const limit = parseNonNegativeInteger(opts.limit, "--limit");
+          const payload = await new MiosaClient(loadConfig()).apiGet<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/data/${encodeURIComponent(collection)}?limit=${limit}`,
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  data
+    .command("get <id> <collection> <key>")
+    .description("Read one exact app collection record")
+    .option("--json", "Output a machine-readable record")
+    .action(
+      async (
+        id: string,
+        collection: string,
+        key: string,
+        opts: { json?: boolean },
+      ) => {
+        try {
+          const payload = await new MiosaClient(loadConfig()).apiGet<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/data/${encodeURIComponent(collection)}/${encodeURIComponent(key)}`,
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  data
+    .command("put <id> <collection> <key>")
+    .description("Create or update one app collection record")
+    .requiredOption("--value <json>", "JSON object value")
+    .option("--expected-version <number>", "Exact current version")
+    .option("--json", "Output the stored record")
+    .action(
+      async (
+        id: string,
+        collection: string,
+        key: string,
+        opts: { value: string; expectedVersion?: string; json?: boolean },
+      ) => {
+        try {
+          const body: Record<string, unknown> = {
+            value: parseJsonObject(opts.value, "--value"),
+          };
+          if (opts.expectedVersion !== undefined) {
+            body["expected_version"] = parseNonNegativeInteger(
+              opts.expectedVersion,
+              "--expected-version",
+            );
+          }
+          const payload = await new MiosaClient(loadConfig()).apiPut<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/data/${encodeURIComponent(collection)}/${encodeURIComponent(key)}`,
+            body,
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  data
+    .command("delete <id> <collection> <key>")
+    .description("Delete one exact app collection record")
+    .option("--expected-version <number>", "Exact current version")
+    .option("--json", "Output machine-readable result")
+    .action(
+      async (
+        id: string,
+        collection: string,
+        key: string,
+        opts: { expectedVersion?: string; json?: boolean },
+      ) => {
+        try {
+          const query =
+            opts.expectedVersion === undefined
+              ? ""
+              : `?expected_version=${parseNonNegativeInteger(opts.expectedVersion, "--expected-version")}`;
+          await new MiosaClient(loadConfig()).apiDelete<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/data/${encodeURIComponent(collection)}/${encodeURIComponent(key)}${query}`,
+          );
+          const result = {
+            app_document_id: id,
+            collection,
+            key,
+            deleted: true,
+          };
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: result, error: null });
+            return;
+          }
+          console.log(JSON.stringify(result, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  const automations = documents
+    .command("automations")
+    .description("Operate durable, authority-governed app automation runs");
+
+  automations
+    .command("list <id>")
+    .description("List automation runs for one app")
+    .option("--limit <count>", "Maximum runs", "100")
+    .option("--json", "Output machine-readable runs")
+    .action(async (id: string, opts: { limit: string; json?: boolean }) => {
+      try {
+        const limit = parseNonNegativeInteger(opts.limit, "--limit");
+        const payload = await new MiosaClient(loadConfig()).apiGet<unknown>(
+          `/api/v1/builder/apps/${encodeURIComponent(id)}/automation-runs?limit=${limit}`,
+        );
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: payload, error: null });
+          return;
+        }
+        console.log(JSON.stringify(payload, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  automations
+    .command("start <id> <automation>")
+    .description("Start one reviewed automation")
+    .option("--trigger <json>", "Trigger metadata JSON", "{}")
+    .option("--json", "Output the durable run")
+    .action(
+      async (
+        id: string,
+        automation: string,
+        opts: { trigger: string; json?: boolean },
+      ) => {
+        try {
+          const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/automations/${encodeURIComponent(automation)}/runs`,
+            { trigger: parseJsonObject(opts.trigger, "--trigger") },
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  automations
+    .command("claim <id> <run>")
+    .description("Claim or resume the current automation step")
+    .option("--json", "Output the exact authority-bound claim")
+    .action(async (id: string, run: string, opts: { json?: boolean }) => {
+      try {
+        const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
+          `/api/v1/builder/apps/${encodeURIComponent(id)}/automation-runs/${encodeURIComponent(run)}/claim`,
+          {},
+        );
+        if (isJsonMode(opts)) {
+          printJson({ ok: true, data: payload, error: null });
+          return;
+        }
+        console.log(JSON.stringify(payload, null, 2));
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  automations
+    .command("complete <id> <run>")
+    .description("Complete the exact claimed automation step")
+    .requiredOption("--cursor <number>", "Claimed step cursor")
+    .requiredOption("--idempotency-key <key>", "Claimed idempotency key")
+    .option("--output <json>", "Step output JSON object", "{}")
+    .option("--json", "Output the updated run")
+    .action(
+      async (
+        id: string,
+        run: string,
+        opts: {
+          cursor: string;
+          idempotencyKey: string;
+          output: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/automation-runs/${encodeURIComponent(run)}/complete`,
+            {
+              cursor: parseNonNegativeInteger(opts.cursor, "--cursor"),
+              idempotency_key: opts.idempotencyKey,
+              output: parseJsonObject(opts.output, "--output"),
+            },
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
+
+  automations
+    .command("fail <id> <run>")
+    .description("Fail the exact claimed automation step")
+    .requiredOption("--cursor <number>", "Claimed step cursor")
+    .requiredOption("--idempotency-key <key>", "Claimed idempotency key")
+    .requiredOption("--reason <reason>", "Failure reason")
+    .option("--json", "Output the updated run")
+    .action(
+      async (
+        id: string,
+        run: string,
+        opts: {
+          cursor: string;
+          idempotencyKey: string;
+          reason: string;
+          json?: boolean;
+        },
+      ) => {
+        try {
+          const payload = await new MiosaClient(loadConfig()).apiPost<unknown>(
+            `/api/v1/builder/apps/${encodeURIComponent(id)}/automation-runs/${encodeURIComponent(run)}/fail`,
+            {
+              cursor: parseNonNegativeInteger(opts.cursor, "--cursor"),
+              idempotency_key: opts.idempotencyKey,
+              reason: opts.reason,
+            },
+          );
+          if (isJsonMode(opts)) {
+            printJson({ ok: true, data: payload, error: null });
+            return;
+          }
+          console.log(JSON.stringify(payload, null, 2));
         } catch (err) {
           handleError(err);
         }

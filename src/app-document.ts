@@ -9,6 +9,7 @@ export interface AppDocumentDiagnostic {
   capabilities: string[];
   connectors: string[];
   automations: number;
+  bindings: number;
   compiled_requirements: Record<string, unknown> | null;
   platform_issues: Array<Record<string, unknown>>;
   checks: Array<{
@@ -70,6 +71,12 @@ export function diagnoseAppDocument(
   const automations = Array.isArray(document["automations"])
     ? document["automations"].length
     : 0;
+  const bindings = Array.isArray(document["bindings"])
+    ? document["bindings"].map(record)
+    : [];
+  const bindingIds = bindings
+    .map((binding) => stringValue(binding, "id"))
+    .filter((id): id is string => Boolean(id));
   const platformDiagnostics = record(
     Object.keys(record(record(rawPlatformDiagnostics)["data"])).length
       ? record(rawPlatformDiagnostics)["data"]
@@ -175,17 +182,23 @@ export function diagnoseAppDocument(
       id: "declaration_integrity",
       ok:
         new Set(capabilities).size === capabilities.length &&
-        new Set(connectors).size === connectors.length,
+        new Set(connectors).size === connectors.length &&
+        bindingIds.length === bindings.length &&
+        new Set(bindingIds).size === bindingIds.length,
       detail:
         new Set(capabilities).size === capabilities.length &&
-        new Set(connectors).size === connectors.length
-          ? "Capability and connector declarations contain no duplicate grants."
-          : "Capability or connector declarations contain duplicates.",
+        new Set(connectors).size === connectors.length &&
+        bindingIds.length === bindings.length &&
+        new Set(bindingIds).size === bindingIds.length
+          ? "Capability, connector, and shape-binding declarations are complete and unique."
+          : "Capability, connector, or shape-binding declarations are incomplete or duplicated.",
       recovery:
         new Set(capabilities).size === capabilities.length &&
-        new Set(connectors).size === connectors.length
+        new Set(connectors).size === connectors.length &&
+        bindingIds.length === bindings.length &&
+        new Set(bindingIds).size === bindingIds.length
           ? null
-          : "Remove duplicate declarations and save a new exact version.",
+          : "Add every binding ID, remove duplicate declarations, and save a new exact version.",
     },
     {
       id: "platform_requirements",
@@ -215,6 +228,7 @@ export function diagnoseAppDocument(
     capabilities,
     connectors,
     automations,
+    bindings: bindings.length,
     compiled_requirements: compiledRequirements,
     platform_issues: platformIssues,
     checks,

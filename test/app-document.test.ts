@@ -26,7 +26,34 @@ describe("diagnoseAppDocument", () => {
     expect(result.ok).toBe(true);
     expect(result.venue).toBe("generated");
     expect(result.automations).toBe(1);
+    expect(result.bindings).toBe(0);
     expect(result.publication_current).toBe(false);
+  });
+
+  it("rejects duplicate or unidentified shape bindings", () => {
+    const result = diagnoseAppDocument({
+      id: "app-1",
+      workspace_id: "workspace-1",
+      version_hash: "sha256:exact",
+      version_approved: false,
+      document: {
+        format: "miosa-app/v1",
+        view: { kind: "generated", source: "<main />" },
+        capabilities: [],
+        connectors: [],
+        automations: [],
+        bindings: [
+          { id: "customer-name", capability: "computer.exec@1.0.0" },
+          { id: "customer-name", capability: "computer.exec@1.0.0" },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.bindings).toBe(2);
+    expect(
+      result.checks.find((check) => check.id === "declaration_integrity")?.ok,
+    ).toBe(false);
   });
 
   it("fails a served app that lacks an exact release pin", () => {
