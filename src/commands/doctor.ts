@@ -13,7 +13,10 @@ import {
   redactKey,
 } from "../config.js";
 import { MiosaClient } from "../client.js";
-import { ActionAuthorityClient } from "../action-authority.js";
+import {
+  ActionAuthorityClient,
+  actionCatalogConformance,
+} from "../action-authority.js";
 import { handleError, isJsonMode, printJson } from "./util.js";
 import {
   banner,
@@ -345,17 +348,34 @@ export function register(program: Command): void {
                   capability.scope &&
                   capability.approval,
               );
+              const conformance = actionCatalogConformance(catalog);
+              const healthy = complete && conformance.ok;
+              const mismatch = [
+                conformance.missing.length > 0
+                  ? `missing ${conformance.missing.length}`
+                  : null,
+                conformance.stale.length > 0
+                  ? `stale ${conformance.stale.length}`
+                  : null,
+                conformance.unexpected.length > 0
+                  ? `unexpected ${conformance.unexpected.length}`
+                  : null,
+              ]
+                .filter((item): item is string => item !== null)
+                .join(", ");
               checks.push({
                 name: "Action authority",
-                ok: catalog.length > 0 && complete,
+                ok: healthy,
                 detail:
-                  catalog.length > 0 && complete
-                    ? `${catalog.length} version-pinned capabilities`
-                    : "catalog is empty or malformed",
+                  healthy
+                    ? `${catalog.length} version-pinned capabilities, exact contract match`
+                    : complete
+                      ? `catalog mismatch: ${mismatch}`
+                      : "catalog is empty or malformed",
                 fix:
-                  catalog.length > 0 && complete
+                  healthy
                     ? undefined
-                    : "Upgrade the control plane before enabling agent actions.",
+                    : "Upgrade the CLI and control plane to the same capability contract before enabling agent actions.",
                 section: "Authority",
               });
             } catch (err) {

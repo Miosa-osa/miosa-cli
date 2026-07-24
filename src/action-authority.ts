@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import type { MiosaClient } from "./client.js";
+import { ACTION_CAPABILITY_IDENTITIES } from "./generated/action-capabilities.js";
+
+export { ACTION_CAPABILITY_IDENTITIES } from "./generated/action-capabilities.js";
 
 export interface ActionCapability {
   name: string;
@@ -71,6 +74,45 @@ export interface ActionReceipt {
 
 interface DataEnvelope<T> {
   data: T;
+}
+
+export interface ActionCatalogConformance {
+  ok: boolean;
+  missing: string[];
+  stale: string[];
+  unexpected: string[];
+}
+
+export function actionCatalogConformance(
+  liveCatalog: ActionCapability[],
+): ActionCatalogConformance {
+  const expected = new Map<
+    string,
+    { name: string; version: string; fingerprint: string }
+  >(
+    ACTION_CAPABILITY_IDENTITIES.map((identity) => [identity.name, identity]),
+  );
+  const live = new Map(liveCatalog.map((capability) => [capability.name, capability]));
+
+  const missing = [...expected.keys()].filter((name) => !live.has(name));
+  const stale = [...expected.entries()]
+    .filter(([name, identity]) => {
+      const capability = live.get(name);
+      return (
+        capability !== undefined &&
+        (capability.version !== identity.version ||
+          capability.fingerprint !== identity.fingerprint)
+      );
+    })
+    .map(([name]) => name);
+  const unexpected = [...live.keys()].filter((name) => !expected.has(name));
+
+  return {
+    ok: missing.length === 0 && stale.length === 0 && unexpected.length === 0,
+    missing,
+    stale,
+    unexpected,
+  };
 }
 
 export class ActionAuthorityClient {
