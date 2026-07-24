@@ -127,6 +127,172 @@ describe("miosa app", () => {
     );
   });
 
+  it("doctors a durable App Document in the selected workspace", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          id: "app_123",
+          workspace_id: "ws_123",
+          version_hash: "sha256:exact",
+          version_approved: true,
+          approval: { version_hash: "sha256:exact" },
+          document: {
+            format: "miosa-app/v1",
+            view: { kind: "generated", source: "<main />" },
+            capabilities: ["computer.exec"],
+            connectors: ["github"],
+            automations: [],
+          },
+        },
+      });
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123/diagnostics",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          ok: true,
+          issues: [],
+          manifest: {
+            capabilities: [
+              {
+                name: "computer.exec",
+                version: "1.0.0",
+                fingerprint: "sha256:exact",
+              },
+            ],
+            connectors: [{ id: "connector_123", uid: "github" }],
+            automations: [],
+            collections: [],
+            pins: [],
+          },
+        },
+      });
+
+    const payload = (await runJson([
+      "app",
+      "documents",
+      "doctor",
+      "app_123",
+      "--json",
+    ])) as {
+      ok: boolean;
+      data: {
+        workspace_id: string;
+        version_hash: string;
+        compiled_requirements: { connectors: Array<{ uid: string }> };
+      };
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.data.workspace_id).toBe("ws_123");
+    expect(payload.data.version_hash).toBe("sha256:exact");
+    expect(payload.data.compiled_requirements.connectors[0]?.uid).toBe(
+      "github",
+    );
+  });
+
+  it("writes durable app data with an exact expected version", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123/data/customers/customer-1",
+        method: "PUT",
+        body: JSON.stringify({
+          value: { name: "Ada" },
+          expected_version: 4,
+        }),
+      })
+      .reply(200, {
+        data: {
+          key: "customer-1",
+          collection: "customers",
+          value: { name: "Ada" },
+          version: 5,
+        },
+      });
+
+    const payload = (await runJson([
+      "app",
+      "documents",
+      "data",
+      "put",
+      "app_123",
+      "customers",
+      "customer-1",
+      "--value",
+      '{"name":"Ada"}',
+      "--expected-version",
+      "4",
+      "--json",
+    ])) as {
+      ok: boolean;
+      data: { data: { version: number } };
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.data.data.version).toBe(5);
+  });
+
+  it("completes only the exact durable automation claim", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123/automation-runs/run_123/complete",
+        method: "POST",
+        body: JSON.stringify({
+          cursor: 0,
+          idempotency_key: "run_123:0",
+          output: { rows: 3 },
+        }),
+      })
+      .reply(200, {
+        data: {
+          id: "run_123",
+          cursor: 1,
+          status: "completed",
+        },
+      });
+
+    const payload = (await runJson([
+      "app",
+      "documents",
+      "automations",
+      "complete",
+      "app_123",
+      "run_123",
+      "--cursor",
+      "0",
+      "--idempotency-key",
+      "run_123:0",
+      "--output",
+      '{"rows":3}',
+      "--json",
+    ])) as {
+      ok: boolean;
+      data: { data: { status: string } };
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.data.data.status).toBe("completed");
+  });
+
   it("links a local directory to one exact deployment and workspace", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
