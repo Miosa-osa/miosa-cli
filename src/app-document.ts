@@ -9,6 +9,8 @@ export interface AppDocumentDiagnostic {
   capabilities: string[];
   connectors: string[];
   automations: number;
+  compiled_requirements: Record<string, unknown> | null;
+  platform_issues: Array<Record<string, unknown>>;
   checks: Array<{
     id: string;
     ok: boolean;
@@ -37,6 +39,7 @@ function stringValue(value: unknown, key: string): string | null {
 export function diagnoseAppDocument(
   raw: unknown,
   expectedWorkspaceId?: string | null,
+  rawPlatformDiagnostics?: unknown,
 ): AppDocumentDiagnostic {
   const outer = record(raw);
   const app = Object.keys(record(outer["data"])).length
@@ -67,6 +70,22 @@ export function diagnoseAppDocument(
   const automations = Array.isArray(document["automations"])
     ? document["automations"].length
     : 0;
+  const platformDiagnostics = record(
+    Object.keys(record(record(rawPlatformDiagnostics)["data"])).length
+      ? record(rawPlatformDiagnostics)["data"]
+      : rawPlatformDiagnostics,
+  );
+  const platformIssues = Array.isArray(platformDiagnostics["issues"])
+    ? platformDiagnostics["issues"].map(record)
+    : [];
+  const compiledRequirements = Object.keys(
+    record(platformDiagnostics["manifest"]),
+  ).length
+    ? record(platformDiagnostics["manifest"])
+    : null;
+  const platformDiagnosticsProvided = rawPlatformDiagnostics !== undefined;
+  const platformReady =
+    !platformDiagnosticsProvided || platformDiagnostics["ok"] === true;
 
   const checks = [
     {
@@ -168,6 +187,20 @@ export function diagnoseAppDocument(
           ? null
           : "Remove duplicate declarations and save a new exact version.",
     },
+    {
+      id: "platform_requirements",
+      ok: platformReady,
+      detail: platformReady
+        ? platformDiagnosticsProvided
+          ? "Capabilities, connector installations, automations, component pins, and app-data namespaces compile against current MIOSA authorities."
+          : "Platform requirement diagnostics were not requested by this caller."
+        : platformIssues.length > 0
+          ? `Platform compilation reported ${platformIssues.length} issue(s).`
+          : "Platform requirement diagnostics were unavailable.",
+      recovery: platformReady
+        ? null
+        : "Resolve every server-reported requirement issue before approving or publishing this app.",
+    },
   ];
 
   return {
@@ -182,6 +215,8 @@ export function diagnoseAppDocument(
     capabilities,
     connectors,
     automations,
+    compiled_requirements: compiledRequirements,
+    platform_issues: platformIssues,
     checks,
   };
 }

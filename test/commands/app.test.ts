@@ -153,6 +153,31 @@ describe("miosa app", () => {
           },
         },
       });
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/builder/apps/app_123/diagnostics",
+        method: "GET",
+      })
+      .reply(200, {
+        data: {
+          ok: true,
+          issues: [],
+          manifest: {
+            capabilities: [
+              {
+                name: "computer.exec",
+                version: "1.0.0",
+                fingerprint: "sha256:exact",
+              },
+            ],
+            connectors: [{ id: "connector_123", uid: "github" }],
+            automations: [],
+            collections: [],
+            pins: [],
+          },
+        },
+      });
 
     const payload = (await runJson([
       "app",
@@ -162,12 +187,19 @@ describe("miosa app", () => {
       "--json",
     ])) as {
       ok: boolean;
-      data: { workspace_id: string; version_hash: string };
+      data: {
+        workspace_id: string;
+        version_hash: string;
+        compiled_requirements: { connectors: Array<{ uid: string }> };
+      };
     };
 
     expect(payload.ok).toBe(true);
     expect(payload.data.workspace_id).toBe("ws_123");
     expect(payload.data.version_hash).toBe("sha256:exact");
+    expect(payload.data.compiled_requirements.connectors[0]?.uid).toBe(
+      "github",
+    );
   });
 
   it("links a local directory to one exact deployment and workspace", async () => {

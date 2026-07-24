@@ -778,12 +778,19 @@ export function register(program: Command): void {
       async (id: string, opts: { workspace?: string; json?: boolean }) => {
         try {
           const config = loadConfig();
-          const payload = await new MiosaClient(config).apiGet<unknown>(
-            `/api/v1/builder/apps/${encodeURIComponent(id)}`,
-          );
+          const client = new MiosaClient(config);
+          const [payload, platformDiagnostics] = await Promise.all([
+            client.apiGet<unknown>(
+              `/api/v1/builder/apps/${encodeURIComponent(id)}`,
+            ),
+            client.apiGet<unknown>(
+              `/api/v1/builder/apps/${encodeURIComponent(id)}/diagnostics`,
+            ),
+          ]);
           const result = diagnoseAppDocument(
             payload,
             opts.workspace ?? config.workspace,
+            platformDiagnostics,
           );
           if (isJsonMode(opts)) {
             printJson({
