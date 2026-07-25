@@ -19,8 +19,13 @@ import {
   type JsonOptions,
 } from "./enterprise-util.js";
 import { isJsonMode } from "../cli-env.js";
+import { MiosaClient, parseSse } from "../client.js";
 import { loadConfig } from "../config.js";
+import { UserError } from "../errors.js";
+import { toComputerId } from "../types.js";
 import { parseEnvPairs } from "./util.js";
+import { pickOne } from "../ui/picker.js";
+import { spin } from "../ui/spinner.js";
 import {
   formatDuration,
   hintBlock,
@@ -60,6 +65,185 @@ function colorStatus(status: string): string {
   if (s === "error" || s === "failed" || s === "stopped")
     return chalk.red(status);
   return chalk.dim(status || "—");
+}
+
+function friendlyComputerType(record: Record<string, unknown>): string {
+  const template = String(
+    record["template_type"] ?? record["template"] ?? "",
+  ).toLowerCase();
+  return template.includes("desktop") ? "Desktop" : "Computer";
+}
+
+async function promptForComputerDetails(): Promise<{
+  name: string;
+  size: string;
+  region: string;
+}> {
+  const { default: inquirer } = await import("inquirer");
+  return inquirer.prompt<{
+    name: string;
+    size: string;
+    region: string;
+  }>([
+    {
+      type: "input",
+      name: "name",
+      message: "What should we call your computer?",
+      default: "my-computer",
+      validate: (value: string) =>
+        value.trim().length > 0 || "Enter a name for your computer.",
+      filter: (value: string) => value.trim(),
+    },
+    {
+      type: "list",
+      name: "size",
+      message: "Choose a size",
+      default: "small",
+      choices: [
+        { name: "Small   Everyday development", value: "small" },
+        { name: "Medium  Larger builds and multitasking", value: "medium" },
+        { name: "Large   Heavy workloads", value: "large" },
+      ],
+    },
+    {
+      type: "list",
+      name: "region",
+      message: "Choose a location",
+      default: "us-mia",
+      choices: [
+        { name: "Miami", value: "us-mia" },
+        { name: "New York", value: "us-nyc" },
+        { name: "Los Angeles", value: "us-la" },
+      ],
+    },
+  ]);
+}
+
+async function resolveComputerForDesktop(
+  requested?: string,
+): Promise<Record<string, unknown>> {
+  const raw = unwrap<unknown>(
+    await client().apiGet<unknown>(apiPath("/computers")),
+  );
+  const computers = Array.isArray(raw)
+    ? (raw as Record<string, unknown>[])
+    : [];
+  const available = computers.filter((computer) =>
+    ["running", "active", "provisioning", "starting", "pending"].includes(
+      String(computer["status"] ?? "").toLowerCase(),
+    ),
+  );
+
+  if (requested) {
+    const normalized = requested.toLowerCase();
+    const match = computers.find(
+      (computer) =>
+        String(computer["id"] ?? "").toLowerCase() === normalized ||
+        String(computer["name"] ?? "").toLowerCase() === normalized,
+    );
+    if (!match) {
+      throw new UserError(
+        `Computer "${requested}" was not found.`,
+        "Run `miosa computers list` to see available computers.",
+      );
+    }
+    if (!available.includes(match)) {
+      throw new UserError(
+        `Computer "${requested}" is not running.`,
+        `Start it with \`miosa computers action ${String(match["id"])} start\`.`,
+      );
+    }
+    return match;
+  }
+
+  const picked = await pickOne(
+    available.map((computer) => ({
+      id: String(computer["id"] ?? ""),
+      label: String(computer["name"] ?? computer["id"] ?? "Unnamed computer"),
+      hint: [
+        String(computer["status"] ?? ""),
+        String(computer["region"] ?? ""),
+        String(computer["size"] ?? ""),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      data: computer,
+    })),
+    "Which desktop would you like to open?",
+  );
+  return picked.data;
+}
+
+async function waitUntilDesktopReady(
+  computer: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const ready = new Set(["running", "active"]);
+  const transitional = new Set(["provisioning", "starting", "pending"]);
+  let current = computer;
+  let status = String(current["status"] ?? "").toLowerCase();
+  if (ready.has(status)) return current;
+  if (!transitional.has(status)) return current;
+
+  const name = String(current["name"] ?? current["id"] ?? "computer");
+  const spinner = spin(`Preparing ${name}...`);
+  const deadline = Date.now() + 120_000;
+
+  while (Date.now() < deadline) {
+    await sleep(2_000);
+    current = unwrap<Record<string, unknown>>(
+      await client().apiGet<unknown>(
+        apiPath(`/computers/${enc(String(computer["id"]))}`),
+      ),
+    );
+    status = String(current["status"] ?? "").toLowerCase();
+    if (ready.has(status)) {
+      spinner.succeed(`${name} is ready`);
+      return current;
+    }
+    if (!transitional.has(status)) {
+      spinner.fail(`${name} entered status ${status || "unknown"}`);
+      throw new UserError(
+        `Computer "${name}" did not become ready.`,
+        `Inspect it with \`miosa computers show ${String(computer["id"])}\`.`,
+      );
+    }
+  }
+
+  spinner.fail(`${name} is still preparing`);
+  throw new UserError(
+    `Computer "${name}" is taking longer than expected to start.`,
+    `Check it with \`miosa computers show ${String(computer["id"])}\`, then run \`miosa computers open ${name}\` again.`,
+  );
+}
+
+async function openComputerDesktop(
+  requested: string | undefined,
+  opts: { printUrl?: boolean; json?: boolean },
+): Promise<void> {
+  const selected = await resolveComputerForDesktop(requested);
+  const computer = await waitUntilDesktopReady(selected);
+  const id = String(computer["id"]);
+  const name = String(computer["name"] ?? id);
+  const config = loadConfig();
+  const baseUrl = (config.endpoint || "https://api.miosa.ai").replace(
+    /\/$/,
+    "",
+  );
+  const url = `${baseUrl}/api/v1/computers/${enc(id)}/desktop/vnc`;
+
+  if (isJsonMode(opts)) {
+    console.log(JSON.stringify({ id, name, url }, null, 2));
+    return;
+  }
+  if (opts.printUrl) {
+    console.log(url);
+    return;
+  }
+
+  openUrl(url);
+  console.log();
+  console.log(`  ${icon.ok}  Opening ${chalk.bold(name)} in your browser`);
+  console.log();
 }
 
 function collectOption(value: string, previous: string[]): string[] {
@@ -159,7 +343,10 @@ export function register(program: Command): void {
           );
           console.log();
           console.log(
-            hintBlock("Try", ["miosa computers create --name <name>"]),
+            hintBlock("Create your first computer", [
+              "miosa computers create",
+              "miosa computers create --name boris",
+            ]),
           );
           console.log();
           return;
@@ -186,9 +373,8 @@ export function register(program: Command): void {
             color: (val) => colorStatus(val.trim()),
           },
           {
-            header: "TEMPLATE",
-            key: (r) =>
-              String(r["template_type"] ?? r["template"] ?? chalk.dim("—")),
+            header: "TYPE",
+            key: (r) => friendlyComputerType(r),
           },
           {
             header: "REGION",
@@ -241,10 +427,8 @@ export function register(program: Command): void {
             { label: "name", value: chalk.bold(String(c["name"] ?? "—")) },
             { label: "status", value: colorStatus(status) },
             {
-              label: "template",
-              value: String(
-                c["template_type"] ?? c["template"] ?? chalk.dim("—"),
-              ),
+              label: "type",
+              value: friendlyComputerType(c),
             },
             { label: "size", value: String(c["size"] ?? chalk.dim("—")) },
             { label: "region", value: String(c["region"] ?? chalk.dim("—")) },
@@ -273,8 +457,10 @@ export function register(program: Command): void {
         console.log();
         console.log(
           hintBlock("Try", [
-            `miosa exec ${id} ...`,
-            `miosa watch ${id}`,
+            `miosa computers open ${String(c["name"] ?? id)}`,
+            `miosa ssh ${String(c["name"] ?? id)}`,
+            `miosa exec ${String(c["name"] ?? id)} "pwd"`,
+            `miosa watch ${String(c["name"] ?? id)}`,
             `miosa computers action ${id} stop`,
           ]),
         );
@@ -480,10 +666,10 @@ export function register(program: Command): void {
   addDataOption(
     computers!
       .command("create")
-      .description("Create a computer")
-      .option("--name <name>", "Computer name")
-      .option("--size <size>", "Computer size", "small")
-      .option("--region <region>", "Placement region", "us-mia")
+      .description("Create a persistent cloud computer with a desktop")
+      .option("--name <name>", "Name your computer")
+      .option("--size <size>", "Size: small, medium, or large", "small")
+      .option("--region <region>", "Location: us-mia, us-nyc, or us-la", "us-mia")
       .option(
         "--workspace <workspace-id>",
         "Workspace to assign the computer to",
@@ -506,6 +692,21 @@ export function register(program: Command): void {
       ),
   )
     .option("--json", "Output as JSON")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  miosa computers create --name boris
+  miosa computers create --name boris --size medium
+  miosa computers create --name boris --region us-nyc
+
+Run without flags for guided setup:
+  miosa computers create
+
+Defaults:
+  size=small, region=us-mia, desktop included
+`,
+    )
     .action(
       (
         opts: DataOptions & {
@@ -520,10 +721,23 @@ export function register(program: Command): void {
         },
       ) =>
         runAction(async () => {
-          // Merge --name / --workspace flags into the body so callers don't
-          // have to pass a full --data JSON blob for common use-cases.
           const base: Record<string, unknown> =
             parseData(opts.data, opts.input, opts.file) ?? {};
+          const hasStructuredInput = Boolean(opts.data || opts.input || opts.file);
+
+          if (!opts.name && base["name"] == null && !hasStructuredInput) {
+            if (!process.stdin.isTTY || isJsonMode(opts)) {
+              throw new UserError(
+                "A computer name is required in non-interactive mode.",
+                "Try `miosa computers create --name boris`.",
+              );
+            }
+            const answers = await promptForComputerDetails();
+            opts.name = answers.name;
+            opts.size = answers.size;
+            opts.region = answers.region;
+          }
+
           if (opts.name) base["name"] = opts.name;
           if (base["template_type"] == null)
             base["template_type"] = "miosa-desktop";
@@ -571,41 +785,90 @@ export function register(program: Command): void {
                 label: "name",
                 value: chalk.bold(String(c["name"] ?? base["name"] ?? "—")),
               },
-              { label: "status", value: colorStatus("provisioning") },
               {
-                label: "template",
-                value: String(
-                  c["template_type"] ??
-                    c["template"] ??
-                    base["template_type"] ??
-                    chalk.dim("—"),
-                ),
+                label: "status",
+                value: colorStatus(String(c["status"] ?? "provisioning")),
+              },
+              {
+                label: "type",
+                value: "Desktop computer",
               },
               {
                 label: "size",
                 value: String(c["size"] ?? base["size"] ?? chalk.dim("—")),
+              },
+              {
+                label: "location",
+                value: String(c["region"] ?? base["region"] ?? chalk.dim("—")),
               },
             ]),
           );
           console.log();
           console.log(
             hintBlock("Next", [
-              `miosa computers show ${newId}  # poll until status=running`,
-              `miosa exec ${newId} ...`,
+              `miosa computers open ${String(c["name"] ?? newId)}`,
+              `miosa exec ${String(c["name"] ?? newId)} "uname -a"`,
+              `miosa computers show ${newId}`,
             ]),
           );
           printElapsed(formatDuration(Date.now() - createStart));
         }),
     );
 
-  addDataOption(
-    computers!
-      .command("exec <computer-id>")
-      .description("Run a command on a Computer via the raw exec API"),
-  )
+  const createCommand = computers!.commands.find(
+    (command) => command.name() === "create",
+  );
+  const advancedCreateFlags = new Set([
+    "--external-workspace",
+    "--external-project",
+    "--agent-profile",
+    "--skip-agent-profile",
+    "--data",
+    "--input",
+    "--file",
+  ]);
+  for (const option of createCommand?.options ?? []) {
+    if (option.long && advancedCreateFlags.has(option.long)) option.hideHelp();
+  }
+
+  computers!
+    .command("exec <computer> <command...>")
+    .description("Run a command on a computer by name or ID")
     .option("--json", "Output as JSON")
-    .action((id: string, opts: DataOptions) =>
-      runAction(() => postAndPrint(`/computers/${enc(id)}/exec`, opts, {})),
+    .addHelpText(
+      "after",
+      `
+Examples:
+  miosa computers exec boris pwd
+  miosa computers exec boris "uname -a"
+`,
+    )
+    .action((computerArg: string, command: string[], opts: JsonOptions) =>
+      runAction(async () => {
+        const selected = await resolveComputerForDesktop(computerArg);
+        const computer = await waitUntilDesktopReady(selected);
+        const id = toComputerId(String(computer["id"]));
+        const response = await new MiosaClient(loadConfig()).computerExec(
+          id,
+          command.join(" "),
+        );
+        let exitCode = 0;
+
+        for await (const event of parseSse(response.body)) {
+          if (isJsonMode(opts)) {
+            console.log(JSON.stringify(event));
+            continue;
+          }
+          if (event.type === "stdout") process.stdout.write(event.data);
+          if (event.type === "stderr") process.stderr.write(event.data);
+          if (event.type === "error") {
+            console.error(chalk.red(event.message));
+            exitCode = 1;
+          }
+          if (event.type === "exit") exitCode = event.exit_code;
+        }
+        process.exitCode = exitCode;
+      }),
     );
 
   computers!
@@ -700,8 +963,31 @@ export function register(program: Command): void {
     );
 
   computers!
+    .command("open [computer]")
+    .alias("desktop")
+    .description("Open a running computer's desktop in your browser")
+    .option("--print-url", "Print the desktop URL instead of opening it")
+    .option("--json", "Output as JSON")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  miosa computers open
+  miosa computers open boris
+
+When no computer is given, MIOSA shows a picker of running desktops.
+`,
+    )
+    .action(
+      (
+        computer: string | undefined,
+        opts: { printUrl?: boolean; json?: boolean },
+      ) => runAction(() => openComputerDesktop(computer, opts)),
+    );
+
+  computers!
     .command("vnc <computer-id>")
-    .description("Open the VNC viewer for a Computer in your browser")
+    .description("Open a desktop by exact computer ID (advanced)")
     .option("--print-url", "Print the URL instead of opening a browser")
     .option("--json", "Output as JSON")
     .action(

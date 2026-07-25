@@ -296,22 +296,39 @@ function saveScreenshot(
 
 // ── Resolve computer by ID or name ────────────────────────────────────────────
 
-async function resolveComputerId(
+function dataOf<T>(payload: unknown): T {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { data?: unknown }).data !== undefined
+  ) {
+    return (payload as { data: T }).data;
+  }
+  return payload as T;
+}
+
+function listOf<T>(payload: unknown): T[] {
+  const value = dataOf<unknown>(payload);
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+export async function resolveComputerId(
   client: MiosaClient,
   idOrName: string,
 ): Promise<ComputerId> {
   // Try direct lookup first; if that 404s, fall back to list search.
   try {
-    const res = await client.apiGet<{ data: { id: string; name?: string } }>(
+    const payload = await client.apiGet<unknown>(
       `/api/v1/computers/${encodeURIComponent(idOrName)}`,
     );
-    return toComputerId(res.data.id);
+    const computer = dataOf<{ id: string; name?: string }>(payload);
+    if (!computer?.id) throw new Error("Computer response did not include an id");
+    return toComputerId(computer.id);
   } catch {
     // Fallback: list and match by name
-    const list = await client.apiGet<{
-      data: Array<{ id: string; name?: string }>;
-    }>("/api/v1/computers");
-    const match = list.data.find(
+    const payload = await client.apiGet<unknown>("/api/v1/computers");
+    const computers = listOf<{ id: string; name?: string }>(payload);
+    const match = computers.find(
       (c) => c.id === idOrName || c.name === idOrName,
     );
     if (!match) {

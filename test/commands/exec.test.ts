@@ -59,6 +59,54 @@ describe("miosa exec", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
+  it("runs a command on a MIOSA computer by its friendly name", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({ path: "/api/v1/computers", method: "GET" })
+      .reply(
+        200,
+        JSON.stringify([
+          {
+            id: "61f5ee2d-eadf-40f6-9d75-43d560cad163",
+            name: "boris",
+            status: "running",
+          },
+        ]),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/computers/61f5ee2d-eadf-40f6-9d75-43d560cad163/exec",
+        method: "POST",
+        body: JSON.stringify({ command: "pwd" }),
+      })
+      .reply(
+        200,
+        buildSseBody([
+          'data: {"type":"stdout","data":"/home/ubuntu\\n"}',
+          'data: {"type":"exit","exit_code":0}',
+        ]),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "exec",
+      "boris",
+      "pwd",
+    ]);
+
+    expect(process.stdout.write).toHaveBeenCalledWith(
+      expect.stringContaining("/home/ubuntu"),
+    );
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
   it("should stream stdout events to process.stdout", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
