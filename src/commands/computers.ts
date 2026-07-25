@@ -224,15 +224,33 @@ async function openComputerDesktop(
   const computer = await waitUntilDesktopReady(selected);
   const id = String(computer["id"]);
   const name = String(computer["name"] ?? id);
-  const config = loadConfig();
-  const baseUrl = (config.endpoint || "https://api.miosa.ai").replace(
-    /\/$/,
-    "",
+  const access = unwrap<Record<string, unknown>>(
+    await client().apiGet<unknown>(
+      apiPath(`/computers/${enc(id)}/embed`),
+    ),
   );
-  const url = `${baseUrl}/api/v1/computers/${enc(id)}/desktop/vnc`;
+  const url = String(access["embed_url"] ?? access["desktop_url"] ?? "");
+  if (!url) {
+    throw new UserError(
+      `MIOSA could not prepare desktop access for "${name}".`,
+      `Check it with \`miosa computers show ${id}\` and try again.`,
+    );
+  }
 
   if (isJsonMode(opts)) {
-    console.log(JSON.stringify({ id, name, url }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          id,
+          name,
+          url,
+          expires_at: access["expires_at"] ?? null,
+          password_required: false,
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
   if (opts.printUrl) {
@@ -803,6 +821,30 @@ Defaults:
               },
             ]),
           );
+          const viewerPassword = String(c["viewer_password"] ?? "");
+          if (viewerPassword) {
+            console.log();
+            console.log(
+              kvPanel([
+                {
+                  icon: icon.warn,
+                  label: "viewer password",
+                  value: chalk.bold(viewerPassword),
+                },
+              ]),
+            );
+            console.log();
+            console.log(
+              `  ${chalk.yellow("Save this password now.")} ${chalk.dim(
+                "It is shown once and is only needed for direct or external viewer access.",
+              )}`,
+            );
+            console.log(
+              `  ${chalk.dim(
+                `Signed-in access with \`miosa computers open ${String(c["name"] ?? newId)}\` does not require it.`,
+              )}`,
+            );
+          }
           console.log();
           console.log(
             hintBlock("Next", [
@@ -991,24 +1033,7 @@ When no computer is given, MIOSA shows a picker of running desktops.
     .option("--print-url", "Print the URL instead of opening a browser")
     .option("--json", "Output as JSON")
     .action(
-      async (id: string, opts: { printUrl?: boolean; json?: boolean }) => {
-        const config = loadConfig();
-        const baseUrl = (config.endpoint || "https://api.miosa.ai").replace(
-          /\/$/,
-          "",
-        );
-        const url = `${baseUrl}/api/v1/computers/${enc(id)}/desktop/vnc`;
-
-        if (isJsonMode(opts)) {
-          console.log(JSON.stringify({ url }, null, 2));
-          return;
-        }
-        if (opts.printUrl) {
-          console.log(url);
-          return;
-        }
-        openUrl(url);
-        console.log(`Opening VNC viewer for ${id}…`);
-      },
+      (id: string, opts: { printUrl?: boolean; json?: boolean }) =>
+        runAction(() => openComputerDesktop(id, opts)),
     );
 }
