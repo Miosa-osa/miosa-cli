@@ -42,6 +42,54 @@ describe("miosa computers", () => {
     process.exitCode = undefined;
   });
 
+  it("creates a desktop from the documented name-only command", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/computers",
+        method: "POST",
+        body: JSON.stringify({
+          name: "boris",
+          template_type: "miosa-desktop",
+          size: "small",
+          region: "us-mia",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: {
+            id: "cmp_boris",
+            name: "boris",
+            status: "provisioning",
+            template_type: "miosa-desktop",
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "computers",
+      "create",
+      "--name",
+      "boris",
+    ]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      id: "cmp_boris",
+      name: "boris",
+      template_type: "miosa-desktop",
+    });
+  });
+
   it("prints JSON for create when global JSON mode is active", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();
@@ -57,6 +105,7 @@ describe("miosa computers", () => {
           template_type: "miosa-desktop",
           size: "xs",
           name: "json-computer",
+          region: "us-mia",
           agent_runtime_profile_id: "profile_123",
         }),
       })

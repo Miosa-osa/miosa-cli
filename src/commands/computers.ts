@@ -9,6 +9,7 @@ import {
   deleteAndPrint,
   enc,
   getAndPrint,
+  parseData,
   postAndPrint,
   printValue,
   resourceCommands,
@@ -481,6 +482,8 @@ export function register(program: Command): void {
       .command("create")
       .description("Create a computer")
       .option("--name <name>", "Computer name")
+      .option("--size <size>", "Computer size", "small")
+      .option("--region <region>", "Placement region", "us-mia")
       .option(
         "--workspace <workspace-id>",
         "Workspace to assign the computer to",
@@ -507,6 +510,8 @@ export function register(program: Command): void {
       (
         opts: DataOptions & {
           name?: string;
+          size?: string;
+          region?: string;
           workspace?: string;
           externalWorkspace?: string;
           externalProject?: string;
@@ -517,10 +522,13 @@ export function register(program: Command): void {
         runAction(async () => {
           // Merge --name / --workspace flags into the body so callers don't
           // have to pass a full --data JSON blob for common use-cases.
-          const base: Record<string, unknown> = opts.data
-            ? JSON.parse(opts.data)
-            : {};
+          const base: Record<string, unknown> =
+            parseData(opts.data, opts.input, opts.file) ?? {};
           if (opts.name) base["name"] = opts.name;
+          if (base["template_type"] == null)
+            base["template_type"] = "miosa-desktop";
+          if (base["size"] == null) base["size"] = opts.size ?? "small";
+          if (base["region"] == null) base["region"] = opts.region ?? "us-mia";
           if (opts.workspace) base["workspace_id"] = opts.workspace;
           if (opts.externalWorkspace)
             base["external_workspace_id"] = opts.externalWorkspace;
