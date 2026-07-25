@@ -541,13 +541,24 @@ async function runFirstDeploy(
 interface ComputerRecord {
   id: string;
   name: string;
-  state: string;
+  state?: string;
+  status?: string;
   desktop_url?: string | null;
   tenant_slug?: string | null;
 }
 
-interface ComputerCreateResponse {
-  data: ComputerRecord;
+type ComputerCreateResponse =
+  | ComputerRecord
+  | {
+      data: ComputerRecord;
+    };
+
+function unwrapComputer(response: ComputerCreateResponse): ComputerRecord {
+  return "data" in response ? response.data : response;
+}
+
+function computerState(computer: ComputerRecord): string {
+  return computer.status ?? computer.state ?? "unknown";
 }
 
 async function runComputerMode(
@@ -614,12 +625,13 @@ async function runComputerMode(
       "/api/v1/computers",
       {
         name: computerName,
+        template_type: "miosa-desktop",
         os: computerOs,
         size: computerSize,
         desktop: true,
       },
     );
-    computer = result.data;
+    computer = unwrapComputer(result);
   } catch (err) {
     handleError(err);
   }
@@ -634,13 +646,13 @@ async function runComputerMode(
       const polled = await client.apiGet<ComputerCreateResponse>(
         `/api/v1/computers/${encodeURIComponent(computer.id)}`,
       );
-      finalComputer = polled.data;
-      if (finalComputer.state === "running") break;
+      finalComputer = unwrapComputer(polled);
+      if (computerState(finalComputer) === "running") break;
     } catch {
       // poll errors are transient — keep trying
     }
     await sleep(1_000);
-    lineProgress(`  state: ${finalComputer.state}`, opts);
+    lineProgress(`  state: ${computerState(finalComputer)}`, opts);
   }
 
   const desktopUrl =
@@ -652,7 +664,7 @@ async function runComputerMode(
       JSON.stringify({
         id: finalComputer.id,
         name: finalComputer.name,
-        state: finalComputer.state,
+        state: computerState(finalComputer),
         url: desktopUrl,
       }),
     );

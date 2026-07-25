@@ -74,9 +74,18 @@ export function mapHttpError(
   rawBody: string,
   requestId?: string | null,
 ): MiosaError {
-  const msg = body.error?.message ?? body.message ?? `HTTP ${status}`;
-  const apiCode = body.error?.code;
-  const apiDetails = body.error?.details;
+  const structuredError =
+    typeof body.error === "object" && body.error !== null
+      ? body.error
+      : undefined;
+  const legacyError =
+    typeof body.error === "string" && body.error.trim() !== ""
+      ? body.error
+      : undefined;
+  const msg =
+    structuredError?.message ?? legacyError ?? body.message ?? `HTTP ${status}`;
+  const apiCode = structuredError?.code;
+  const apiDetails = structuredError?.details;
 
   if (apiCode && status !== 401 && status !== 403) {
     return new ApiResponseError(
@@ -123,7 +132,7 @@ export function mapHttpError(
         EXIT_USER_ERROR,
         false,
         "Correct the reported fields and retry the same command.",
-        body.error?.details ?? rawBody,
+        structuredError?.details ?? rawBody,
         requestId,
       );
     case 429:

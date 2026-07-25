@@ -174,11 +174,13 @@ export type SseEvent =
 
 // API error shape from server
 export interface ApiErrorBody {
-  error?: {
-    code?: string;
-    message?: string;
-    details?: unknown;
-  };
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+        details?: unknown;
+      };
   message?: string;
 }
 

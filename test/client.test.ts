@@ -28,6 +28,26 @@ describe("MiosaClient", () => {
   });
 
   describe("HTTP error mapping", () => {
+    it("shows a legacy string error body for HTTP 400", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      mock
+        .get("https://api.miosa.ai")
+        .intercept({ path: "/api/v1/computers", method: "POST" })
+        .reply(
+          400,
+          JSON.stringify({ error: "template_type is required" }),
+          { headers: { "content-type": "application/json" } },
+        );
+
+      const client = new MiosaClient(makeConfig());
+      await expect(
+        client.apiPost<unknown>("/api/v1/computers", { name: "boris" }),
+      ).rejects.toThrow("template_type is required");
+    });
+
     it("should throw AuthError on 401", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();
