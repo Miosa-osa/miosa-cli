@@ -90,6 +90,57 @@ describe("miosa computers", () => {
     });
   });
 
+  it("runs a command on a computer by its friendly name", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({ path: "/api/v1/computers", method: "GET" })
+      .reply(
+        200,
+        JSON.stringify([
+          {
+            id: "cmp_boris",
+            name: "boris",
+            status: "running",
+          },
+        ]),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/computers/cmp_boris/exec",
+        method: "POST",
+        body: JSON.stringify({ command: "pwd" }),
+      })
+      .reply(
+        200,
+        'data: {"type":"stdout","data":"/home/ubuntu\\n"}\n\n' +
+          'data: {"type":"exit","exit_code":0}\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
+
+    const written: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "computers",
+      "exec",
+      "boris",
+      "pwd",
+    ]);
+
+    expect(written.join("")).toContain("/home/ubuntu");
+    expect(process.exitCode).toBe(0);
+  });
+
   it("prints JSON for create when global JSON mode is active", async () => {
     process.env["MIOSA_JSON"] = "1";
     const mock = new MockAgent();

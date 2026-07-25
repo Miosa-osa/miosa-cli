@@ -17,7 +17,7 @@ import chalk from "chalk";
 import { loadAuthCache, loadConfig } from "../config.js";
 import { banner, icon } from "../ui/render.js";
 
-interface MenuChoice {
+export interface MenuChoice {
   /** Visible label. */
   label: string;
   /** argv suffix to feed back into the CLI when picked. */
@@ -30,7 +30,7 @@ interface MenuChoice {
  * Build the action list based on current sign-in state. Authenticated
  * users get the full workflow; unauthenticated users only see sign-in.
  */
-function buildChoices(authenticated: boolean): MenuChoice[] {
+export function buildChoices(authenticated: boolean): MenuChoice[] {
   if (!authenticated) {
     return [
       {
@@ -46,17 +46,26 @@ function buildChoices(authenticated: boolean): MenuChoice[] {
     ];
   }
   return [
+    {
+      label: "Create a computer",
+      argv: ["computers", "create"],
+      hint: "guided setup",
+    },
+    {
+      label: "Open a desktop",
+      argv: ["computers", "open"],
+      hint: "pick from running computers",
+    },
+    { label: "Deploy this project", argv: ["up"], hint: "detects your app" },
+    { label: "Browse computers", argv: ["computers", "list"] },
+    { label: "Browse sandboxes", argv: ["sandbox", "list"] },
     { label: "Show platform status", argv: ["status"], hint: "live snapshot" },
-    { label: "List my computers", argv: ["computers", "list"] },
-    { label: "List my sandboxes", argv: ["sandbox", "list"] },
-    { label: "List my deployments", argv: ["deploy", "list"] },
     {
       label: "Install MCP into Claude Code",
       argv: ["mcp", "install"],
       hint: "one-command setup",
     },
-    { label: "Manage API tokens", argv: ["auth", "token", "list"] },
-    { label: "Who am I?", argv: ["whoami"] },
+    { label: "Account and organization", argv: ["whoami"] },
     { label: "Sign out", argv: ["logout"] },
   ];
 }

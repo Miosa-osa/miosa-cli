@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import type { MiosaClient } from "../../src/client.js";
+import { resolveComputerId } from "../../src/commands/watch.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -184,6 +186,41 @@ describe("watch command — filter logic", () => {
     const invalid = categories.filter((c) => !VALID.has(c));
     expect(invalid).toHaveLength(0);
     expect(new Set(categories).size).toBe(3);
+  });
+});
+
+describe("watch command — computer resolution", () => {
+  it("accepts the current direct-object show response", async () => {
+    const client = {
+      apiGet: async () => ({
+        id: "61f5ee2d-eadf-40f6-9d75-43d560cad163",
+        name: "boris",
+      }),
+    } as unknown as MiosaClient;
+
+    await expect(resolveComputerId(client, "boris")).resolves.toBe(
+      "61f5ee2d-eadf-40f6-9d75-43d560cad163",
+    );
+  });
+
+  it("accepts the current direct-array list response", async () => {
+    let call = 0;
+    const client = {
+      apiGet: async () => {
+        call += 1;
+        if (call === 1) throw new Error("not found");
+        return [
+          {
+            id: "61f5ee2d-eadf-40f6-9d75-43d560cad163",
+            name: "boris",
+          },
+        ];
+      },
+    } as unknown as MiosaClient;
+
+    await expect(resolveComputerId(client, "boris")).resolves.toBe(
+      "61f5ee2d-eadf-40f6-9d75-43d560cad163",
+    );
   });
 });
 

@@ -16,6 +16,21 @@ const pkg = JSON.parse(
 ) as { version: string };
 
 const program = new Command();
+const primaryCommands = new Set([
+  "login",
+  "up",
+  "computers",
+  "sandbox",
+  "deploy",
+  "app",
+  "opencomputers",
+  "ssh",
+  "exec",
+  "status",
+  "doctor",
+  "commands",
+  "update",
+]);
 
 program.configureOutput({
   writeErr: (str) => {
@@ -51,11 +66,21 @@ program.exitOverride((err) => {
   throw err;
 });
 
+program.configureHelp({
+  visibleCommands(command) {
+    const visible = [...command.commands];
+    if (command.parent) return visible;
+    return visible.filter(
+      (child) =>
+        primaryCommands.has(child.name()) ||
+        child.aliases().some((alias) => primaryCommands.has(alias)),
+    );
+  },
+});
+
 program
   .name("miosa")
-  .description(
-    "MIOSA CLI — application module infrastructure for the Optimal System. Manage Computers, Sandboxes, and OpenComputers hosts from your shell.",
-  )
+  .description("Create and control cloud computers, sandboxes, and apps")
   .version(pkg.version, "-v, --version", "Print version number and exit")
   .option(
     "--json",
@@ -73,60 +98,18 @@ program
   .addHelpText(
     "after",
     `
-Examples:
-  miosa login                                   Authenticate (opens browser)
-  miosa login --api-key msk_u_...               Authenticate with an API key
-  miosa login --stdin                           Pipe an API key: echo 'msk_...' | miosa login --stdin
-  miosa whoami                                  Verify and show current auth state
-  miosa whoami --cached                         Show stale local identity without an API call
-  miosa context save personal                   Save current auth/scope as a named context
-  miosa context use clinic-dev                  Switch account/workspace defaults
-  miosa command-overview                        Show a tree of all commands
-  miosa config ls                               List all config keys
-  miosa config set region us-nyc                Set a config value
-  miosa doctor                                  Diagnose CLI, auth, and toolchain
-  miosa capabilities --json                    Print agent-readable workflows and command recipes
-  miosa app inspect . --json                   Detect framework, commands, ports, env, and risks
-  miosa app plan . --goal deploy --json        Generate the exact agent-safe deploy sequence
-  miosa app link . --app <deployment-id>       Bind source to one exact application
-  miosa app pull . --json                      Pull linked application configuration
-  miosa app preview . --json                   Create and verify a safe preview
-  miosa app promote <release-id> . --yes        Promote and prove one exact release
-  miosa app rollback <release-id> . --yes       Roll back and prove one exact release
-  miosa computers list                          List all Computers
-  miosa computers vnc <id>                      Open a Computer's VNC viewer
-  miosa sandbox list                            List all Sandboxes
-  miosa sandbox exec <id> --data '{"cmd":"…"}'  Run a command in a Sandbox
-  miosa opencomputers connect my-mac --platform macos
-                                                  Connect a machine you own through OSA
-  miosa opencomputers list                      List connected OpenComputers hosts
-  miosa ssh my-mac                              Interactive terminal on a Computer or host
-  miosa exec my-mac "npm test"                  Run a command and stream output
-  miosa cp ./file.txt my-mac:/tmp/              Upload a file
-  miosa tunnel open my-mac --port 3000          Expose a port publicly
-  miosa agent my-mac "run the tests"            Dispatch an AI agent task
-  miosa completion zsh > ~/.zsh/completions/_miosa
-  miosa watch my-dev-box                        Stream real-time events from a Computer
-  miosa watch my-dev-box --filter exec,desktop  Watch only exec and desktop events
-  miosa watch my-dev-box --json                 Machine-readable event stream (one JSON/line)
-  miosa up                                      Smart launch (auto-detects context)
-  miosa up --computer --os ubuntu               Create a desktop computer
-  miosa up --sandbox --image python-3.12        Create a sandbox
-  miosa deploy --docker-deploy                  Recommended production deploy
-  miosa deploy                                  Deploy a GitHub repo (60s)
-  miosa update                                  Update @miosa/cli to latest
-  miosa status                                  Show auth and account info
+Start here:
+  miosa                              Open the interactive menu
+  miosa login                        Sign in
+  miosa computers create             Create a computer with guided setup
+  miosa computers open               Pick and open a desktop
+  miosa up                           Deploy the project in this folder
 
-Documentation: https://miosa.ai/docs/cli/
-
-Environment:
-  MIOSA_JSON=1       Prefer JSON output where supported
-  MIOSA_NO_COLOR=1   Disable ANSI color output
-  MIOSA_DEBUG=1      Show request IDs and backend error details
-  MIOSA_QUIET=1      Suppress non-essential human-readable output
-  MIOSA_TENANT=...   Default tenant slug or ID request scope
-  MIOSA_ORGANIZATION=... Canonical organization slug or ID request scope
-  MIOSA_WORKSPACE=... Default workspace ID request scope
+Learn more:
+  miosa <command> --help             Help for one command
+  miosa commands                     Complete command catalog
+  miosa doctor                       Diagnose setup and connectivity
+  https://miosa.ai/docs/cli/
 `,
   );
 
