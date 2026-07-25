@@ -90,6 +90,104 @@ describe("miosa computers", () => {
     });
   });
 
+  it("shows the one-time viewer password with a clear access explanation", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/computers",
+        method: "POST",
+        body: JSON.stringify({
+          name: "boris",
+          template_type: "miosa-desktop",
+          size: "small",
+          region: "us-mia",
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          id: "cmp_boris",
+          name: "boris",
+          status: "provisioning",
+          viewer_password: "TEMP-VIEWER-PASSWORD",
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "computers",
+      "create",
+      "--name",
+      "boris",
+    ]);
+
+    const output = logged.join("\n");
+    expect(output).toContain("TEMP-VIEWER-PASSWORD");
+    expect(output).toContain("shown once");
+    expect(output).toContain("Signed-in access");
+    expect(output).toContain("miosa computers open boris");
+  });
+
+  it("opens a passwordless authenticated desktop URL", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({ path: "/api/v1/computers", method: "GET" })
+      .reply(
+        200,
+        JSON.stringify([
+          {
+            id: "cmp_boris",
+            name: "boris",
+            status: "active",
+          },
+        ]),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({
+        path: "/api/v1/computers/cmp_boris/embed",
+        method: "GET",
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          embed_url:
+            "https://boris.computer.miosa.ai/viewer?auth=short-lived-token",
+          expires_at: 1_785_000_000,
+          auth: {
+            mode: "query_token",
+            password_required: false,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "computers",
+      "open",
+      "boris",
+      "--print-url",
+    ]);
+
+    expect(logged.join("\n")).toContain(
+      "https://boris.computer.miosa.ai/viewer?auth=short-lived-token",
+    );
+  });
+
   it("runs a command on a computer by its friendly name", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
