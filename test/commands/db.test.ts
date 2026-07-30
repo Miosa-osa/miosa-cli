@@ -16,12 +16,12 @@ vi.mock("../../src/config.js", () => ({
 }));
 
 vi.mock("../../src/ui/spinner.js", () => ({
-  spin: () => ({
+  spin: vi.fn(() => ({
     text: "",
     stop: vi.fn(),
     succeed: vi.fn(),
     fail: vi.fn(),
-  }),
+  })),
 }));
 
 // Prevent actual psql from launching
@@ -39,6 +39,7 @@ vi.mock("inquirer", () => ({
 }));
 
 const { register } = await import("../../src/commands/db.js");
+const { spin: spinMock } = await import("../../src/ui/spinner.js");
 
 function buildProgram(): Command {
   const program = new Command();
@@ -79,6 +80,7 @@ const mockRestore = {
 
 describe("miosa db connect --print-url", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
   });
 
@@ -366,6 +368,7 @@ describe("miosa db backup", () => {
     const parsed = JSON.parse(logged.join("")) as typeof mockBackup;
     expect(parsed.id).toBe(BACKUP_ID);
     expect(parsed.state).toBe("creating");
+    expect(spinMock).not.toHaveBeenCalled();
   });
 });
 
