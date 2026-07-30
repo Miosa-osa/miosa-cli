@@ -13,7 +13,7 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { UserError } from "../errors.js";
 import { spin } from "../ui/spinner.js";
-import { handleError } from "./util.js";
+import { handleError, isJsonMode } from "./util.js";
 
 interface DatabaseCredentials {
   recommended_url?: string;
@@ -504,7 +504,7 @@ Examples:
       try {
         const config = loadConfig();
         const client = new MiosaClient(config);
-        const spinner = spin("Requesting backup...");
+        const spinner = isJsonMode(opts) ? null : spin("Requesting backup...");
 
         const backup = unwrapBackup(
           await client.apiPost(
@@ -512,9 +512,9 @@ Examples:
             {},
           ),
         );
-        spinner.succeed(`Backup requested (id: ${backup.id.slice(0, 12)})`);
+        spinner?.succeed(`Backup requested (id: ${backup.id.slice(0, 12)})`);
 
-        if (opts.json) {
+        if (isJsonMode(opts)) {
           console.log(JSON.stringify(backup, null, 2));
           return;
         }
@@ -569,7 +569,7 @@ Examples:
 
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin("Requesting restore...");
+          const spinner = isJsonMode(opts) ? null : spin("Requesting restore...");
 
           const restore = unwrapRestore(
             await client.apiPost(
@@ -577,9 +577,9 @@ Examples:
               { backup_id: opts.backup },
             ),
           );
-          spinner.succeed(`Restore initiated (id: ${restore.id.slice(0, 12)})`);
+          spinner?.succeed(`Restore initiated (id: ${restore.id.slice(0, 12)})`);
 
-          if (opts.json) {
+          if (isJsonMode(opts)) {
             console.log(JSON.stringify(restore, null, 2));
             return;
           }

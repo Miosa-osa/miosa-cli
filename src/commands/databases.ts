@@ -711,7 +711,7 @@ export function register(program: Command): void {
         const client = new MiosaClient(config);
         const spinner = isJsonMode(opts) ? null : spin("Triggering backup...");
         const result = await client.apiPost(
-          `/api/v1/databases/${encodeURIComponent(id)}/backup`,
+          `/api/v1/databases/${encodeURIComponent(id)}/backups`,
           {},
         );
         spinner?.succeed("Backup started");

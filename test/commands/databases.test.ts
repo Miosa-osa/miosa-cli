@@ -183,6 +183,50 @@ describe("miosa databases lifecycle", () => {
   );
 });
 
+describe("miosa databases backup", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("uses the canonical plural route and emits one JSON document", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: `/api/v1/databases/${DB_ID}/backups`,
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          id: "backup-1",
+          database_id: DB_ID,
+          state: "pending",
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged = captureLogs();
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "databases",
+      "backup",
+      DB_ID,
+      "--json",
+    ]);
+
+    expect(JSON.parse(logged.join(""))).toEqual(
+      expect.objectContaining({ id: "backup-1", state: "pending" }),
+    );
+  });
+});
+
 describe("miosa databases wait", () => {
   afterEach(() => {
     vi.restoreAllMocks();
