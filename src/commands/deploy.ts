@@ -31,6 +31,11 @@ import {
   type Framework,
 } from "../framework-detector.js";
 import { UserError } from "../errors.js";
+import {
+  addPlacementOptions,
+  buildPlacementRequest,
+  type PlacementOptions,
+} from "./compute-placement.js";
 import type {
   Deployment,
   DeploymentBuild,
@@ -198,7 +203,9 @@ function addProofCheck(
   });
 }
 
-function dockerDeployApp(deployment: Deployment): Record<string, unknown> | null {
+function dockerDeployApp(
+  deployment: Deployment,
+): Record<string, unknown> | null {
   const app = asRecord(deployment).docker_deploy_app;
   if (app && typeof app === "object" && !Array.isArray(app)) {
     return app as Record<string, unknown>;
@@ -240,7 +247,11 @@ async function probePublicUrl(
       signal: controller.signal,
     });
     res.body.resume();
-    return { ok: res.statusCode >= 200 && res.statusCode < 500, status: res.statusCode, url: url.toString() };
+    return {
+      ok: res.statusCode >= 200 && res.statusCode < 500,
+      status: res.statusCode,
+      url: url.toString(),
+    };
   } catch (error) {
     return {
       ok: false,
@@ -278,7 +289,10 @@ async function proveDeployment(
       ? "Deployment is marked running."
       : `Deployment state is ${deployment.state}, expected running.`,
     { state: deployment.state },
-    ["miosa deploy logs <deployment-id>", "miosa deploy redeploy <deployment-id>"],
+    [
+      "miosa deploy logs <deployment-id>",
+      "miosa deploy redeploy <deployment-id>",
+    ],
   );
 
   addProofCheck(
@@ -302,7 +316,9 @@ async function proveDeployment(
       checks,
       "docker_deploy_host_link",
       Boolean(hostId),
-      hostId ? `Deployment links App Engine host ${hostId}.` : "Deployment has no App Engine host id.",
+      hostId
+        ? `Deployment links App Engine host ${hostId}.`
+        : "Deployment has no App Engine host id.",
       { docker_deploy_host_id: hostId },
       ["miosa docker-deploy ensure --wait --json"],
     );
@@ -312,7 +328,9 @@ async function proveDeployment(
         const host = await client.apiGet<Record<string, unknown>>(
           `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
         );
-        const hostRecord = asRecord(asRecord(host).host ?? asRecord(host).data ?? host);
+        const hostRecord = asRecord(
+          asRecord(host).host ?? asRecord(host).data ?? host,
+        );
         const status = stringField(hostRecord, "status");
         const applianceStatus = stringField(hostRecord, "appliance_status");
         addProofCheck(
@@ -321,7 +339,10 @@ async function proveDeployment(
           status === "active" && applianceStatus === "healthy",
           `Host status=${status ?? "unknown"}, appliance=${applianceStatus ?? "unknown"}.`,
           { status, appliance_status: applianceStatus },
-          ["miosa docker-deploy show <host-id> --json", "miosa docker-deploy ensure --wait --json"],
+          [
+            "miosa docker-deploy show <host-id> --json",
+            "miosa docker-deploy ensure --wait --json",
+          ],
         );
       } catch (error) {
         addProofCheck(
@@ -338,7 +359,9 @@ async function proveDeployment(
       checks,
       "docker_deploy_app_row",
       Boolean(app),
-      app ? `App Engine app status=${stringField(app, "status") ?? "unknown"}.` : "App Engine app row is missing.",
+      app
+        ? `App Engine app status=${stringField(app, "status") ?? "unknown"}.`
+        : "App Engine app row is missing.",
       app
         ? {
             status: stringField(app, "status"),
@@ -354,10 +377,10 @@ async function proveDeployment(
       "docker_deploy_container_route",
       Boolean(
         app &&
-          stringField(app, "container_id") &&
-          stringField(app, "status") === "running" &&
-          runtime.ip &&
-          runtime.port,
+        stringField(app, "container_id") &&
+        stringField(app, "status") === "running" &&
+        runtime.ip &&
+        runtime.port,
       ),
       app
         ? `Container=${stringField(app, "container_id") ?? "missing"}, route=${runtime.ip ?? "missing"}:${runtime.port ?? "missing"}.`
@@ -372,7 +395,11 @@ async function proveDeployment(
   }
 
   if (opts.probe) {
-    const probe = await probePublicUrl(publicUrl, opts.probePath, opts.timeoutMs);
+    const probe = await probePublicUrl(
+      publicUrl,
+      opts.probePath,
+      opts.timeoutMs,
+    );
     addProofCheck(
       checks,
       "public_url_probe",
@@ -381,7 +408,10 @@ async function proveDeployment(
         ? `Public URL returned HTTP ${probe.status}.`
         : `Public URL probe failed: ${probe.error ?? `HTTP ${probe.status}`}.`,
       probe,
-      ["Check DNS/custom domain routing.", "Check app logs and container health."],
+      [
+        "Check DNS/custom domain routing.",
+        "Check app logs and container health.",
+      ],
     );
   }
 
@@ -611,16 +641,18 @@ function formatSeconds(value: unknown): string {
 // ── register ──────────────────────────────────────────────────────────────────
 
 export function register(program: Command): void {
-  const deploy = program
-    .command("deploy")
-    .alias("launch")
-    .description(
-      "Deploy a GitHub repo; use --docker-deploy for the recommended production runtime",
-    )
-    .option(
-      "--docker-deploy",
-      "Create the deployment on this workspace's dedicated App Engine runtime",
-    )
+  const deploy = addPlacementOptions(
+    program
+      .command("deploy")
+      .alias("launch")
+      .description(
+        "Deploy a GitHub repo; use --docker-deploy for the recommended production runtime",
+      )
+      .option(
+        "--docker-deploy",
+        "Create the deployment on this workspace's dedicated App Engine runtime",
+      ),
+  )
     .addHelpText(
       "after",
       `
@@ -636,7 +668,7 @@ Examples:
   miosa deploy destroy               Tear down this deployment
 `,
     )
-    .action(async (opts: { dockerDeploy?: boolean }) => {
+    .action(async (opts: { dockerDeploy?: boolean } & PlacementOptions) => {
       // Default action: interactive deploy flow
       try {
         const cwd = process.cwd();
@@ -773,6 +805,7 @@ Examples:
               run_command: answers.runCommand || undefined,
               auto_deploy: true,
               metadata,
+              compute_placement_request: buildPlacementRequest(opts),
             });
             deployment = result.data;
             webhookSecret = result.webhook_secret;
@@ -1088,7 +1121,9 @@ Examples:
 
   deploy
     .command("prove [id]")
-    .description("Prove a deployment is real, live, routed, and not metadata-only")
+    .description(
+      "Prove a deployment is real, live, routed, and not metadata-only",
+    )
     .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
     .option(
       "--timeout <seconds>",
@@ -1133,11 +1168,16 @@ Examples:
           printBanner({ subtitle: "Deployment proof" });
           console.log(
             kvPanel([
-              { label: "deployment_id", value: chalk.dim(result.deployment_id) },
+              {
+                label: "deployment_id",
+                value: chalk.dim(result.deployment_id),
+              },
               { label: "type", value: productLabel(result.deployment_product) },
               {
                 label: "public_url",
-                value: result.public_url ? chalk.cyan(result.public_url) : chalk.dim("missing"),
+                value: result.public_url
+                  ? chalk.cyan(result.public_url)
+                  : chalk.dim("missing"),
               },
               {
                 label: "proof",

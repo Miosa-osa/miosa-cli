@@ -15,9 +15,8 @@ vi.mock("../../src/config.js", () => ({
   }),
 }));
 
-const { buildSandboxWebSocketRequest, register } = await import(
-  "../../src/commands/sandbox.js"
-);
+const { buildSandboxWebSocketRequest, register } =
+  await import("../../src/commands/sandbox.js");
 
 const originalJsonMode = process.env["MIOSA_JSON"];
 
@@ -32,9 +31,7 @@ function mockSandboxSshKey(): void {
   const existsSync = fs.existsSync.bind(fs);
   const readFileSync = fs.readFileSync.bind(fs);
   vi.spyOn(fs, "existsSync").mockImplementation((file) =>
-    String(file).endsWith("miosa_sandbox_ed25519")
-      ? true
-      : existsSync(file),
+    String(file).endsWith("miosa_sandbox_ed25519") ? true : existsSync(file),
   );
   vi.spyOn(fs, "readFileSync").mockImplementation((file, options) =>
     String(file).endsWith("miosa_sandbox_ed25519.pub")
@@ -754,6 +751,88 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("sends compute_placement_request when placement flags are set", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const regionId = "11111111-1111-1111-1111-111111111111";
+    const poolId = "22222222-2222-2222-2222-222222222222";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "nextjs",
+          name: "byoc-sandbox",
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+          compute_placement_request: {
+            provider: "aws",
+            region_id: regionId,
+            pool_id: poolId,
+            fallback: "deny",
+          },
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_byoc", name: "byoc-sandbox" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "byoc-sandbox",
+      "--provider",
+      "aws",
+      "--region-id",
+      regionId,
+      "--pool-id",
+      poolId,
+      "--fallback",
+      "deny",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("rejects an invalid region id before calling the API", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock.get("https://api.miosa.ai");
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--name",
+      "byoc-sandbox",
+      "--provider",
+      "aws",
+      "--region-id",
+      "not-a-uuid",
+      "--json",
+    ]);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
   it("passes external attribution IDs in the create body when flags are set", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -1140,7 +1219,9 @@ describe("miosa sandbox exec", () => {
       })
       .reply(
         200,
-        JSON.stringify({ data: { id: "sbx_123", state: "paused", persistent: true } }),
+        JSON.stringify({
+          data: { id: "sbx_123", state: "paused", persistent: true },
+        }),
         { headers: { "content-type": "application/json" } },
       );
 
@@ -1155,7 +1236,11 @@ describe("miosa sandbox exec", () => {
     ]);
 
     expect(console.log).toHaveBeenCalledWith(
-      JSON.stringify({ id: "sbx_123", state: "paused", persistent: true }, null, 2),
+      JSON.stringify(
+        { id: "sbx_123", state: "paused", persistent: true },
+        null,
+        2,
+      ),
     );
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
@@ -1328,7 +1413,9 @@ describe("miosa sandbox exec", () => {
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-upload-fallback-"));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "miosa-upload-fallback-"),
+    );
     const file = path.join(dir, "payload.txt");
     fs.writeFileSync(file, "hello from fallback");
 
@@ -1418,9 +1505,13 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes/sbx_partial",
         method: "GET",
       })
-      .reply(200, JSON.stringify({ data: { id: "sbx_partial", state: "running" } }), {
-        headers: { "content-type": "application/json" },
-      });
+      .reply(
+        200,
+        JSON.stringify({ data: { id: "sbx_partial", state: "running" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
 
     mock
       .get("https://api.miosa.ai")
@@ -1513,9 +1604,13 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes/sbx_123/expose",
         method: "POST",
       })
-      .reply(200, JSON.stringify({ data: { url: "https://3000-sbx.sandbox.miosa.app" } }), {
-        headers: { "content-type": "application/json" },
-      });
+      .reply(
+        200,
+        JSON.stringify({ data: { url: "https://3000-sbx.sandbox.miosa.app" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
 
     const logged: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
@@ -1611,9 +1706,13 @@ describe("miosa sandbox exec", () => {
         path: "/api/v1/sandboxes/41026070-9bb0-4d62-90b4-8ceeb0a131b6/exec",
         method: "POST",
       })
-      .reply(200, JSON.stringify({ data: { exit_code: 1, stdout: "refused" } }), {
-        headers: { "content-type": "application/json" },
-      });
+      .reply(
+        200,
+        JSON.stringify({ data: { exit_code: 1, stdout: "refused" } }),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
 
     mock
       .get("https://api.miosa.ai")
@@ -1623,7 +1722,9 @@ describe("miosa sandbox exec", () => {
       })
       .reply(
         200,
-        JSON.stringify({ data: { url: "https://3000-41026070.sandbox.miosa.app" } }),
+        JSON.stringify({
+          data: { url: "https://3000-41026070.sandbox.miosa.app" },
+        }),
         { headers: { "content-type": "application/json" } },
       );
 

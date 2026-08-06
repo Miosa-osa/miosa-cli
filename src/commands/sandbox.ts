@@ -35,6 +35,11 @@ import {
 import { loadConfig } from "../config.js";
 import { assertDeletableRemoteDir } from "./sandbox-delete-guard.js";
 import {
+  addPlacementOptions,
+  buildPlacementRequest,
+  type PlacementOptions,
+} from "./compute-placement.js";
+import {
   ENV_FILE_OPTION_HELP,
   ENV_INLINE_SHELL_WARNING,
   ENV_STDIN_OPTION_HELP,
@@ -272,117 +277,126 @@ export function register(program: Command): void {
     );
 
   // create — typed flags for common options; --data JSON overrides all flags
-  addDataOption(
-    sandbox
-      .command("create")
-      .description("Create a new Sandbox")
-      .option(
-        "--template <template>",
-        "Template / image ID (default: miosa-sandbox)",
-      )
-      .option("--name <name>", "Human-readable name for the Sandbox")
-      .option(
-        "--size <size>",
-        "Named size: xs, small, medium, large, or xl (default: small)",
-        parseSandboxSize,
-      )
-      .option("--cpu <n>", "vCPU count", parseIntegerOption)
-      .option("--memory <size>", "Memory size, e.g. 4096mb or 4gb", parseSizeMb)
-      .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
-      .option(
-        "--timeout <duration>",
-        "Wall-clock timeout, e.g. 300s, 1h",
-        parseDurationSec,
-      )
-      .option(
-        "--idle-timeout <duration>",
-        "Idle timeout before pause; 0 disables it (default: 0)",
-        parseDurationSec,
-      )
-      .option(
-        "--idempotency-key <key>",
-        "Retry-safe create key retained by the service for 24 hours",
-      )
-      .option(
-        "--publish-port <port>",
-        "Expose this port after create",
-        parseIntegerOption,
-      )
-      .option("--wait", "Wait for sandbox running and published port readiness")
-      .option(
-        "--probe-path <path>",
-        "HTTP path to probe when --publish-port is set",
-        "/",
-      )
-      .option(
-        "--source <source>",
-        "Source: git:https://..., tarball:https://..., or snapshot:<id>",
-      )
-      .option(
-        "--revision <revision>",
-        "Git revision/branch when --source git: is used",
-      )
-      .option(
-        "--depth <n>",
-        "Git clone depth when --source git: is used",
-        parseIntegerOption,
-      )
-      .option("--snapshot <id>", "Create from a sandbox snapshot")
-      .option("--workspace <id-or-slug>", "Workspace ID/slug")
-      .option(
-        "--external-workspace <id>",
-        "White-label workspace/customer ID for billing attribution",
-      )
-      .option(
-        "--external-user <id>",
-        "White-label user ID for billing attribution",
-      )
-      .option(
-        "--external-project <id>",
-        "White-label project ID for billing attribution",
-      )
-      .option(
-        "--agent-profile <id>",
-        "Agent runtime profile ID to mount into the sandbox",
-      )
-      .option(
-        "--skip-agent-profile",
-        "Do not apply the tenant/workspace default agent runtime profile",
-      )
-      .option(
-        "--network-policy <policy>",
-        "Network policy: allow-all or deny-all",
-      )
-      .option(
-        "--allowed-domain <domain>",
-        "Allowed egress domain. Repeatable.",
-        collectOption,
-        [],
-      )
-      .option(
-        "--allowed-cidr <cidr>",
-        "Allowed egress CIDR. Repeatable.",
-        collectOption,
-        [],
-      )
-      .option(
-        "--denied-cidr <cidr>",
-        "Denied egress CIDR. Repeatable.",
-        collectOption,
-        [],
-      )
-      .option(
-        "--always-on",
-        "Keep the sandbox running until explicitly stopped or destroyed",
-      )
-      .option(
-        "--non-persistent",
-        "Discard filesystem state on timeout instead of pausing for resume",
-      )
-      .option(
-        "--auto-start",
-        "Seed and start the template app after the sandbox reaches running",
-      ),
+  addPlacementOptions(
+    addDataOption(
+      sandbox
+        .command("create")
+        .description("Create a new Sandbox")
+        .option(
+          "--template <template>",
+          "Template / image ID (default: miosa-sandbox)",
+        )
+        .option("--name <name>", "Human-readable name for the Sandbox")
+        .option(
+          "--size <size>",
+          "Named size: xs, small, medium, large, or xl (default: small)",
+          parseSandboxSize,
+        )
+        .option("--cpu <n>", "vCPU count", parseIntegerOption)
+        .option(
+          "--memory <size>",
+          "Memory size, e.g. 4096mb or 4gb",
+          parseSizeMb,
+        )
+        .option("--disk <size>", "Disk size, e.g. 10240mb or 10gb", parseSizeMb)
+        .option(
+          "--timeout <duration>",
+          "Wall-clock timeout, e.g. 300s, 1h",
+          parseDurationSec,
+        )
+        .option(
+          "--idle-timeout <duration>",
+          "Idle timeout before pause; 0 disables it (default: 0)",
+          parseDurationSec,
+        )
+        .option(
+          "--idempotency-key <key>",
+          "Retry-safe create key retained by the service for 24 hours",
+        )
+        .option(
+          "--publish-port <port>",
+          "Expose this port after create",
+          parseIntegerOption,
+        )
+        .option(
+          "--wait",
+          "Wait for sandbox running and published port readiness",
+        )
+        .option(
+          "--probe-path <path>",
+          "HTTP path to probe when --publish-port is set",
+          "/",
+        )
+        .option(
+          "--source <source>",
+          "Source: git:https://..., tarball:https://..., or snapshot:<id>",
+        )
+        .option(
+          "--revision <revision>",
+          "Git revision/branch when --source git: is used",
+        )
+        .option(
+          "--depth <n>",
+          "Git clone depth when --source git: is used",
+          parseIntegerOption,
+        )
+        .option("--snapshot <id>", "Create from a sandbox snapshot")
+        .option("--workspace <id-or-slug>", "Workspace ID/slug")
+        .option(
+          "--external-workspace <id>",
+          "White-label workspace/customer ID for billing attribution",
+        )
+        .option(
+          "--external-user <id>",
+          "White-label user ID for billing attribution",
+        )
+        .option(
+          "--external-project <id>",
+          "White-label project ID for billing attribution",
+        )
+        .option(
+          "--agent-profile <id>",
+          "Agent runtime profile ID to mount into the sandbox",
+        )
+        .option(
+          "--skip-agent-profile",
+          "Do not apply the tenant/workspace default agent runtime profile",
+        )
+        .option(
+          "--network-policy <policy>",
+          "Network policy: allow-all or deny-all",
+        )
+        .option(
+          "--allowed-domain <domain>",
+          "Allowed egress domain. Repeatable.",
+          collectOption,
+          [],
+        )
+        .option(
+          "--allowed-cidr <cidr>",
+          "Allowed egress CIDR. Repeatable.",
+          collectOption,
+          [],
+        )
+        .option(
+          "--denied-cidr <cidr>",
+          "Denied egress CIDR. Repeatable.",
+          collectOption,
+          [],
+        )
+        .option(
+          "--always-on",
+          "Keep the sandbox running until explicitly stopped or destroyed",
+        )
+        .option(
+          "--non-persistent",
+          "Discard filesystem state on timeout instead of pausing for resume",
+        )
+        .option(
+          "--auto-start",
+          "Seed and start the template app after the sandbox reaches running",
+        ),
+    ),
   )
     .option("--json", "Output as JSON")
     .addHelpText(
@@ -396,37 +410,38 @@ Note:
     )
     .action(
       (
-        opts: DataOptions & {
-          template?: string;
-          name?: string;
-          size?: SandboxSize;
-          cpu?: number;
-          memory?: number;
-          disk?: number;
-          timeout?: number;
-          idleTimeout?: number;
-          idempotencyKey?: string;
-          publishPort?: number;
-          wait?: boolean;
-          probePath?: string;
-          source?: string;
-          revision?: string;
-          depth?: number;
-          snapshot?: string;
-          workspace?: string;
-          externalWorkspace?: string;
-          externalUser?: string;
-          externalProject?: string;
-          agentProfile?: string;
-          skipAgentProfile?: boolean;
-          networkPolicy?: string;
-          allowedDomain?: string[];
-          allowedCidr?: string[];
-          deniedCidr?: string[];
-          alwaysOn?: boolean;
-          nonPersistent?: boolean;
-          autoStart?: boolean;
-        },
+        opts: DataOptions &
+          PlacementOptions & {
+            template?: string;
+            name?: string;
+            size?: SandboxSize;
+            cpu?: number;
+            memory?: number;
+            disk?: number;
+            timeout?: number;
+            idleTimeout?: number;
+            idempotencyKey?: string;
+            publishPort?: number;
+            wait?: boolean;
+            probePath?: string;
+            source?: string;
+            revision?: string;
+            depth?: number;
+            snapshot?: string;
+            workspace?: string;
+            externalWorkspace?: string;
+            externalUser?: string;
+            externalProject?: string;
+            agentProfile?: string;
+            skipAgentProfile?: boolean;
+            networkPolicy?: string;
+            allowedDomain?: string[];
+            allowedCidr?: string[];
+            deniedCidr?: string[];
+            alwaysOn?: boolean;
+            nonPersistent?: boolean;
+            autoStart?: boolean;
+          },
       ) =>
         runAction(async () => {
           const t0 = Date.now();
@@ -494,6 +509,8 @@ Note:
           if (opts.alwaysOn) body["always_on"] = true;
           body["persistent"] = opts.nonPersistent ? false : true;
           if (opts.autoStart) body["auto_start"] = true;
+          const placement = buildPlacementRequest(opts);
+          if (placement) body["compute_placement_request"] = placement;
 
           const raw = unwrap(
             await client().apiPost<unknown>(
@@ -603,7 +620,9 @@ Note:
 
   sandbox
     .command("pause <sandbox-id>")
-    .description("Pause a running persistent Sandbox and preserve its workspace")
+    .description(
+      "Pause a running persistent Sandbox and preserve its workspace",
+    )
     .option("--json", "Output as JSON")
     .action((id: string, opts: JsonOptions) =>
       runAction(() => postAndPrint(`/sandboxes/${enc(id)}/pause`, opts, {})),
@@ -674,29 +693,30 @@ Note:
       "Retry-safe fork key sent as Idempotency-Key",
     )
     .option("--json", "Output as JSON")
-    .action((
-      id: string,
-      opts: {
-        template?: string;
-        timeout?: number;
-        idempotencyKey?: string;
-      } & JsonOptions,
-    ) =>
-      runAction(async () => {
-        const body: Record<string, unknown> = {};
-        if (opts.template) body["template_id"] = opts.template;
-        if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
-        const result = unwrap(
-          await client().apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/fork`),
-            body,
-            opts.idempotencyKey
-              ? { "Idempotency-Key": opts.idempotencyKey }
-              : undefined,
-          ),
-        );
-        printValue(result, opts);
-      }),
+    .action(
+      (
+        id: string,
+        opts: {
+          template?: string;
+          timeout?: number;
+          idempotencyKey?: string;
+        } & JsonOptions,
+      ) =>
+        runAction(async () => {
+          const body: Record<string, unknown> = {};
+          if (opts.template) body["template_id"] = opts.template;
+          if (opts.timeout != null) body["timeout_sec"] = opts.timeout;
+          const result = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/fork`),
+              body,
+              opts.idempotencyKey
+                ? { "Idempotency-Key": opts.idempotencyKey }
+                : undefined,
+            ),
+          );
+          printValue(result, opts);
+        }),
     );
 
   // desktop — open the Sandbox's web desktop URL (mirrors `box desktop`).
@@ -1949,7 +1969,16 @@ Note:
     .option("--dir <path>", "Project directory for --full", ".")
     .option("--json", "Output as JSON")
     .action(
-      (id: string | undefined, opts: { port?: number; probePath: string; full?: boolean; dir: string; json?: boolean }) =>
+      (
+        id: string | undefined,
+        opts: {
+          port?: number;
+          probePath: string;
+          full?: boolean;
+          dir: string;
+          json?: boolean;
+        },
+      ) =>
         runAction(async () => {
           if (opts.full) {
             const report = await runFullSandboxDoctor(opts.dir, id);
@@ -1962,7 +1991,9 @@ Note:
             console.log(chalk.bold("Sandbox Doctor Full"));
             console.log();
             for (const check of report.checks) {
-              console.log(`  ${check.ok ? chalk.green("ok") : chalk.red("fail")} ${check.id}: ${check.message}`);
+              console.log(
+                `  ${check.ok ? chalk.green("ok") : chalk.red("fail")} ${check.id}: ${check.message}`,
+              );
             }
             console.log();
             return;
@@ -5363,15 +5394,7 @@ function commandInCwd(command: string, cwd?: string): string {
 }
 
 function supportedRunAgentRunners(): string[] {
-  return [
-    "claude",
-    "claude-code",
-    "codex",
-    "pi",
-    "hermes",
-    "osa",
-    "custom",
-  ];
+  return ["claude", "claude-code", "codex", "pi", "hermes", "osa", "custom"];
 }
 
 function runtimeCommandForRunner(

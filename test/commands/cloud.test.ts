@@ -144,4 +144,162 @@ describe("miosa cloud", () => {
       "250",
     ]);
   });
+
+  it("fetches capabilities scoped to a region and pool", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/cloud/capabilities?cloud_region_id=region_1&cloud_pool_id=pool_1",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: { resolution: "exact" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "cloud",
+      "capabilities",
+      "--region-id",
+      "region_1",
+      "--pool-id",
+      "pool_1",
+    ]);
+  });
+
+  it("attaches GCP workload identity with both service accounts", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/cloud/accounts/account_1/gcp-workload-identity",
+        method: "POST",
+        body: JSON.stringify({
+          project_id: "acme-prod",
+          actuator_service_account_email:
+            "actuator@acme-prod.iam.gserviceaccount.com",
+          worker_service_account_email:
+            "worker@acme-prod.iam.gserviceaccount.com",
+        }),
+      })
+      .reply(200, JSON.stringify({ data: { id: "account_1" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "cloud",
+      "accounts",
+      "attach-gcp",
+      "account_1",
+      "--project-id",
+      "acme-prod",
+      "--actuator-service-account",
+      "actuator@acme-prod.iam.gserviceaccount.com",
+      "--worker-service-account",
+      "worker@acme-prod.iam.gserviceaccount.com",
+    ]);
+  });
+
+  it("PATCHes region and pool updates", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const api = mock.get("https://api.miosa.ai");
+    api
+      .intercept({
+        path: "/api/v1/cloud/regions/region_1",
+        method: "PATCH",
+        body: JSON.stringify({ display_name: "N. Virginia v2" }),
+      })
+      .reply(200, JSON.stringify({ data: { id: "region_1" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    api
+      .intercept({
+        path: "/api/v1/cloud/pools/pool_1",
+        method: "PATCH",
+        body: JSON.stringify({ max_nodes: 8 }),
+      })
+      .reply(200, JSON.stringify({ data: { id: "pool_1" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "cloud",
+      "regions",
+      "update",
+      "region_1",
+      "--name",
+      "N. Virginia v2",
+    ]);
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "cloud",
+      "pools",
+      "update",
+      "pool_1",
+      "--max-nodes",
+      "8",
+    ]);
+  });
+
+  it("certifies a node with the given workload and idempotency key", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/cloud/nodes/node_1/certify",
+        method: "POST",
+        body: JSON.stringify({
+          workload: "computer",
+          idempotency_key: "retry-key-1",
+        }),
+      })
+      .reply(202, JSON.stringify({ data: { id: "op_1" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "cloud",
+      "nodes",
+      "certify",
+      "node_1",
+      "--workload",
+      "computer",
+      "--idempotency-key",
+      "retry-key-1",
+    ]);
+  });
+
+  it("rejects an unsupported certify workload", async () => {
+    const program = buildProgram();
+    await expect(
+      program.parseAsync([
+        "node",
+        "miosa",
+        "cloud",
+        "nodes",
+        "certify",
+        "node_1",
+        "--workload",
+        "vm",
+      ]),
+    ).rejects.toThrow();
+  });
 });
