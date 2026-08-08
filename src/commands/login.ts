@@ -360,7 +360,7 @@ export function register(program: Command): void {
             body: message,
             suggest: [
               "miosa login  # use browser device flow instead",
-              "https://miosa.ai/dashboard/api-keys  # rotate your key",
+              "https://miosa.ai/developer/api-keys  # rotate your key",
             ],
             withDebugHint: true,
           }),

@@ -21,7 +21,7 @@ export function register(program: Command): void {
       }
 
       // Note: this only clears the LOCAL cache. The msk_u_ key remains
-      // valid server-side until explicitly revoked from the dashboard.
+      // valid server-side until explicitly revoked from API key settings.
       clearApiKey();
 
       console.log();
@@ -35,7 +35,7 @@ export function register(program: Command): void {
           {
             icon: icon.warn,
             label: "Server-side",
-            value: chalk.dim("key NOT revoked — visit dashboard to revoke"),
+            value: chalk.dim("key NOT revoked - visit API key settings to revoke"),
           },
         ]),
       );
@@ -43,7 +43,7 @@ export function register(program: Command): void {
       console.log(
         hintBlock("Next", [
           "miosa login",
-          "https://miosa.ai/dashboard/api-keys  # to revoke server-side",
+          "https://miosa.ai/developer/api-keys  # to revoke server-side",
         ]),
       );
     });
