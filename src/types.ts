@@ -80,11 +80,7 @@ export interface Host {
 }
 
 export type HostState =
-  | "pending"
-  | "online"
-  | "offline"
-  | "error"
-  | "disconnected";
+  "pending" | "online" | "offline" | "error" | "disconnected";
 
 export interface HostTelemetry {
   cpu_percent: number | null;
@@ -194,18 +190,10 @@ export function toDeploymentId(s: string): DeploymentId {
 }
 
 export type DeploymentState =
-  | "pending"
-  | "building"
-  | "running"
-  | "stopped"
-  | "failed";
+  "pending" | "building" | "running" | "stopped" | "failed";
 
 export type BuildState =
-  | "queued"
-  | "building"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+  "queued" | "building" | "succeeded" | "failed" | "cancelled";
 
 export interface Deployment {
   id: DeploymentId;
@@ -282,6 +270,7 @@ export interface CreateDeploymentParams {
   auto_deploy?: boolean;
   env?: Record<string, string>;
   metadata?: Record<string, unknown>;
+  compute_placement_request?: Record<string, unknown>;
 }
 
 /** Shape of the on-disk .miosa.json project config (created by `miosa deploy`) */
@@ -406,11 +395,7 @@ export type ComputerEvent =
 
 /** Filter category names accepted by --filter */
 export type WatchFilterCategory =
-  | "desktop"
-  | "exec"
-  | "file"
-  | "screenshot"
-  | "error";
+  "desktop" | "exec" | "file" | "screenshot" | "error";
 
 // Exit codes — documented contract
 export const EXIT_SUCCESS = 0;

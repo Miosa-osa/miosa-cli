@@ -90,6 +90,49 @@ describe("miosa computers", () => {
     });
   });
 
+  it("sends compute_placement_request for an opencomputers-targeted computer", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const hostId = "33333333-3333-3333-3333-333333333333";
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/computers",
+        method: "POST",
+        body: JSON.stringify({
+          name: "boris",
+          template_type: "miosa-desktop",
+          size: "small",
+          region: "us-mia",
+          compute_placement_request: {
+            provider: "opencomputers",
+            host_id: hostId,
+          },
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "cmp_boris", name: "boris" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "computers",
+      "create",
+      "--name",
+      "boris",
+      "--provider",
+      "opencomputers",
+      "--host-id",
+      hostId,
+    ]);
+  });
+
   it("shows the one-time viewer password with a clear access explanation", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -141,19 +184,17 @@ describe("miosa computers", () => {
     setGlobalDispatcher(mock);
 
     const pool = mock.get("https://api.miosa.ai");
-    pool
-      .intercept({ path: "/api/v1/computers", method: "GET" })
-      .reply(
-        200,
-        JSON.stringify([
-          {
-            id: "cmp_boris",
-            name: "boris",
-            status: "active",
-          },
-        ]),
-        { headers: { "content-type": "application/json" } },
-      );
+    pool.intercept({ path: "/api/v1/computers", method: "GET" }).reply(
+      200,
+      JSON.stringify([
+        {
+          id: "cmp_boris",
+          name: "boris",
+          status: "active",
+        },
+      ]),
+      { headers: { "content-type": "application/json" } },
+    );
     pool
       .intercept({
         path: "/api/v1/computers/cmp_boris/embed",
@@ -194,19 +235,17 @@ describe("miosa computers", () => {
     setGlobalDispatcher(mock);
 
     const pool = mock.get("https://api.miosa.ai");
-    pool
-      .intercept({ path: "/api/v1/computers", method: "GET" })
-      .reply(
-        200,
-        JSON.stringify([
-          {
-            id: "cmp_boris",
-            name: "boris",
-            status: "running",
-          },
-        ]),
-        { headers: { "content-type": "application/json" } },
-      );
+    pool.intercept({ path: "/api/v1/computers", method: "GET" }).reply(
+      200,
+      JSON.stringify([
+        {
+          id: "cmp_boris",
+          name: "boris",
+          status: "running",
+        },
+      ]),
+      { headers: { "content-type": "application/json" } },
+    );
     pool
       .intercept({
         path: "/api/v1/computers/cmp_boris/exec",
@@ -297,7 +336,9 @@ describe("miosa computers", () => {
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-cli-computer-"));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "miosa-cli-computer-"),
+    );
     const output = path.join(tmpDir, "report.txt");
 
     const pool = mock.get("https://api.miosa.ai");

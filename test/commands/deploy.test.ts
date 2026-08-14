@@ -732,6 +732,128 @@ describe("miosa deploy --docker-deploy", () => {
     expect(output).toContain("ddh_123");
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
+
+  it("sends compute_placement_request when placement flags are set", async () => {
+    const { execSync } = await import("node:child_process");
+    vi.mocked(execSync).mockReset();
+    vi.mocked(execSync).mockImplementation((cmd) => {
+      const command = String(cmd);
+      if (command.includes("rev-parse --git-dir")) return Buffer.from(".git");
+      if (command.includes("remote get-url origin")) {
+        return "https://github.com/acme/app.git\n";
+      }
+      if (command.includes("rev-parse --abbrev-ref HEAD")) {
+        return "main\n";
+      }
+      return Buffer.from("");
+    });
+
+    const inquirer = await import("inquirer");
+    vi.mocked(inquirer.default.prompt).mockResolvedValueOnce({
+      name: "docker-app",
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      confirm: true,
+    });
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const regionId = "11111111-1111-1111-1111-111111111111";
+    const poolId = "22222222-2222-2222-2222-222222222222";
+    const dockerDeployment: Deployment = {
+      ...mockDeployment,
+      name: "docker-app",
+      slug: "docker-app",
+      deployment_product: "docker_deploy",
+      docker_deploy_host_id: "ddh_123",
+    };
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({
+        path: "/api/v1/deployments",
+        method: "POST",
+        body: JSON.stringify({
+          name: "docker-app",
+          repo_url: "https://github.com/acme/app",
+          branch: "main",
+          build_command: "npm run build",
+          run_command: "npm start",
+          auto_deploy: true,
+          metadata: { deployment_product: "docker_deploy" },
+          compute_placement_request: {
+            provider: "aws",
+            region_id: regionId,
+            pool_id: poolId,
+          },
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({
+          data: dockerDeployment,
+          webhook_secret: "whsec_test",
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+        method: "POST",
+      })
+      .reply(202, JSON.stringify({ data: mockBuild }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/logs`,
+        method: "GET",
+      })
+      .reply(200, buildSseBody(['data: {"type":"done"}']), {
+        headers: { "content-type": "text/event-stream" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: dockerDeployment }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: "/api/v1/platform/tenants/current",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: mockTenant }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--provider",
+      "aws",
+      "--region-id",
+      regionId,
+      "--pool-id",
+      poolId,
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
 });
 
 describe("miosa deploy prove", () => {
@@ -826,7 +948,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: true }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: true }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: true,
+      }),
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -902,7 +1027,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: false }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: false }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: false,
+      }),
     );
     expect(process.exitCode).toBe(1);
   });

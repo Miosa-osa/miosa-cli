@@ -35,6 +35,11 @@ import {
   printElapsed,
 } from "../ui/render.js";
 import { renderTable } from "../ui/table.js";
+import {
+  addPlacementOptions,
+  buildPlacementRequest,
+  type PlacementOptions,
+} from "./compute-placement.js";
 
 const actions = [
   "start",
@@ -225,9 +230,7 @@ async function openComputerDesktop(
   const id = String(computer["id"]);
   const name = String(computer["name"] ?? id);
   const access = unwrap<Record<string, unknown>>(
-    await client().apiGet<unknown>(
-      apiPath(`/computers/${enc(id)}/embed`),
-    ),
+    await client().apiGet<unknown>(apiPath(`/computers/${enc(id)}/embed`)),
   );
   const url = String(access["embed_url"] ?? access["desktop_url"] ?? "");
   if (!url) {
@@ -272,7 +275,9 @@ function collectOption(value: string, previous: string[]): string[] {
 function isTerminalRunStatus(status: unknown): boolean {
   return (
     typeof status === "string" &&
-    ["succeeded", "failed", "canceled", "cancelled"].includes(status.toLowerCase())
+    ["succeeded", "failed", "canceled", "cancelled"].includes(
+      status.toLowerCase(),
+    )
   );
 }
 
@@ -510,14 +515,18 @@ export function register(program: Command): void {
             { icon: icon.info, label: "computer", value: chalk.dim(id) },
             {
               label: "password_set",
-              value: raw["password_set"] ? chalk.green("yes") : chalk.yellow("no"),
+              value: raw["password_set"]
+                ? chalk.green("yes")
+                : chalk.yellow("no"),
             },
             ...(raw["viewer_password_set_at"] || raw["password_set_at"]
               ? [
                   {
                     label: "set_at",
                     value: chalk.dim(
-                      String(raw["viewer_password_set_at"] ?? raw["password_set_at"]),
+                      String(
+                        raw["viewer_password_set_at"] ?? raw["password_set_at"],
+                      ),
                     ),
                   },
                 ]
@@ -554,17 +563,26 @@ export function register(program: Command): void {
           return;
         }
 
-        const password = String(raw["viewer_password"] ?? raw["password"] ?? "");
+        const password = String(
+          raw["viewer_password"] ?? raw["password"] ?? "",
+        );
         printBanner({ subtitle: "Rotated external viewer password" });
         console.log(
           kvPanel([
             { icon: icon.ok, label: "computer", value: chalk.dim(id) },
             {
               label: "viewer_password",
-              value: password ? chalk.bold(password) : chalk.dim("not returned"),
+              value: password
+                ? chalk.bold(password)
+                : chalk.dim("not returned"),
             },
             ...(raw["rotated_at"]
-              ? [{ label: "rotated_at", value: chalk.dim(String(raw["rotated_at"])) }]
+              ? [
+                  {
+                    label: "rotated_at",
+                    value: chalk.dim(String(raw["rotated_at"])),
+                  },
+                ]
               : []),
           ]),
         );
@@ -668,7 +686,10 @@ export function register(program: Command): void {
               { label: "run", value: chalk.bold(String(run["id"] ?? "—")) },
               { label: "computer", value: chalk.dim(id) },
               { label: "runner", value: String(run["runner"] ?? runner) },
-              { label: "status", value: colorStatus(String(run["status"] ?? "")) },
+              {
+                label: "status",
+                value: colorStatus(String(run["status"] ?? "")),
+              },
               { label: "exit", value: String(run["exit_code"] ?? "—") },
             ]),
           );
@@ -681,33 +702,39 @@ export function register(program: Command): void {
     );
 
   // Workspace-aware create (skipped in resourceCommands via skipCommands).
-  addDataOption(
-    computers!
-      .command("create")
-      .description("Create a persistent cloud computer with a desktop")
-      .option("--name <name>", "Name your computer")
-      .option("--size <size>", "Size: small, medium, or large", "small")
-      .option("--region <region>", "Location: us-mia, us-nyc, or us-la", "us-mia")
-      .option(
-        "--workspace <workspace-id>",
-        "Workspace to assign the computer to",
-      )
-      .option(
-        "--external-workspace <id>",
-        "Your internal workspace ID (attribution)",
-      )
-      .option(
-        "--external-project <id>",
-        "Your internal project ID (attribution)",
-      )
-      .option(
-        "--agent-profile <profile-id>",
-        "Agent runtime profile to mount into the computer",
-      )
-      .option(
-        "--skip-agent-profile",
-        "Do not apply the default agent runtime profile",
-      ),
+  addPlacementOptions(
+    addDataOption(
+      computers!
+        .command("create")
+        .description("Create a persistent cloud computer with a desktop")
+        .option("--name <name>", "Name your computer")
+        .option("--size <size>", "Size: small, medium, or large", "small")
+        .option(
+          "--region <region>",
+          "Location: us-mia, us-nyc, or us-la",
+          "us-mia",
+        )
+        .option(
+          "--workspace <workspace-id>",
+          "Workspace to assign the computer to",
+        )
+        .option(
+          "--external-workspace <id>",
+          "Your internal workspace ID (attribution)",
+        )
+        .option(
+          "--external-project <id>",
+          "Your internal project ID (attribution)",
+        )
+        .option(
+          "--agent-profile <profile-id>",
+          "Agent runtime profile to mount into the computer",
+        )
+        .option(
+          "--skip-agent-profile",
+          "Do not apply the default agent runtime profile",
+        ),
+    ),
   )
     .option("--json", "Output as JSON")
     .addHelpText(
@@ -727,21 +754,24 @@ Defaults:
     )
     .action(
       (
-        opts: DataOptions & {
-          name?: string;
-          size?: string;
-          region?: string;
-          workspace?: string;
-          externalWorkspace?: string;
-          externalProject?: string;
-          agentProfile?: string;
-          skipAgentProfile?: boolean;
-        },
+        opts: DataOptions &
+          PlacementOptions & {
+            name?: string;
+            size?: string;
+            region?: string;
+            workspace?: string;
+            externalWorkspace?: string;
+            externalProject?: string;
+            agentProfile?: string;
+            skipAgentProfile?: boolean;
+          },
       ) =>
         runAction(async () => {
           const base: Record<string, unknown> =
             parseData(opts.data, opts.input, opts.file) ?? {};
-          const hasStructuredInput = Boolean(opts.data || opts.input || opts.file);
+          const hasStructuredInput = Boolean(
+            opts.data || opts.input || opts.file,
+          );
 
           if (!opts.name && base["name"] == null && !hasStructuredInput) {
             if (!process.stdin.isTTY || isJsonMode(opts)) {
@@ -768,8 +798,11 @@ Defaults:
             base["external_project_id"] = opts.externalProject;
           if (opts.agentProfile)
             base["agent_runtime_profile_id"] = opts.agentProfile;
-          if (opts.skipAgentProfile)
-            base["skip_agent_runtime_profile"] = true;
+          if (opts.skipAgentProfile) base["skip_agent_runtime_profile"] = true;
+          if (base["compute_placement_request"] == null) {
+            const placement = buildPlacementRequest(opts);
+            if (placement) base["compute_placement_request"] = placement;
+          }
 
           const createStart = Date.now();
           const result = await client().apiPost<unknown>(
@@ -955,7 +988,9 @@ Examples:
               );
               return;
             }
-            console.log(chalk.green(`Downloaded ${remotePath} → ${opts.output}`));
+            console.log(
+              chalk.green(`Downloaded ${remotePath} → ${opts.output}`),
+            );
             return;
           }
 
@@ -985,11 +1020,9 @@ Examples:
     .option("--json", "Output as JSON")
     .action((id: string, remotePath: string, opts: JsonOptions) =>
       runAction(() =>
-        postAndPrint(
-          `/computers/${enc(id)}/files/export`,
-          opts,
-          { path: remotePath },
-        ),
+        postAndPrint(`/computers/${enc(id)}/files/export`, opts, {
+          path: remotePath,
+        }),
       ),
     );
 
@@ -1032,8 +1065,7 @@ When no computer is given, MIOSA shows a picker of running desktops.
     .description("Open a desktop by exact computer ID (advanced)")
     .option("--print-url", "Print the URL instead of opening a browser")
     .option("--json", "Output as JSON")
-    .action(
-      (id: string, opts: { printUrl?: boolean; json?: boolean }) =>
-        runAction(() => openComputerDesktop(id, opts)),
+    .action((id: string, opts: { printUrl?: boolean; json?: boolean }) =>
+      runAction(() => openComputerDesktop(id, opts)),
     );
 }
