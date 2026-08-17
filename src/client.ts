@@ -238,6 +238,37 @@ export class MiosaClient {
     return this.delete<T>(path);
   }
 
+  /** DELETE with the attributable operation metadata returned in response headers. */
+  async apiDeleteWithReceipt(
+    path: string,
+  ): Promise<{ operationId: string; replayed: boolean }> {
+    let res: Dispatcher.ResponseData;
+    try {
+      res = await request(this.url(path), {
+        method: "DELETE",
+        headers: this.headers(),
+      });
+    } catch (err) {
+      throw new NetworkError(
+        `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        "Check your connection and endpoint: miosa status",
+      );
+    }
+    if (res.statusCode >= 400) return this.parseError(res, "DELETE", path);
+    await res.body.dump();
+    const operationId = responseHeader(res, "x-forge-operation-id");
+    if (!operationId) {
+      throw new UserError(
+        "Forge delete did not return an operation receipt.",
+        "Retry with --debug and contact MIOSA support if the response remains incomplete.",
+      );
+    }
+    return {
+      operationId,
+      replayed: responseHeader(res, "idempotency-replayed") === "true",
+    };
+  }
+
   // --- ClinicIQ / workspace admin SDK helpers ---
 
   async listWorkspaces(): Promise<unknown[]> {
@@ -427,9 +458,7 @@ export class MiosaClient {
   async getTenant(): Promise<Tenant> {
     const response = await this.get<
       { data?: unknown; tenant?: unknown } & Record<string, unknown>
-    >(
-      "/api/v1/platform/tenants/current",
-    );
+    >("/api/v1/platform/tenants/current");
 
     const tenant = normalizeTenantResponse(response);
     const billingOverview = await this.getBillingOverview().catch(() => null);
@@ -1093,7 +1122,10 @@ function malformedTenantError(): UserError {
   );
 }
 
-function stringField(record: Record<string, unknown>, key: string): string | null {
+function stringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | null {
   const value = record[key];
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }

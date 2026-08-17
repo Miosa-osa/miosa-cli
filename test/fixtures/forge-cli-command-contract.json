@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "root": "forge repo",
+  "commands": {
+    "list": { "args": [], "flags": ["--json"] },
+    "create": {
+      "args": ["<name>"],
+      "flags": [
+        "--slug",
+        "--default-branch",
+        "--visibility",
+        "--project-id",
+        "--idempotency-key",
+        "--json"
+      ]
+    },
+    "show": { "args": ["<repository-id>"], "flags": ["--json"] },
+    "update": {
+      "args": ["<repository-id>"],
+      "flags": ["--name", "--slug", "--visibility", "--project-id", "--json"]
+    },
+    "delete": { "args": ["<repository-id>"], "flags": ["--yes", "--json"] }
+  },
+  "json_envelope": "data",
+  "visibility": ["public", "private", "internal"],
+  "unsupported": ["clone", "pull-request", "check", "merge", "release", "sync"]
+}
