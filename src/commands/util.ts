@@ -5,8 +5,8 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { isDebugMode, isJsonMode } from "../cli-env.js";
 
-export function handleError(err: unknown): never {
-  if (isJsonMode()) {
+export function handleError(err: unknown, opts?: { json?: boolean }): never {
+  if (isJsonMode(opts)) {
     const error =
       err instanceof MiosaError
         ? {
