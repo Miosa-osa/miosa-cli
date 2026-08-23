@@ -616,6 +616,7 @@ interface DeployOptions {
   branch?: string;
   buildCommand?: string;
   runCommand?: string;
+  static?: boolean;
   yes?: boolean;
   json?: boolean;
 }
@@ -644,6 +645,7 @@ export function register(program: Command): void {
       "--run-command <cmd>",
       "Run command (defaults to framework detection)",
     )
+    .option("--static", "Deploy static files without build or run commands")
     .option(
       "-y, --yes",
       "Accept detected defaults and skip interactive confirmation",
@@ -654,6 +656,7 @@ export function register(program: Command): void {
 Examples:
   miosa deploy --docker-deploy       Recommended: deploy current directory to App Engine
   miosa deploy --docker-deploy --json  Prompt-free deploy for CI and agents
+  miosa deploy --docker-deploy --static --name report --branch main --yes --json
   miosa deploy --name app --branch main --build-command "npm run build" --run-command "npm start" --yes --json
   miosa deploy                       Deploy current directory (auto-detects framework)
   miosa deploy list                  List all deployments
@@ -749,7 +752,17 @@ Examples:
           const requiresNonInteractiveInputs =
             !process.stdin.isTTY || json || Boolean(opts.yes);
           if (
+            opts.static &&
+            (opts.buildCommand !== undefined || opts.runCommand !== undefined)
+          ) {
+            throw new UserError(
+              "--static cannot be combined with build or run commands.",
+              "Remove --build-command and --run-command, or remove --static.",
+            );
+          }
+          if (
             requiresNonInteractiveInputs &&
+            !opts.static &&
             !detection &&
             (!opts.buildCommand || !opts.runCommand)
           ) {
@@ -771,9 +784,9 @@ Examples:
           let answers: DeployAnswers;
           if (process.stdin.isTTY && !isJsonMode(opts) && !opts.yes) {
             const { default: inquirer } = await import("inquirer");
-            answers = await inquirer.prompt<DeployAnswers>([
+            const identityQuestions = [
               {
-                type: "input",
+                type: "input" as const,
                 name: "name",
                 message: "Deployment name:",
                 default: opts.name ?? projectName,
@@ -781,36 +794,53 @@ Examples:
                   v.length > 0 ? true : "Name is required",
               },
               {
-                type: "input",
+                type: "input" as const,
                 name: "branch",
                 message: "Branch to deploy:",
                 default: opts.branch ?? currentBranch,
               },
-              {
-                type: "input",
-                name: "buildCommand",
-                message: "Build command:",
-                default: opts.buildCommand ?? buildCommand,
-              },
-              {
-                type: "input",
-                name: "runCommand",
-                message: "Run command:",
-                default: opts.runCommand ?? runCommand,
-              },
-              {
-                type: "confirm",
-                name: "confirm",
-                message: "Create deployment?",
-                default: true,
-              },
-            ]);
+            ];
+            const confirmQuestion = {
+              type: "confirm" as const,
+              name: "confirm",
+              message: "Create deployment?",
+              default: true,
+            };
+            if (opts.static) {
+              const staticAnswers = await inquirer.prompt<
+                Pick<DeployAnswers, "name" | "branch" | "confirm">
+              >([...identityQuestions, confirmQuestion]);
+              answers = {
+                ...staticAnswers,
+                buildCommand: "",
+                runCommand: "",
+              };
+            } else {
+              answers = await inquirer.prompt<DeployAnswers>([
+                ...identityQuestions,
+                {
+                  type: "input",
+                  name: "buildCommand",
+                  message: "Build command:",
+                  default: opts.buildCommand ?? buildCommand,
+                },
+                {
+                  type: "input",
+                  name: "runCommand",
+                  message: "Run command:",
+                  default: opts.runCommand ?? runCommand,
+                },
+                confirmQuestion,
+              ]);
+            }
           } else {
             answers = {
               name: opts.name ?? projectName,
               branch: opts.branch ?? currentBranch,
-              buildCommand: opts.buildCommand ?? buildCommand,
-              runCommand: opts.runCommand ?? runCommand,
+              buildCommand: opts.static
+                ? ""
+                : (opts.buildCommand ?? buildCommand),
+              runCommand: opts.static ? "" : (opts.runCommand ?? runCommand),
               confirm: true,
             };
           }

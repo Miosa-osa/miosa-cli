@@ -638,8 +638,8 @@ describe("miosa deploy --docker-deploy", () => {
   async function arrangeFirstDockerDeploy(expected: {
     name: string;
     branch: string;
-    buildCommand: string;
-    runCommand: string;
+    buildCommand?: string;
+    runCommand?: string;
   }): Promise<{ logged: string[]; program: Command }> {
     const { execSync } = await import("node:child_process");
     vi.mocked(execSync).mockReset();
@@ -686,8 +686,10 @@ describe("miosa deploy --docker-deploy", () => {
           name: expected.name,
           repo_url: "https://github.com/acme/app",
           branch: expected.branch,
-          build_command: expected.buildCommand,
-          run_command: expected.runCommand,
+          ...(expected.buildCommand
+            ? { build_command: expected.buildCommand }
+            : {}),
+          ...(expected.runCommand ? { run_command: expected.runCommand } : {}),
           auto_deploy: true,
           metadata: { deployment_product: "docker_deploy" },
         }),
@@ -790,6 +792,57 @@ describe("miosa deploy --docker-deploy", () => {
     const inquirer = await import("inquirer");
     expect(inquirer.default.prompt).not.toHaveBeenCalled();
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("deploys static HTML without build or run command prompts", async () => {
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "callix-security-report",
+      branch: "master",
+    });
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--static",
+      "--name",
+      "callix-security-report",
+      "--branch",
+      "master",
+      "--yes",
+    ]);
+
+    const inquirer = await import("inquirer");
+    expect(inquirer.default.prompt).not.toHaveBeenCalled();
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("rejects ambiguous static and command-driven deployment inputs", async () => {
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "unused",
+      branch: "main",
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--static",
+      "--build-command",
+      "npm run build",
+      "--yes",
+    ]);
+
+    expect(errors.join("\n")).toContain(
+      "--static cannot be combined with build or run commands.",
+    );
+    expect(process.exit).toHaveBeenCalledWith(1);
   });
 
   it("preserves guided prompts for an interactive first deployment", async () => {

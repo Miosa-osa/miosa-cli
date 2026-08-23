@@ -191,6 +191,122 @@ describe("miosa deploy process boundary", () => {
     expect(result.stdout).toContain("--build-command");
     expect(result.stdout).toContain("--run-command");
   }, 15_000);
+
+  it("deploys static HTML with closed stdin and no command fields", async () => {
+    const cliRoot = process.cwd();
+    const projectDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "miosa-static-deploy-"),
+    );
+    const isolatedHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "miosa-static-home-"),
+    );
+    temporaryDirectories.push(projectDirectory, isolatedHome);
+    fs.writeFileSync(
+      path.join(projectDirectory, "index.html"),
+      "<h1>Report</h1>\n",
+    );
+    initializeGitProject(
+      projectDirectory,
+      "https://github.com/acme/callix-security-report.git",
+      ["index.html"],
+    );
+
+    const deploymentId = "dep-0000-0000-0000-000000000002";
+    const buildId = "bld-0000-0000-0000-000000000002";
+    let createRequest: Record<string, unknown> | null = null;
+    const server = http.createServer((request, response) => {
+      void (async () => {
+        const body = await readRequestBody(request);
+        response.setHeader("content-type", "application/json");
+        if (
+          request.method === "POST" &&
+          request.url === "/api/v1/deployments"
+        ) {
+          createRequest = JSON.parse(body) as Record<string, unknown>;
+          response.statusCode = 201;
+          response.end(
+            JSON.stringify({
+              data: {
+                id: deploymentId,
+                name: "callix-security-report",
+                slug: "callix-security-report",
+                state: "pending",
+                deployment_product: "docker_deploy",
+                docker_deploy_host_id: "ddh-0002",
+                metadata: { deployment_product: "docker_deploy" },
+              },
+              webhook_secret: "whsec_static_test",
+            }),
+          );
+          return;
+        }
+        if (
+          request.method === "POST" &&
+          request.url === `/api/v1/deployments/${deploymentId}/redeploy`
+        ) {
+          response.statusCode = 202;
+          response.end(
+            JSON.stringify({
+              data: {
+                id: buildId,
+                state: "queued",
+                deployment_id: deploymentId,
+              },
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: "not_found" }));
+      })();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Test API did not bind a TCP port");
+    }
+
+    try {
+      const result = await runCli(
+        cliRoot,
+        projectDirectory,
+        isolatedHome,
+        `http://127.0.0.1:${address.port}`,
+        [
+          "--static",
+          "--name",
+          "callix-security-report",
+          "--branch",
+          "master",
+          "--yes",
+        ],
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).not.toContain("Build command:");
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: true,
+        deployment: { id: deploymentId, deployment_product: "docker_deploy" },
+        build: { id: buildId, state: "queued" },
+      });
+      expect(createRequest).toMatchObject({
+        name: "callix-security-report",
+        repo_url: "https://github.com/acme/callix-security-report",
+        branch: "master",
+        auto_deploy: true,
+        metadata: { deployment_product: "docker_deploy" },
+      });
+      expect(createRequest).not.toHaveProperty("build_command");
+      expect(createRequest).not.toHaveProperty("run_command");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }, 15_000);
 });
 
 function initializeGitProject(
@@ -233,6 +349,7 @@ function runCli(
   cwd: string,
   isolatedHome: string,
   endpoint: string,
+  deployArgs: string[] = [],
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -244,6 +361,7 @@ function runCli(
         "acme-org",
         "deploy",
         "--docker-deploy",
+        ...deployArgs,
       ],
       {
         cwd,
