@@ -640,6 +640,7 @@ describe("miosa deploy --docker-deploy", () => {
     branch: string;
     buildCommand?: string;
     runCommand?: string;
+    queueFailure?: boolean;
   }): Promise<{ logged: string[]; program: Command }> {
     const { execSync } = await import("node:child_process");
     vi.mocked(execSync).mockReset();
@@ -703,14 +704,25 @@ describe("miosa deploy --docker-deploy", () => {
         { headers: { "content-type": "application/json" } },
       );
 
-    pool
-      .intercept({
-        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
-        method: "POST",
-      })
-      .reply(202, JSON.stringify({ data: mockBuild }), {
-        headers: { "content-type": "application/json" },
-      });
+    if (expected.queueFailure) {
+      pool
+        .intercept({
+          path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+          method: "POST",
+        })
+        .reply(502, JSON.stringify({ error: "bad_gateway" }), {
+          headers: { "content-type": "application/json" },
+        });
+    } else {
+      pool
+        .intercept({
+          path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+          method: "POST",
+        })
+        .reply(202, JSON.stringify({ data: mockBuild }), {
+          headers: { "content-type": "application/json" },
+        });
+    }
 
     pool
       .intercept({
@@ -904,6 +916,34 @@ describe("miosa deploy --docker-deploy", () => {
     });
     expect(inquirer.default.prompt).not.toHaveBeenCalled();
   });
+
+  it("preserves the webhook secret in the JSON document when the initial build queue fails", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const { logged, program } = await arrangeFirstDockerDeploy({
+      name: path.basename(tmpDir),
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      queueFailure: true,
+    });
+
+    await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
+
+    const result = JSON.parse(logged.join("\n")) as {
+      ok: boolean;
+      deployment: { id: string };
+      build: unknown;
+      webhook: { secret: string } | null;
+      error?: { message: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.deployment.id).toBe(mockDeployment.id);
+    expect(result.build).toBeNull();
+    expect(result.webhook).toMatchObject({ secret: "whsec_test" });
+    expect(result.error).toBeDefined();
+    expect(process.exit).toHaveBeenCalled();
+    expect(process.exit).not.toHaveBeenCalledWith(0);
+  });
 });
 
 describe("miosa deploy prove", () => {
@@ -998,7 +1038,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: true }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: true }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: true,
+      }),
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -1074,7 +1117,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: false }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: false }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: false,
+      }),
     );
     expect(process.exitCode).toBe(1);
   });
@@ -1094,6 +1140,7 @@ describe("miosa deploy (main action) — existing .miosa.json reuse", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["MIOSA_JSON"];
     vi.restoreAllMocks();
   });
 
@@ -1234,5 +1281,102 @@ describe("miosa deploy (main action) — existing .miosa.json reuse", () => {
     await program.parseAsync(["node", "miosa", "deploy"]);
 
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("rejects first-deploy-only flags when .miosa.json exists", async () => {
+    const projectCfg = {
+      version: 1,
+      deploymentId: mockDeployment.id,
+      name: "my-project",
+      framework: "nextjs",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      branch: "main",
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, ".miosa.json"),
+      JSON.stringify(projectCfg),
+    );
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const errored: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      errored.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--branch",
+      "release",
+      "--static",
+    ]);
+
+    const output = errored.join("\n");
+    expect(output).toContain(".miosa.json already exists");
+    expect(output).toContain("--branch");
+    expect(output).toContain("--static");
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("reports success from saved config when the enrichment fetch fails after a queued redeploy in JSON mode", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const projectCfg = {
+      version: 1,
+      deploymentId: mockDeployment.id,
+      name: "my-project",
+      framework: "nextjs",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      branch: "main",
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, ".miosa.json"),
+      JSON.stringify(projectCfg),
+    );
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+        method: "POST",
+      })
+      .reply(202, JSON.stringify({ data: mockBuild }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(500, JSON.stringify({ error: "internal_error" }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "deploy"]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      ok: true,
+      deployment: { id: mockDeployment.id, name: "my-project" },
+      build: { id: mockBuild.id, state: "queued" },
+    });
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });

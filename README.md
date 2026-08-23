@@ -319,6 +319,7 @@ miosa --organization acme deploy --docker-deploy --static --json --yes \
 The JSON result is one document containing the deployment identity, queued build, App Engine host, public URL when known, and one-time webhook details for a new deployment.
 
 On subsequent runs from the same directory, `miosa deploy` reads `.miosa.json` and skips all prompts — just queues a rebuild and streams logs.
+The creation flags (`--name`, `--branch`, `--build-command`, `--run-command`, `--static`) only apply to the first deploy; passing them when `.miosa.json` exists is an error, so automation never silently deploys a configuration other than the one it asked for.
 
 ```bash
 # Trigger a rebuild any time

@@ -12,7 +12,12 @@ import {
   ENV_STDIN_OPTION_HELP,
   resolveEnvInputs,
 } from "./env-input.js";
-import { handleError, isJsonMode } from "./util.js";
+import {
+  errorExitCode,
+  handleError,
+  isJsonMode,
+  jsonErrorPayload,
+} from "./util.js";
 import { spin } from "../ui/spinner.js";
 import { renderTable } from "../ui/table.js";
 import {
@@ -198,7 +203,9 @@ function addProofCheck(
   });
 }
 
-function dockerDeployApp(deployment: Deployment): Record<string, unknown> | null {
+function dockerDeployApp(
+  deployment: Deployment,
+): Record<string, unknown> | null {
   const app = asRecord(deployment).docker_deploy_app;
   if (app && typeof app === "object" && !Array.isArray(app)) {
     return app as Record<string, unknown>;
@@ -240,7 +247,11 @@ async function probePublicUrl(
       signal: controller.signal,
     });
     res.body.resume();
-    return { ok: res.statusCode >= 200 && res.statusCode < 500, status: res.statusCode, url: url.toString() };
+    return {
+      ok: res.statusCode >= 200 && res.statusCode < 500,
+      status: res.statusCode,
+      url: url.toString(),
+    };
   } catch (error) {
     return {
       ok: false,
@@ -278,7 +289,10 @@ async function proveDeployment(
       ? "Deployment is marked running."
       : `Deployment state is ${deployment.state}, expected running.`,
     { state: deployment.state },
-    ["miosa deploy logs <deployment-id>", "miosa deploy redeploy <deployment-id>"],
+    [
+      "miosa deploy logs <deployment-id>",
+      "miosa deploy redeploy <deployment-id>",
+    ],
   );
 
   addProofCheck(
@@ -302,7 +316,9 @@ async function proveDeployment(
       checks,
       "docker_deploy_host_link",
       Boolean(hostId),
-      hostId ? `Deployment links App Engine host ${hostId}.` : "Deployment has no App Engine host id.",
+      hostId
+        ? `Deployment links App Engine host ${hostId}.`
+        : "Deployment has no App Engine host id.",
       { docker_deploy_host_id: hostId },
       ["miosa docker-deploy ensure --wait --json"],
     );
@@ -312,7 +328,9 @@ async function proveDeployment(
         const host = await client.apiGet<Record<string, unknown>>(
           `/api/v1/docker-deploy/hosts/${encodeURIComponent(hostId)}`,
         );
-        const hostRecord = asRecord(asRecord(host).host ?? asRecord(host).data ?? host);
+        const hostRecord = asRecord(
+          asRecord(host).host ?? asRecord(host).data ?? host,
+        );
         const status = stringField(hostRecord, "status");
         const applianceStatus = stringField(hostRecord, "appliance_status");
         addProofCheck(
@@ -321,7 +339,10 @@ async function proveDeployment(
           status === "active" && applianceStatus === "healthy",
           `Host status=${status ?? "unknown"}, appliance=${applianceStatus ?? "unknown"}.`,
           { status, appliance_status: applianceStatus },
-          ["miosa docker-deploy show <host-id> --json", "miosa docker-deploy ensure --wait --json"],
+          [
+            "miosa docker-deploy show <host-id> --json",
+            "miosa docker-deploy ensure --wait --json",
+          ],
         );
       } catch (error) {
         addProofCheck(
@@ -338,7 +359,9 @@ async function proveDeployment(
       checks,
       "docker_deploy_app_row",
       Boolean(app),
-      app ? `App Engine app status=${stringField(app, "status") ?? "unknown"}.` : "App Engine app row is missing.",
+      app
+        ? `App Engine app status=${stringField(app, "status") ?? "unknown"}.`
+        : "App Engine app row is missing.",
       app
         ? {
             status: stringField(app, "status"),
@@ -354,10 +377,10 @@ async function proveDeployment(
       "docker_deploy_container_route",
       Boolean(
         app &&
-          stringField(app, "container_id") &&
-          stringField(app, "status") === "running" &&
-          runtime.ip &&
-          runtime.port,
+        stringField(app, "container_id") &&
+        stringField(app, "status") === "running" &&
+        runtime.ip &&
+        runtime.port,
       ),
       app
         ? `Container=${stringField(app, "container_id") ?? "missing"}, route=${runtime.ip ?? "missing"}:${runtime.port ?? "missing"}.`
@@ -372,7 +395,11 @@ async function proveDeployment(
   }
 
   if (opts.probe) {
-    const probe = await probePublicUrl(publicUrl, opts.probePath, opts.timeoutMs);
+    const probe = await probePublicUrl(
+      publicUrl,
+      opts.probePath,
+      opts.timeoutMs,
+    );
     addProofCheck(
       checks,
       "public_url_probe",
@@ -381,7 +408,10 @@ async function proveDeployment(
         ? `Public URL returned HTTP ${probe.status}.`
         : `Public URL probe failed: ${probe.error ?? `HTTP ${probe.status}`}.`,
       probe,
-      ["Check DNS/custom domain routing.", "Check app logs and container health."],
+      [
+        "Check DNS/custom domain routing.",
+        "Check app logs and container health.",
+      ],
     );
   }
 
@@ -682,9 +712,24 @@ Examples:
         let queuedBuild: DeploymentBuild | null = null;
         let createdDeployment: Deployment | null = null;
         let webhookSecret: string | null = null;
+        let buildQueueError: unknown = null;
 
         if (projectCfg) {
           // ── Re-deploy from existing .miosa.json ──────────────────────
+          const firstDeployOnlyFlags = [
+            opts.name !== undefined ? "--name" : null,
+            opts.branch !== undefined ? "--branch" : null,
+            opts.buildCommand !== undefined ? "--build-command" : null,
+            opts.runCommand !== undefined ? "--run-command" : null,
+            opts.static ? "--static" : null,
+          ].filter((flag): flag is string => flag !== null);
+          if (firstDeployOnlyFlags.length > 0) {
+            throw new UserError(
+              `.miosa.json already exists; ${firstDeployOnlyFlags.join(", ")} only apply when creating a deployment.`,
+              "Remove these flags to redeploy the saved configuration, or delete .miosa.json to create a new deployment.",
+            );
+          }
+
           if (!json) {
             console.log();
             console.log(
@@ -768,7 +813,7 @@ Examples:
           ) {
             throw new UserError(
               "Could not determine deployment commands non-interactively.",
-              "Pass both --build-command <cmd> and --run-command <cmd>.",
+              "Pass both --build-command <cmd> and --run-command <cmd>, or use --static for static sites.",
             );
           }
 
@@ -782,7 +827,7 @@ Examples:
           };
 
           let answers: DeployAnswers;
-          if (process.stdin.isTTY && !isJsonMode(opts) && !opts.yes) {
+          if (!requiresNonInteractiveInputs) {
             const { default: inquirer } = await import("inquirer");
             const identityQuestions = [
               {
@@ -930,27 +975,44 @@ Examples:
             buildSpinner?.succeed("Initial build queued");
           } catch (err) {
             buildSpinner?.fail("Failed to queue build");
-            handleError(err);
+            if (!json) handleError(err);
+            buildQueueError = err;
           }
         }
 
         if (json) {
-          const deployment =
-            createdDeployment ?? (await client.getDeployment(deploymentId));
+          let deployment = createdDeployment;
+          if (!deployment) {
+            try {
+              deployment = await client.getDeployment(deploymentId);
+            } catch {
+              deployment = null;
+            }
+          }
           console.log(
             JSON.stringify(
               {
-                ok: true,
-                deployment: {
-                  id: deployment.id,
-                  name: deployment.name,
-                  slug: deployment.slug,
-                  state: deployment.state,
-                  deployment_product: deploymentProduct(deployment),
-                  docker_deploy_host_id:
-                    deployment.docker_deploy_host_id ?? null,
-                  public_url: deploymentUrl(deployment),
-                },
+                ok: buildQueueError === null,
+                deployment: deployment
+                  ? {
+                      id: deployment.id,
+                      name: deployment.name,
+                      slug: deployment.slug,
+                      state: deployment.state,
+                      deployment_product: deploymentProduct(deployment),
+                      docker_deploy_host_id:
+                        deployment.docker_deploy_host_id ?? null,
+                      public_url: deploymentUrl(deployment),
+                    }
+                  : {
+                      id: deploymentId,
+                      name: projectCfg.name,
+                      slug: null,
+                      state: null,
+                      deployment_product: null,
+                      docker_deploy_host_id: null,
+                      public_url: null,
+                    },
                 build: queuedBuild
                   ? { id: queuedBuild.id, state: queuedBuild.state }
                   : null,
@@ -962,11 +1024,17 @@ Examples:
                     }
                   : null,
                 project_config: path.join(cwd, PROJECT_CONFIG_FILE),
+                ...(buildQueueError === null
+                  ? {}
+                  : { error: jsonErrorPayload(buildQueueError) }),
               },
               null,
               2,
             ),
           );
+          if (buildQueueError !== null) {
+            process.exit(errorExitCode(buildQueueError));
+          }
           return;
         }
 
@@ -1224,7 +1292,9 @@ Examples:
 
   deploy
     .command("prove [id]")
-    .description("Prove a deployment is real, live, routed, and not metadata-only")
+    .description(
+      "Prove a deployment is real, live, routed, and not metadata-only",
+    )
     .option("--probe-path <path>", "HTTP path to probe on the public URL", "/")
     .option(
       "--timeout <seconds>",
@@ -1269,11 +1339,16 @@ Examples:
           printBanner({ subtitle: "Deployment proof" });
           console.log(
             kvPanel([
-              { label: "deployment_id", value: chalk.dim(result.deployment_id) },
+              {
+                label: "deployment_id",
+                value: chalk.dim(result.deployment_id),
+              },
               { label: "type", value: productLabel(result.deployment_product) },
               {
                 label: "public_url",
-                value: result.public_url ? chalk.cyan(result.public_url) : chalk.dim("missing"),
+                value: result.public_url
+                  ? chalk.cyan(result.public_url)
+                  : chalk.dim("missing"),
               },
               {
                 label: "proof",

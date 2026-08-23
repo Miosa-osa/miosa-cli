@@ -31,98 +31,29 @@ describe("miosa deploy process boundary", () => {
         dependencies: { next: "15.0.0" },
       }),
     );
-    execFileSync("git", ["init", "-b", "main"], { cwd: projectDirectory });
-    execFileSync(
-      "git",
-      ["remote", "add", "origin", "https://github.com/acme/headless-app.git"],
-      { cwd: projectDirectory },
-    );
-    execFileSync("git", ["add", "package.json"], { cwd: projectDirectory });
-    execFileSync(
-      "git",
-      [
-        "-c",
-        "user.name=MIOSA Test",
-        "-c",
-        "user.email=test@miosa.invalid",
-        "commit",
-        "-m",
-        "test fixture",
-      ],
-      { cwd: projectDirectory, stdio: "ignore" },
+    initializeGitProject(
+      projectDirectory,
+      "https://github.com/acme/headless-app.git",
+      ["package.json"],
     );
 
     const deploymentId = "dep-0000-0000-0000-000000000001";
     const buildId = "bld-0000-0000-0000-000000000001";
-    let createRequest: Record<string, unknown> | null = null;
-    let createTenantHeader: string | undefined;
-    const server = http.createServer((request, response) => {
-      void (async () => {
-        const body = await readRequestBody(request);
-        response.setHeader("content-type", "application/json");
-
-        if (
-          request.method === "POST" &&
-          request.url === "/api/v1/deployments"
-        ) {
-          createRequest = JSON.parse(body) as Record<string, unknown>;
-          createTenantHeader = request.headers["x-miosa-tenant"] as
-            | string
-            | undefined;
-          response.statusCode = 201;
-          response.end(
-            JSON.stringify({
-              data: {
-                id: deploymentId,
-                name: path.basename(projectDirectory),
-                slug: "headless-app",
-                state: "pending",
-                deployment_product: "docker_deploy",
-                docker_deploy_host_id: "ddh-0001",
-                metadata: { deployment_product: "docker_deploy" },
-              },
-              webhook_secret: "whsec_process_test",
-            }),
-          );
-          return;
-        }
-
-        if (
-          request.method === "POST" &&
-          request.url === `/api/v1/deployments/${deploymentId}/redeploy`
-        ) {
-          response.statusCode = 202;
-          response.end(
-            JSON.stringify({
-              data: {
-                id: buildId,
-                state: "queued",
-                deployment_id: deploymentId,
-              },
-            }),
-          );
-          return;
-        }
-
-        response.statusCode = 404;
-        response.end(JSON.stringify({ error: "not_found" }));
-      })();
+    const api = await startMockDeployApi({
+      deploymentId,
+      buildId,
+      name: path.basename(projectDirectory),
+      slug: "headless-app",
+      dockerDeployHostId: "ddh-0001",
+      webhookSecret: "whsec_process_test",
     });
-
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Test API did not bind a TCP port");
-    }
 
     try {
       const result = await runCli(
         cliRoot,
         projectDirectory,
         isolatedHome,
-        `http://127.0.0.1:${address.port}`,
+        api.endpoint,
       );
 
       expect(result.exitCode).toBe(0);
@@ -139,17 +70,15 @@ describe("miosa deploy process boundary", () => {
         build: { id: buildId, state: "queued" },
         webhook: { secret: "whsec_process_test" },
       });
-      expect(createRequest).toMatchObject({
+      expect(api.createRequest()).toMatchObject({
         repo_url: "https://github.com/acme/headless-app",
         branch: "main",
         auto_deploy: true,
         metadata: { deployment_product: "docker_deploy" },
       });
-      expect(createTenantHeader).toBe("acme-org");
+      expect(api.createTenantHeader()).toBe("acme-org");
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await api.close();
     }
   }, 15_000);
 
@@ -190,6 +119,7 @@ describe("miosa deploy process boundary", () => {
     });
     expect(result.stdout).toContain("--build-command");
     expect(result.stdout).toContain("--run-command");
+    expect(result.stdout).toContain("--static");
   }, 15_000);
 
   it("deploys static HTML with closed stdin and no command fields", async () => {
@@ -213,67 +143,21 @@ describe("miosa deploy process boundary", () => {
 
     const deploymentId = "dep-0000-0000-0000-000000000002";
     const buildId = "bld-0000-0000-0000-000000000002";
-    let createRequest: Record<string, unknown> | null = null;
-    const server = http.createServer((request, response) => {
-      void (async () => {
-        const body = await readRequestBody(request);
-        response.setHeader("content-type", "application/json");
-        if (
-          request.method === "POST" &&
-          request.url === "/api/v1/deployments"
-        ) {
-          createRequest = JSON.parse(body) as Record<string, unknown>;
-          response.statusCode = 201;
-          response.end(
-            JSON.stringify({
-              data: {
-                id: deploymentId,
-                name: "callix-security-report",
-                slug: "callix-security-report",
-                state: "pending",
-                deployment_product: "docker_deploy",
-                docker_deploy_host_id: "ddh-0002",
-                metadata: { deployment_product: "docker_deploy" },
-              },
-              webhook_secret: "whsec_static_test",
-            }),
-          );
-          return;
-        }
-        if (
-          request.method === "POST" &&
-          request.url === `/api/v1/deployments/${deploymentId}/redeploy`
-        ) {
-          response.statusCode = 202;
-          response.end(
-            JSON.stringify({
-              data: {
-                id: buildId,
-                state: "queued",
-                deployment_id: deploymentId,
-              },
-            }),
-          );
-          return;
-        }
-        response.statusCode = 404;
-        response.end(JSON.stringify({ error: "not_found" }));
-      })();
+    const api = await startMockDeployApi({
+      deploymentId,
+      buildId,
+      name: "callix-security-report",
+      slug: "callix-security-report",
+      dockerDeployHostId: "ddh-0002",
+      webhookSecret: "whsec_static_test",
     });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Test API did not bind a TCP port");
-    }
 
     try {
       const result = await runCli(
         cliRoot,
         projectDirectory,
         isolatedHome,
-        `http://127.0.0.1:${address.port}`,
+        api.endpoint,
         [
           "--static",
           "--name",
@@ -292,19 +176,17 @@ describe("miosa deploy process boundary", () => {
         deployment: { id: deploymentId, deployment_product: "docker_deploy" },
         build: { id: buildId, state: "queued" },
       });
-      expect(createRequest).toMatchObject({
+      expect(api.createRequest()).toMatchObject({
         name: "callix-security-report",
         repo_url: "https://github.com/acme/callix-security-report",
         branch: "master",
         auto_deploy: true,
         metadata: { deployment_product: "docker_deploy" },
       });
-      expect(createRequest).not.toHaveProperty("build_command");
-      expect(createRequest).not.toHaveProperty("run_command");
+      expect(api.createRequest()).not.toHaveProperty("build_command");
+      expect(api.createRequest()).not.toHaveProperty("run_command");
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await api.close();
     }
   }, 15_000);
 });
@@ -330,6 +212,93 @@ function initializeGitProject(
     ],
     { cwd: directory, stdio: "ignore" },
   );
+}
+
+interface MockDeployApiFixture {
+  deploymentId: string;
+  buildId: string;
+  name: string;
+  slug: string;
+  dockerDeployHostId: string;
+  webhookSecret: string;
+}
+
+interface MockDeployApi {
+  endpoint: string;
+  createRequest: () => Record<string, unknown> | null;
+  createTenantHeader: () => string | undefined;
+  close: () => Promise<void>;
+}
+
+async function startMockDeployApi(
+  fixture: MockDeployApiFixture,
+): Promise<MockDeployApi> {
+  let createRequest: Record<string, unknown> | null = null;
+  let createTenantHeader: string | undefined;
+  const server = http.createServer((request, response) => {
+    void (async () => {
+      const body = await readRequestBody(request);
+      response.setHeader("content-type", "application/json");
+
+      if (request.method === "POST" && request.url === "/api/v1/deployments") {
+        createRequest = JSON.parse(body) as Record<string, unknown>;
+        createTenantHeader = request.headers["x-miosa-tenant"] as
+          string | undefined;
+        response.statusCode = 201;
+        response.end(
+          JSON.stringify({
+            data: {
+              id: fixture.deploymentId,
+              name: fixture.name,
+              slug: fixture.slug,
+              state: "pending",
+              deployment_product: "docker_deploy",
+              docker_deploy_host_id: fixture.dockerDeployHostId,
+              metadata: { deployment_product: "docker_deploy" },
+            },
+            webhook_secret: fixture.webhookSecret,
+          }),
+        );
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        request.url === `/api/v1/deployments/${fixture.deploymentId}/redeploy`
+      ) {
+        response.statusCode = 202;
+        response.end(
+          JSON.stringify({
+            data: {
+              id: fixture.buildId,
+              state: "queued",
+              deployment_id: fixture.deploymentId,
+            },
+          }),
+        );
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not_found" }));
+    })();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Test API did not bind a TCP port");
+  }
+
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    createRequest: () => createRequest,
+    createTenantHeader: () => createTenantHeader,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
 }
 
 function readRequestBody(request: http.IncomingMessage): Promise<string> {
