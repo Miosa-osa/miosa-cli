@@ -296,6 +296,23 @@ $ miosa deploy --docker-deploy
     miosa deploy env set KEY=VALUE             — set env var
 ```
 
+For CI, agents, and scripts, use JSON mode.
+JSON mode and non-TTY stdin never open interactive prompts.
+Framework detection supplies build and run commands when it recognizes the project.
+Unknown project shapes fail before the API and require both command flags instead of guessing.
+
+```bash
+miosa --organization acme deploy --docker-deploy --json
+
+miosa --organization acme deploy --docker-deploy --json --yes \
+  --name my-project \
+  --branch main \
+  --build-command "npm run build" \
+  --run-command "npm start"
+```
+
+The JSON result is one document containing the deployment identity, queued build, App Engine host, public URL when known, and one-time webhook details for a new deployment.
+
 On subsequent runs from the same directory, `miosa deploy` reads `.miosa.json` and skips all prompts — just queues a rebuild and streams logs.
 
 ```bash
@@ -626,6 +643,8 @@ Deploy a GitHub repo. See the [Deploy section](#deploy--60-seconds-to-first-depl
 
 ```bash
 miosa deploy --docker-deploy             # Recommended production deploy
+miosa deploy --docker-deploy --json      # Prompt-free CI or agent deploy
+miosa deploy --name app --branch main --build-command "npm run build" --run-command "npm start" --yes --json
 miosa deploy                             # First deploy or redeploy from .miosa.json
 miosa deploy list [--json]               # List all deployments
 miosa deploy logs [id]                   # Tail live build logs

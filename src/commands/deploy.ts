@@ -610,6 +610,16 @@ function formatSeconds(value: unknown): string {
 
 // ── register ──────────────────────────────────────────────────────────────────
 
+interface DeployOptions {
+  dockerDeploy?: boolean;
+  name?: string;
+  branch?: string;
+  buildCommand?: string;
+  runCommand?: string;
+  yes?: boolean;
+  json?: boolean;
+}
+
 export function register(program: Command): void {
   const deploy = program
     .command("deploy")
@@ -621,11 +631,30 @@ export function register(program: Command): void {
       "--docker-deploy",
       "Create the deployment on this workspace's dedicated App Engine runtime",
     )
+    .option("--name <name>", "Deployment name (defaults to the directory name)")
+    .option(
+      "--branch <branch>",
+      "Git branch to deploy (defaults to the current branch)",
+    )
+    .option(
+      "--build-command <cmd>",
+      "Build command (defaults to framework detection)",
+    )
+    .option(
+      "--run-command <cmd>",
+      "Run command (defaults to framework detection)",
+    )
+    .option(
+      "-y, --yes",
+      "Accept detected defaults and skip interactive confirmation",
+    )
     .addHelpText(
       "after",
       `
 Examples:
   miosa deploy --docker-deploy       Recommended: deploy current directory to App Engine
+  miosa deploy --docker-deploy --json  Prompt-free deploy for CI and agents
+  miosa deploy --name app --branch main --build-command "npm run build" --run-command "npm start" --yes --json
   miosa deploy                       Deploy current directory (auto-detects framework)
   miosa deploy list                  List all deployments
   miosa deploy logs                  Tail build logs for this project
@@ -636,44 +665,52 @@ Examples:
   miosa deploy destroy               Tear down this deployment
 `,
     )
-    .action(async (opts: { dockerDeploy?: boolean }) => {
+    .action(async (opts: DeployOptions) => {
       // Default action: interactive deploy flow
       try {
         const cwd = process.cwd();
         const config = loadConfig();
         const client = new MiosaClient(config);
+        const json = isJsonMode(opts);
 
         // ── Check for existing .miosa.json first (skip git for redeploys) ──
         let projectCfg = loadProjectConfig(cwd);
         let deploymentId: DeploymentId;
+        let queuedBuild: DeploymentBuild | null = null;
+        let createdDeployment: Deployment | null = null;
+        let webhookSecret: string | null = null;
 
         if (projectCfg) {
           // ── Re-deploy from existing .miosa.json ──────────────────────
-          console.log();
-          console.log(
-            chalk.dim("  Found .miosa.json — redeploying existing deployment"),
-          );
-          console.log(
-            `  ${chalk.bold("Project")}   ${projectCfg.name} (${projectCfg.framework})`,
-          );
-          console.log(`  ${chalk.bold("Branch")}    ${projectCfg.branch}`);
-          console.log();
+          if (!json) {
+            console.log();
+            console.log(
+              chalk.dim(
+                "  Found .miosa.json — redeploying existing deployment",
+              ),
+            );
+            console.log(
+              `  ${chalk.bold("Project")}   ${projectCfg.name} (${projectCfg.framework})`,
+            );
+            console.log(`  ${chalk.bold("Branch")}    ${projectCfg.branch}`);
+            console.log();
+          }
 
           deploymentId = projectCfg.deploymentId;
 
-          const buildSpinner = spin("Queuing build...");
+          const buildSpinner = json ? null : spin("Queuing build...");
           try {
-            await client.redeployDeployment(deploymentId);
-            buildSpinner.succeed("Build queued");
+            queuedBuild = await client.redeployDeployment(deploymentId);
+            buildSpinner?.succeed("Build queued");
           } catch (err) {
-            buildSpinner.fail("Failed to queue build");
+            buildSpinner?.fail("Failed to queue build");
             handleError(err);
           }
         } else {
           // ── First deploy: verify git repo + remote, then detect ───────
           const { repoUrl, currentBranch } = getGitInfo(cwd);
 
-          console.log();
+          if (!json) console.log();
 
           const detection = detectFramework(cwd);
 
@@ -685,69 +722,98 @@ Examples:
             const label =
               FRAMEWORK_LABELS[detection.framework as Framework] ??
               detection.framework;
-            console.log(
-              `  Detected: ${chalk.cyan(label)} (confidence ${detection.confidence}%)`,
-            );
+            if (!json) {
+              console.log(
+                `  Detected: ${chalk.cyan(label)} (confidence ${detection.confidence}%)`,
+              );
+            }
             framework = detection.framework;
             buildCommand = detection.buildCommand;
             runCommand = detection.runCommand;
           } else {
-            console.log(
-              chalk.yellow(
-                "  Could not auto-detect framework. You can set build/run commands manually.",
-              ),
+            if (!json) {
+              console.log(
+                chalk.yellow(
+                  "  Could not auto-detect framework. You can set build/run commands manually.",
+                ),
+              );
+            }
+          }
+
+          if (!json) {
+            console.log(`  Repo:     ${chalk.dim(repoUrl)}`);
+            console.log(`  Branch:   ${chalk.dim(currentBranch)}`);
+            console.log();
+          }
+
+          const requiresNonInteractiveInputs =
+            !process.stdin.isTTY || json || Boolean(opts.yes);
+          if (
+            requiresNonInteractiveInputs &&
+            !detection &&
+            (!opts.buildCommand || !opts.runCommand)
+          ) {
+            throw new UserError(
+              "Could not determine deployment commands non-interactively.",
+              "Pass both --build-command <cmd> and --run-command <cmd>.",
             );
           }
 
-          console.log(`  Repo:     ${chalk.dim(repoUrl)}`);
-          console.log(`  Branch:   ${chalk.dim(currentBranch)}`);
-          console.log();
-
-          // ── Interactive prompts ──────────────────────────────────────
-          const { default: inquirer } = await import("inquirer");
-
           const projectName = path.basename(cwd).replace(/[^a-z0-9-]/gi, "-");
-
-          const answers = await inquirer.prompt<{
+          type DeployAnswers = {
             name: string;
             branch: string;
             buildCommand: string;
             runCommand: string;
             confirm: boolean;
-          }>([
-            {
-              type: "input",
-              name: "name",
-              message: "Deployment name:",
-              default: projectName,
-              validate: (v: string) =>
-                v.length > 0 ? true : "Name is required",
-            },
-            {
-              type: "input",
-              name: "branch",
-              message: "Branch to deploy:",
-              default: currentBranch,
-            },
-            {
-              type: "input",
-              name: "buildCommand",
-              message: "Build command:",
-              default: buildCommand,
-            },
-            {
-              type: "input",
-              name: "runCommand",
-              message: "Run command:",
-              default: runCommand,
-            },
-            {
-              type: "confirm",
-              name: "confirm",
-              message: "Create deployment?",
-              default: true,
-            },
-          ]);
+          };
+
+          let answers: DeployAnswers;
+          if (process.stdin.isTTY && !isJsonMode(opts) && !opts.yes) {
+            const { default: inquirer } = await import("inquirer");
+            answers = await inquirer.prompt<DeployAnswers>([
+              {
+                type: "input",
+                name: "name",
+                message: "Deployment name:",
+                default: opts.name ?? projectName,
+                validate: (v: string) =>
+                  v.length > 0 ? true : "Name is required",
+              },
+              {
+                type: "input",
+                name: "branch",
+                message: "Branch to deploy:",
+                default: opts.branch ?? currentBranch,
+              },
+              {
+                type: "input",
+                name: "buildCommand",
+                message: "Build command:",
+                default: opts.buildCommand ?? buildCommand,
+              },
+              {
+                type: "input",
+                name: "runCommand",
+                message: "Run command:",
+                default: opts.runCommand ?? runCommand,
+              },
+              {
+                type: "confirm",
+                name: "confirm",
+                message: "Create deployment?",
+                default: true,
+              },
+            ]);
+          } else {
+            answers = {
+              name: opts.name ?? projectName,
+              branch: opts.branch ?? currentBranch,
+              buildCommand: opts.buildCommand ?? buildCommand,
+              runCommand: opts.runCommand ?? runCommand,
+              confirm: true,
+            };
+          }
 
           if (!answers.confirm) {
             console.log(chalk.dim("  Cancelled."));
@@ -755,10 +821,9 @@ Examples:
           }
 
           // ── Step 3: POST /api/v1/deployments ─────────────────────────
-          const createSpinner = spin(
-            `Creating deployment "${answers.name}"...`,
-          );
-          let webhookSecret: string;
+          const createSpinner = json
+            ? null
+            : spin(`Creating deployment "${answers.name}"...`);
           let deployment: Deployment;
 
           try {
@@ -776,11 +841,12 @@ Examples:
             });
             deployment = result.data;
             webhookSecret = result.webhook_secret;
-            createSpinner.succeed(
+            createdDeployment = deployment;
+            createSpinner?.succeed(
               `${productLabel(deploymentProduct(deployment))} deployment "${deployment.name}" created (slug: ${deployment.slug})`,
             );
           } catch (err) {
-            createSpinner.fail("Failed to create deployment");
+            createSpinner?.fail("Failed to create deployment");
             handleError(err);
           }
 
@@ -798,40 +864,80 @@ Examples:
             branch: answers.branch,
           };
           saveProjectConfig(cwd, projectCfg);
-          console.log(chalk.dim(`  Saved .miosa.json`));
+          if (!json) console.log(chalk.dim(`  Saved .miosa.json`));
 
           // ── Step 4b: Print webhook secret (one-time) ─────────────────
-          console.log();
-          console.log(chalk.bold.yellow("  ACTION REQUIRED — GitHub Webhook"));
-          console.log(
-            chalk.dim(
-              "  The webhook secret below is shown ONCE. Store it now.",
-            ),
-          );
-          console.log();
-          console.log(
-            `  ${chalk.bold("Webhook URL:")}   https://api.miosa.ai/api/v1/integrations/github/webhook`,
-          );
-          console.log(`  ${chalk.bold("Content type:")}  application/json`);
-          console.log(
-            `  ${chalk.bold("Secret:")}        ${chalk.green(webhookSecret)}`,
-          );
-          console.log(`  ${chalk.bold("Events:")}        push`);
-          console.log();
-          console.log(
-            chalk.dim("  Add this at: " + repoUrl + "/settings/hooks/new"),
-          );
-          console.log();
+          if (!json) {
+            console.log();
+            console.log(
+              chalk.bold.yellow("  ACTION REQUIRED — GitHub Webhook"),
+            );
+            console.log(
+              chalk.dim(
+                "  The webhook secret below is shown ONCE. Store it now.",
+              ),
+            );
+            console.log();
+            console.log(
+              `  ${chalk.bold("Webhook URL:")}   https://api.miosa.ai/api/v1/integrations/github/webhook`,
+            );
+            console.log(`  ${chalk.bold("Content type:")}  application/json`);
+            console.log(
+              `  ${chalk.bold("Secret:")}        ${chalk.green(webhookSecret)}`,
+            );
+            console.log(`  ${chalk.bold("Events:")}        push`);
+            console.log();
+            console.log(
+              chalk.dim("  Add this at: " + repoUrl + "/settings/hooks/new"),
+            );
+            console.log();
+          }
 
           // ── Step 5: Trigger initial build ─────────────────────────────
-          const buildSpinner = spin("Queuing initial build...");
+          const buildSpinner = json ? null : spin("Queuing initial build...");
           try {
-            await client.redeployDeployment(deploymentId);
-            buildSpinner.succeed("Initial build queued");
+            queuedBuild = await client.redeployDeployment(deploymentId);
+            buildSpinner?.succeed("Initial build queued");
           } catch (err) {
-            buildSpinner.fail("Failed to queue build");
+            buildSpinner?.fail("Failed to queue build");
             handleError(err);
           }
+        }
+
+        if (json) {
+          const deployment =
+            createdDeployment ?? (await client.getDeployment(deploymentId));
+          console.log(
+            JSON.stringify(
+              {
+                ok: true,
+                deployment: {
+                  id: deployment.id,
+                  name: deployment.name,
+                  slug: deployment.slug,
+                  state: deployment.state,
+                  deployment_product: deploymentProduct(deployment),
+                  docker_deploy_host_id:
+                    deployment.docker_deploy_host_id ?? null,
+                  public_url: deploymentUrl(deployment),
+                },
+                build: queuedBuild
+                  ? { id: queuedBuild.id, state: queuedBuild.state }
+                  : null,
+                webhook: webhookSecret
+                  ? {
+                      url: "https://api.miosa.ai/api/v1/integrations/github/webhook",
+                      secret: webhookSecret,
+                      events: ["push"],
+                    }
+                  : null,
+                project_config: path.join(cwd, PROJECT_CONFIG_FILE),
+              },
+              null,
+              2,
+            ),
+          );
+          return;
         }
 
         // ── Step 6: Stream build logs ─────────────────────────────────────
