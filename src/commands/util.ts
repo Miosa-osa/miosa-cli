@@ -5,33 +5,42 @@ import { loadConfig } from "../config.js";
 import { MiosaClient } from "../client.js";
 import { isDebugMode, isJsonMode } from "../cli-env.js";
 
+export function jsonErrorPayload(err: unknown): Record<string, unknown> {
+  if (err instanceof MiosaError) {
+    return {
+      code: errorCodeFor(err),
+      message: err.message,
+      retryable: retryableFor(err),
+      ...(err.hint ? { hint: err.hint } : {}),
+      ...(err.requestId ? { request_id: err.requestId } : {}),
+      ...(shouldShowDetails(err) ? { details: err.details } : {}),
+    };
+  }
+  if (err instanceof Error) {
+    return {
+      code: "UNEXPECTED_ERROR",
+      message: err.message,
+      retryable: isTransientTransportError(err.message),
+      ...(isDebugMode() ? { stack: err.stack } : {}),
+    };
+  }
+  return {
+    code: "UNKNOWN_ERROR",
+    message: String(err),
+    retryable: false,
+  };
+}
+
+export function errorExitCode(err: unknown): number {
+  return err instanceof MiosaError ? err.exitCode : 1;
+}
+
 export function handleError(err: unknown, opts?: { json?: boolean }): never {
   if (isJsonMode(opts)) {
-    const error =
-      err instanceof MiosaError
-        ? {
-            code: errorCodeFor(err),
-            message: err.message,
-            retryable: retryableFor(err),
-            ...(err.hint ? { hint: err.hint } : {}),
-            ...(err.requestId ? { request_id: err.requestId } : {}),
-            ...(shouldShowDetails(err) ? { details: err.details } : {}),
-          }
-        : err instanceof Error
-          ? {
-              code: "UNEXPECTED_ERROR",
-              message: err.message,
-              retryable: isTransientTransportError(err.message),
-              ...(isDebugMode() ? { stack: err.stack } : {}),
-            }
-          : {
-              code: "UNKNOWN_ERROR",
-              message: String(err),
-              retryable: false,
-            };
-
-    console.log(JSON.stringify({ ok: false, error }, null, 2));
-    return process.exit(err instanceof MiosaError ? err.exitCode : 1);
+    console.log(
+      JSON.stringify({ ok: false, error: jsonErrorPayload(err) }, null, 2),
+    );
+    return process.exit(errorExitCode(err));
   }
 
   if (err instanceof MiosaError) {

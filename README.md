@@ -296,7 +296,30 @@ $ miosa deploy --docker-deploy
     miosa deploy env set KEY=VALUE             — set env var
 ```
 
+For CI, agents, and scripts, use JSON mode.
+JSON mode and non-TTY stdin never open interactive prompts.
+Framework detection supplies build and run commands when it recognizes the project.
+Unknown project shapes fail before the API and require both command flags instead of guessing.
+Static sites use `--static`, which omits build and run commands completely.
+
+```bash
+miosa --organization acme deploy --docker-deploy --json
+
+miosa --organization acme deploy --docker-deploy --json --yes \
+  --name my-project \
+  --branch main \
+  --build-command "npm run build" \
+  --run-command "npm start"
+
+miosa --organization acme deploy --docker-deploy --static --json --yes \
+  --name callix-security-report \
+  --branch master
+```
+
+The JSON result is one document containing the deployment identity, queued build, App Engine host, public URL when known, and one-time webhook details for a new deployment.
+
 On subsequent runs from the same directory, `miosa deploy` reads `.miosa.json` and skips all prompts — just queues a rebuild and streams logs.
+The creation flags (`--name`, `--branch`, `--build-command`, `--run-command`, `--static`) only apply to the first deploy; passing them when `.miosa.json` exists is an error, so automation never silently deploys a configuration other than the one it asked for.
 
 ```bash
 # Trigger a rebuild any time
@@ -626,6 +649,9 @@ Deploy a GitHub repo. See the [Deploy section](#deploy--60-seconds-to-first-depl
 
 ```bash
 miosa deploy --docker-deploy             # Recommended production deploy
+miosa deploy --docker-deploy --json      # Prompt-free CI or agent deploy
+miosa deploy --docker-deploy --static --name report --branch main --yes --json
+miosa deploy --name app --branch main --build-command "npm run build" --run-command "npm start" --yes --json
 miosa deploy                             # First deploy or redeploy from .miosa.json
 miosa deploy list [--json]               # List all deployments
 miosa deploy logs [id]                   # Tail live build logs

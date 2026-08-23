@@ -607,20 +607,41 @@ describe("miosa deploy (main action) — error scenarios", () => {
 
 describe("miosa deploy --docker-deploy", () => {
   let tmpDir: string;
+  let originalStdinIsTTY: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    originalStdinIsTTY = Object.getOwnPropertyDescriptor(
+      process.stdin,
+      "isTTY",
+    );
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: false,
+    });
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "miosa-test-"));
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["MIOSA_JSON"];
+    if (originalStdinIsTTY) {
+      Object.defineProperty(process.stdin, "isTTY", originalStdinIsTTY);
+    } else {
+      delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
     vi.restoreAllMocks();
   });
 
-  it("creates a deployment with docker_deploy metadata", async () => {
+  async function arrangeFirstDockerDeploy(expected: {
+    name: string;
+    branch: string;
+    buildCommand?: string;
+    runCommand?: string;
+    queueFailure?: boolean;
+  }): Promise<{ logged: string[]; program: Command }> {
     const { execSync } = await import("node:child_process");
     vi.mocked(execSync).mockReset();
     vi.mocked(execSync).mockImplementation((cmd) => {
@@ -635,21 +656,19 @@ describe("miosa deploy --docker-deploy", () => {
       return Buffer.from("");
     });
 
-    const inquirer = await import("inquirer");
-    vi.mocked(inquirer.default.prompt).mockResolvedValueOnce({
-      name: "docker-app",
-      branch: "main",
-      buildCommand: "npm run build",
-      runCommand: "npm start",
-      confirm: true,
-    });
-
     vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({
+        scripts: { build: "next build", start: "next start" },
+        dependencies: { next: "15.0.0" },
+      }),
+    );
 
     const dockerDeployment: Deployment = {
       ...mockDeployment,
-      name: "docker-app",
-      slug: "docker-app",
+      name: expected.name,
+      slug: expected.name,
       deployment_product: "docker_deploy",
       docker_deploy_host_id: "ddh_123",
     };
@@ -665,11 +684,13 @@ describe("miosa deploy --docker-deploy", () => {
         path: "/api/v1/deployments",
         method: "POST",
         body: JSON.stringify({
-          name: "docker-app",
+          name: expected.name,
           repo_url: "https://github.com/acme/app",
-          branch: "main",
-          build_command: "npm run build",
-          run_command: "npm start",
+          branch: expected.branch,
+          ...(expected.buildCommand
+            ? { build_command: expected.buildCommand }
+            : {}),
+          ...(expected.runCommand ? { run_command: expected.runCommand } : {}),
           auto_deploy: true,
           metadata: { deployment_product: "docker_deploy" },
         }),
@@ -683,14 +704,25 @@ describe("miosa deploy --docker-deploy", () => {
         { headers: { "content-type": "application/json" } },
       );
 
-    pool
-      .intercept({
-        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
-        method: "POST",
-      })
-      .reply(202, JSON.stringify({ data: mockBuild }), {
-        headers: { "content-type": "application/json" },
-      });
+    if (expected.queueFailure) {
+      pool
+        .intercept({
+          path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+          method: "POST",
+        })
+        .reply(502, JSON.stringify({ error: "bad_gateway" }), {
+          headers: { "content-type": "application/json" },
+        });
+    } else {
+      pool
+        .intercept({
+          path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+          method: "POST",
+        })
+        .reply(202, JSON.stringify({ data: mockBuild }), {
+          headers: { "content-type": "application/json" },
+        });
+    }
 
     pool
       .intercept({
@@ -724,13 +756,193 @@ describe("miosa deploy --docker-deploy", () => {
       logged.push(a.map(String).join(" "));
     });
 
-    const program = buildProgram();
+    return { logged, program: buildProgram() };
+  }
+
+  it("creates a first deployment without prompting when stdin is non-interactive", async () => {
+    const { logged, program } = await arrangeFirstDockerDeploy({
+      name: path.basename(tmpDir),
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+    });
+
     await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
 
+    const inquirer = await import("inquirer");
     const output = logged.join("\n");
     expect(output).toContain("App Engine");
     expect(output).toContain("ddh_123");
+    expect(inquirer.default.prompt).not.toHaveBeenCalled();
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("uses explicit deployment inputs in non-interactive automation", async () => {
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "automated-app",
+      branch: "release",
+      buildCommand: "pnpm build",
+      runCommand: "node server.js",
+    });
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--name",
+      "automated-app",
+      "--branch",
+      "release",
+      "--build-command",
+      "pnpm build",
+      "--run-command",
+      "node server.js",
+      "--yes",
+    ]);
+
+    const inquirer = await import("inquirer");
+    expect(inquirer.default.prompt).not.toHaveBeenCalled();
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("deploys static HTML without build or run command prompts", async () => {
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "callix-security-report",
+      branch: "master",
+    });
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--static",
+      "--name",
+      "callix-security-report",
+      "--branch",
+      "master",
+      "--yes",
+    ]);
+
+    const inquirer = await import("inquirer");
+    expect(inquirer.default.prompt).not.toHaveBeenCalled();
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("rejects ambiguous static and command-driven deployment inputs", async () => {
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "unused",
+      branch: "main",
+    });
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--docker-deploy",
+      "--static",
+      "--build-command",
+      "npm run build",
+      "--yes",
+    ]);
+
+    expect(errors.join("\n")).toContain(
+      "--static cannot be combined with build or run commands.",
+    );
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("preserves guided prompts for an interactive first deployment", async () => {
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: true,
+    });
+    const { program } = await arrangeFirstDockerDeploy({
+      name: "guided-app",
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+    });
+    const inquirer = await import("inquirer");
+    vi.mocked(inquirer.default.prompt).mockResolvedValueOnce({
+      name: "guided-app",
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      confirm: true,
+    });
+
+    await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
+
+    expect(inquirer.default.prompt).toHaveBeenCalledOnce();
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("prints one stable result document in JSON mode without prompting on a TTY", async () => {
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: true,
+    });
+    process.env["MIOSA_JSON"] = "1";
+    const { logged, program } = await arrangeFirstDockerDeploy({
+      name: path.basename(tmpDir),
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+    });
+
+    await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
+
+    const result = JSON.parse(logged.join("\n")) as {
+      ok: boolean;
+      deployment: { id: string; deployment_product: string };
+      build: { id: string; state: string };
+      webhook: { secret: string } | null;
+    };
+    const inquirer = await import("inquirer");
+    expect(result).toMatchObject({
+      ok: true,
+      deployment: {
+        id: mockDeployment.id,
+        deployment_product: "docker_deploy",
+      },
+      build: { id: mockBuild.id, state: "queued" },
+      webhook: { secret: "whsec_test" },
+    });
+    expect(inquirer.default.prompt).not.toHaveBeenCalled();
+  });
+
+  it("preserves the webhook secret in the JSON document when the initial build queue fails", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const { logged, program } = await arrangeFirstDockerDeploy({
+      name: path.basename(tmpDir),
+      branch: "main",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      queueFailure: true,
+    });
+
+    await program.parseAsync(["node", "miosa", "deploy", "--docker-deploy"]);
+
+    const result = JSON.parse(logged.join("\n")) as {
+      ok: boolean;
+      deployment: { id: string };
+      build: unknown;
+      webhook: { secret: string } | null;
+      error?: { message: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.deployment.id).toBe(mockDeployment.id);
+    expect(result.build).toBeNull();
+    expect(result.webhook).toMatchObject({ secret: "whsec_test" });
+    expect(result.error).toBeDefined();
+    expect(process.exit).toHaveBeenCalled();
+    expect(process.exit).not.toHaveBeenCalledWith(0);
   });
 });
 
@@ -826,7 +1038,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: true }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: true }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: true,
+      }),
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -902,7 +1117,10 @@ describe("miosa deploy prove", () => {
       expect.objectContaining({ id: "docker_deploy_app_row", ok: false }),
     );
     expect(parsed.checks).toContainEqual(
-      expect.objectContaining({ id: "docker_deploy_container_route", ok: false }),
+      expect.objectContaining({
+        id: "docker_deploy_container_route",
+        ok: false,
+      }),
     );
     expect(process.exitCode).toBe(1);
   });
@@ -922,6 +1140,7 @@ describe("miosa deploy (main action) — existing .miosa.json reuse", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env["MIOSA_JSON"];
     vi.restoreAllMocks();
   });
 
@@ -1062,5 +1281,102 @@ describe("miosa deploy (main action) — existing .miosa.json reuse", () => {
     await program.parseAsync(["node", "miosa", "deploy"]);
 
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("rejects first-deploy-only flags when .miosa.json exists", async () => {
+    const projectCfg = {
+      version: 1,
+      deploymentId: mockDeployment.id,
+      name: "my-project",
+      framework: "nextjs",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      branch: "main",
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, ".miosa.json"),
+      JSON.stringify(projectCfg),
+    );
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const errored: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      errored.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "deploy",
+      "--branch",
+      "release",
+      "--static",
+    ]);
+
+    const output = errored.join("\n");
+    expect(output).toContain(".miosa.json already exists");
+    expect(output).toContain("--branch");
+    expect(output).toContain("--static");
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("reports success from saved config when the enrichment fetch fails after a queued redeploy in JSON mode", async () => {
+    process.env["MIOSA_JSON"] = "1";
+    const projectCfg = {
+      version: 1,
+      deploymentId: mockDeployment.id,
+      name: "my-project",
+      framework: "nextjs",
+      buildCommand: "npm run build",
+      runCommand: "npm start",
+      branch: "main",
+    };
+    fs.writeFileSync(
+      path.join(tmpDir, ".miosa.json"),
+      JSON.stringify(projectCfg),
+    );
+
+    vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}/redeploy`,
+        method: "POST",
+      })
+      .reply(202, JSON.stringify({ data: mockBuild }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    pool
+      .intercept({
+        path: `/api/v1/deployments/${mockDeployment.id}`,
+        method: "GET",
+      })
+      .reply(500, JSON.stringify({ error: "internal_error" }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      logged.push(a.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync(["node", "miosa", "deploy"]);
+
+    expect(JSON.parse(logged.join("\n"))).toMatchObject({
+      ok: true,
+      deployment: { id: mockDeployment.id, name: "my-project" },
+      build: { id: mockBuild.id, state: "queued" },
+    });
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });
