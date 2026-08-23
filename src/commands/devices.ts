@@ -1,15 +1,17 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { apiPath, client, unwrap, type JsonOptions } from "./enterprise-util.js";
+import {
+  apiPath,
+  client,
+  unwrap,
+  type JsonOptions,
+} from "./enterprise-util.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
 import { handleError } from "./util.js";
 
 type DeviceKind =
-  | "sandbox_worker"
-  | "computer"
-  | "local_device"
-  | "docker_deploy_host";
+  "sandbox_worker" | "computer" | "local_device" | "docker_deploy_host";
 
 type DeviceSource = "sandboxes" | "computers";
 
@@ -133,7 +135,7 @@ const DEVICE_CATALOG: DeviceCatalogEntry[] = [
     primary_commands: [
       "miosa docker-deploy hosts list --json",
       "miosa sandbox publish <id> --docker-deploy --wait --json",
-      "miosa deploy --docker-deploy --wait --json",
+      "miosa deploy --docker-deploy --json",
     ],
     use_when: [
       "You need many small apps, APIs, funnels, or client sites in one workspace appliance.",
@@ -230,11 +232,7 @@ export function register(program: Command): void {
             {
               header: "PERSISTENT",
               key: (row) =>
-                row.persistent == null
-                  ? "—"
-                  : row.persistent
-                    ? "yes"
-                    : "no",
+                row.persistent == null ? "—" : row.persistent ? "yes" : "no",
             },
             { header: "PREVIEW", key: (row) => row.preview_url ?? "—" },
           ]);
@@ -327,7 +325,10 @@ function normalizeComputer(row: Record<string, unknown>): DeviceRecord {
   };
 }
 
-function unwrapList(payload: unknown, keys: string[]): Record<string, unknown>[] {
+function unwrapList(
+  payload: unknown,
+  keys: string[],
+): Record<string, unknown>[] {
   const value = unwrap<unknown>(payload);
   if (Array.isArray(value)) return value.filter(isRecord);
   if (isRecord(value)) {
@@ -344,9 +345,10 @@ function deviceListError(source: DeviceSource, err: unknown): DeviceListError {
   return {
     source,
     message,
-    retryable: /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
-      message,
-    ),
+    retryable:
+      /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
+        message,
+      ),
   };
 }
 
