@@ -731,3 +731,114 @@ describe("miosa templates delete", () => {
     expect(stderr()).toContain("Stop the sandboxes booted from this template");
   });
 });
+
+describe("the platform build gate being off", () => {
+  // Live fleet condition: sandbox_template_builds_enabled is false, so
+  // fail_build/2 records BUILDS_TEMPORARILY_UNAVAILABLE on the build while
+  // template_status_after_failure(:builds_disabled) keeps the template itself
+  // "draft" so its name stays reusable (miosa-compute fbd4a3f5). The template
+  // and its build therefore disagree on purpose.
+  const gatedBuild = build({
+    state: "failed",
+    error_code: "BUILDS_TEMPORARILY_UNAVAILABLE",
+    error_message:
+      "Template builds are being upgraded to run inside isolated per-tenant " +
+      "microVMs and are temporarily unavailable. Your template was saved as a " +
+      "draft and will build once this ships.",
+  });
+
+  function interceptGated(): void {
+    pool()
+      .intercept({ path: "/api/v1/sandbox-templates", method: "POST" })
+      .reply(201, JSON.stringify({ data: customTemplate() }), {
+        headers: { "content-type": "application/json" },
+      });
+    pool()
+      .intercept({
+        path: `/api/v1/sandbox-templates/${TEMPLATE_ID}`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify(customTemplate({ status: "draft" })), {
+        headers: { "content-type": "application/json" },
+      });
+    pool()
+      .intercept({
+        path: `/api/v1/sandbox-templates/${TEMPLATE_ID}/builds`,
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ data: [gatedBuild] }), {
+        headers: { "content-type": "application/json" },
+      });
+  }
+
+  it("names the gate instead of a generic 'no completed build yet'", async () => {
+    interceptGated();
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "hackerai-scanner",
+      "--dockerfile",
+      dockerfileAt(),
+    ]);
+
+    expect(stdout()).toContain("BUILDS_TEMPORARILY_UNAVAILABLE");
+    // The template's own status is "draft", and reporting only that would hide
+    // the one fact the caller needs.
+    expect(stdout()).not.toContain("no completed build yet");
+  });
+
+  it("says the failure is not the caller's Dockerfile and the name is reusable", async () => {
+    interceptGated();
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "hackerai-scanner",
+      "--dockerfile",
+      dockerfileAt(),
+    ]);
+
+    expect(stdout()).toContain("platform build gate");
+    expect(stdout()).toContain("Nothing to fix on your side");
+    expect(stdout()).toContain("The name stays yours");
+  });
+
+  it("never presents the draft template as usable", async () => {
+    interceptGated();
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "hackerai-scanner",
+      "--dockerfile",
+      dockerfileAt(),
+    ]);
+
+    expect(stdout()).toMatch(/Usable\s+no/);
+    expect(stdout()).toContain("Not bootable yet");
+    expect(stdout()).not.toMatch(/^\s*Boot it:/m);
+  });
+
+  it("list points at the reason it cannot show inline", async () => {
+    pool()
+      .intercept({ path: "/api/v1/sandbox-templates", method: "GET" })
+      .reply(200, JSON.stringify([catalogRow()]), {
+        headers: { "content-type": "application/json" },
+      });
+
+    await program().parseAsync(["node", "miosa", "templates", "list", "--mine"]);
+
+    expect(stdout()).toContain("has no usable build yet");
+    expect(stdout()).toContain("Reason for each: miosa templates get");
+  });
+});

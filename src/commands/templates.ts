@@ -182,14 +182,6 @@ function usability(
   if (state === "archived") {
     return { usable: false, reason: "archived" };
   }
-  if (state === "failed") {
-    const failed = builds?.find((build) => build.state === "failed");
-    const why = buildError(failed);
-    return {
-      usable: false,
-      reason: why ? `last build failed: ${why}` : "last build failed",
-    };
-  }
 
   const active = builds?.find((build) =>
     [
@@ -207,6 +199,25 @@ function usability(
       reason: `build ${shortId(active.id)} is ${active.state} - not finished yet`,
     };
   }
+
+  // A failed build explains the template better than the template's own status
+  // does, and the two disagree on purpose: when the platform build gate is off,
+  // fail_build/2 records BUILDS_TEMPORARILY_UNAVAILABLE on the build while
+  // template_status_after_failure(:builds_disabled) keeps the template "draft"
+  // so its name stays reusable. Reporting only "no completed build yet (state
+  // draft)" there would hide the one fact the caller needs.
+  const failed = builds?.find((build) => build.state === "failed");
+  if (failed) {
+    const why = buildError(failed);
+    return {
+      usable: false,
+      reason: why ? `last build failed: ${why}` : "last build failed",
+    };
+  }
+  if (state === "failed") {
+    return { usable: false, reason: "last build failed" };
+  }
+
   if (builds && builds.length === 0) {
     return { usable: false, reason: "no build has been started yet" };
   }
@@ -214,6 +225,19 @@ function usability(
     usable: false,
     reason: `no completed build yet (state ${state ?? "unknown"})`,
   };
+}
+
+/**
+ * The platform build gate being off is not the caller's fault and has a
+ * different remedy from a broken Dockerfile: nothing to fix, retry later, and
+ * the name is still reusable because the row stays a draft.
+ */
+function buildsGatedOff(builds?: readonly TemplateBuild[]): boolean {
+  return Boolean(
+    builds?.some(
+      (build) => build.error_code === "BUILDS_TEMPORARILY_UNAVAILABLE",
+    ),
+  );
 }
 
 function buildError(build: TemplateBuild | undefined): string | undefined {
@@ -352,6 +376,21 @@ function printTemplateDetail(
         `  Not bootable yet. "miosa sandbox create --template ${reference}" will fail until a build reaches "ready".`,
       ),
     );
+    if (buildsGatedOff(builds)) {
+      // Nothing for the caller to fix, and re-running create with the same
+      // name works because the row stays a draft and create_template/3 upserts
+      // over a draft for the same tenant+slug.
+      console.log(
+        chalk.dim(
+          "  This is a platform build gate, not a problem with your Dockerfile. Nothing to fix on your side.",
+        ),
+      );
+      console.log(
+        chalk.dim(
+          `  The name stays yours: re-run the same create, or "miosa templates rebuild ${reference}", once builds are re-enabled.`,
+        ),
+      );
+    }
   }
   console.log(chalk.dim(`  Builds:    miosa templates builds ${template.id}`));
   console.log(chalk.dim(`  Re-verify: miosa templates get ${reference}`));
@@ -624,6 +663,23 @@ export function register(program: Command): void {
             if (!opts.mine) {
               console.log(
                 chalk.dim("  Only yours: miosa templates list --mine"),
+              );
+            }
+            const unusable = mine.filter((row) => !usability(row).usable);
+            if (unusable.length > 0) {
+              // The catalog carries no build history, so the reason a row is
+              // not usable takes a second request. Point at it rather than
+              // leaving a bare "no" in the table.
+              const first = unusable[0];
+              console.log(
+                chalk.yellow(
+                  `  ${unusable.length} of yours ${unusable.length === 1 ? "has" : "have"} no usable build yet, so ${unusable.length === 1 ? "it cannot" : "they cannot"} boot a sandbox.`,
+                ),
+              );
+              console.log(
+                chalk.dim(
+                  `  Reason for each: miosa templates get ${first?.slug ?? first?.id ?? "<id>"}`,
+                ),
               );
             }
             if (!opts.verify) {

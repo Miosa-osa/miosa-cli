@@ -252,6 +252,8 @@ const SCENARIOS = {
   "no-custom": { noCustom: true },
   // The build ran and failed: error_code/error_message must reach the user.
   "build-failed": { templateStatus: "failed" },
+  // Platform build gate is off fleet-wide: template "draft", build "failed".
+  "builds-disabled": { templateStatus: "builds-disabled" },
   // Delete refused because something live depends on the template.
   "delete-in-use": {
     deleteStatus: 409,
@@ -282,6 +284,8 @@ const TEMPLATE_BY_STATUS = {
     current_build_id: renderBuild().id,
   },
   failed: { status: "failed", current_build_id: renderBuild().id },
+  // Template stays "draft" even though its only build failed.
+  "builds-disabled": { status: "draft", current_build_id: renderBuild().id },
 };
 const template = renderTemplate(TEMPLATE_BY_STATUS[templateStatus] ?? {});
 const BUILD_BY_STATUS = {
@@ -291,6 +295,21 @@ const BUILD_BY_STATUS = {
     started_at: "2026-08-26T14:02:20Z",
     finished_at: "2026-08-26T14:05:02Z",
     duration_ms: 162000,
+  },
+  // The live fleet condition: sandbox_template_builds_enabled is false, so
+  // fail_build/2 records the build as failed with BUILDS_TEMPORARILY_UNAVAILABLE
+  // while template_status_after_failure(:builds_disabled) keeps the template
+  // itself "draft" (miosa-compute fbd4a3f5).
+  "builds-disabled": {
+    state: "failed",
+    error_code: "BUILDS_TEMPORARILY_UNAVAILABLE",
+    error_message:
+      "Template builds are being upgraded to run inside isolated per-tenant " +
+      "microVMs and are temporarily unavailable. Your template was saved as a " +
+      "draft and will build once this ships.",
+    started_at: "2026-08-26T14:02:20Z",
+    finished_at: "2026-08-26T14:02:21Z",
+    duration_ms: 1000,
   },
   failed: {
     state: "failed",
