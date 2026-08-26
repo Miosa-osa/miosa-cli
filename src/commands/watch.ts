@@ -363,7 +363,11 @@ async function runEventLoop(
     let event: ComputerEvent;
 
     if (sseEvent.type === "unknown") {
-      event = parseComputerEvent("", sseEvent.raw);
+      // The stream's `event:` name is the primary classifier; the payload's
+      // own "type" field is only a fallback. Passing "" here threw the name
+      // away, so any frame whose payload omitted "type" was reported as
+      // unknown (2026-08-26).
+      event = parseComputerEvent(sseEvent.event ?? "", sseEvent.raw);
     } else if (
       sseEvent.type === "heartbeat" ||
       sseEvent.type === "done" ||

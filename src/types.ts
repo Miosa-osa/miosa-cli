@@ -80,11 +80,7 @@ export interface Host {
 }
 
 export type HostState =
-  | "pending"
-  | "online"
-  | "offline"
-  | "error"
-  | "disconnected";
+  "pending" | "online" | "offline" | "error" | "disconnected";
 
 export interface HostTelemetry {
   cpu_percent: number | null;
@@ -170,7 +166,10 @@ export type SseEvent =
   | { type: "tool_result"; tool: string; output: unknown }
   | { type: "done"; result?: unknown }
   | { type: "heartbeat" }
-  | { type: "unknown"; raw: string };
+  // `event` preserves the stream's `event:` name for frames the CLI has no
+  // dedicated variant for. Dropping it was a real defect: every
+  // `event: build_event` frame arrived as an untyped blob (2026-08-26).
+  | { type: "unknown"; event?: string; raw: string };
 
 // API error shape from server
 export interface ApiErrorBody {
@@ -182,6 +181,13 @@ export interface ApiErrorBody {
         details?: unknown;
       };
   message?: string;
+  /**
+   * Field-level rejections. The platform API puts these at the TOP level, next
+   * to `error`, not inside it: an Ecto changeset map (`{"slug": ["..."]}`) or a
+   * BuildSpec list (`[{"field": "from", "message": "..."}]`).
+   */
+  errors?: unknown;
+  details?: unknown;
 }
 
 // ── Deploy product types ───────────────────────────────────────────────────
@@ -194,18 +200,10 @@ export function toDeploymentId(s: string): DeploymentId {
 }
 
 export type DeploymentState =
-  | "pending"
-  | "building"
-  | "running"
-  | "stopped"
-  | "failed";
+  "pending" | "building" | "running" | "stopped" | "failed";
 
 export type BuildState =
-  | "queued"
-  | "building"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+  "queued" | "building" | "succeeded" | "failed" | "cancelled";
 
 export interface Deployment {
   id: DeploymentId;
@@ -406,11 +404,7 @@ export type ComputerEvent =
 
 /** Filter category names accepted by --filter */
 export type WatchFilterCategory =
-  | "desktop"
-  | "exec"
-  | "file"
-  | "screenshot"
-  | "error";
+  "desktop" | "exec" | "file" | "screenshot" | "error";
 
 // Exit codes — documented contract
 export const EXIT_SUCCESS = 0;

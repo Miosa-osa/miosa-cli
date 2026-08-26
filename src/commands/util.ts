@@ -11,6 +11,9 @@ export function jsonErrorPayload(err: unknown): Record<string, unknown> {
       code: errorCodeFor(err),
       message: err.message,
       retryable: retryableFor(err),
+      ...(err instanceof ApiResponseError && err.issues.length > 0
+        ? { field_errors: err.issues }
+        : {}),
       ...(err.hint ? { hint: err.hint } : {}),
       ...(err.requestId ? { request_id: err.requestId } : {}),
       ...(shouldShowDetails(err) ? { details: err.details } : {}),
@@ -45,6 +48,13 @@ export function handleError(err: unknown, opts?: { json?: boolean }): never {
 
   if (err instanceof MiosaError) {
     console.error(chalk.red(`Error: ${err.message}`));
+    if (err instanceof ApiResponseError && err.fieldErrors.length > 0) {
+      // Per-field detail is the whole point of a validation failure: print it
+      // as legible lines instead of leaving the caller to read a raw body.
+      for (const line of err.fieldErrors) {
+        console.error(chalk.yellow(`  - ${line}`));
+      }
+    }
     if (err instanceof ApiResponseError) {
       console.error(chalk.dim(`  Code: ${err.code}`));
     }
@@ -86,7 +96,10 @@ function retryableFor(err: MiosaError): boolean {
 }
 
 function isTransientTransportError(message: string): boolean {
-  return /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up/i.test(
+  // EAI_AGAIN is a temporary resolver failure and ETIMEDOUT/connect timeouts
+  // are worth another attempt; a hard ENOTFOUND or ECONNREFUSED is not, so it
+  // is deliberately absent here.
+  return /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/i.test(
     message,
   );
 }

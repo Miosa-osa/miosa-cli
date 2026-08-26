@@ -25,6 +25,7 @@ import type {
   TunnelSlug,
 } from "./types.js";
 import { AuthError, mapHttpError, NetworkError, UserError } from "./errors.js";
+import { assertUsableEndpoint, transportError } from "./endpoint.js";
 import { isDebugMode } from "./cli-env.js";
 import { CLI_USER_AGENT } from "./version.js";
 
@@ -42,9 +43,23 @@ export class MiosaClient {
       );
     }
     this.endpoint = config.endpoint.replace(/\/$/, "");
+    // Fail on an unusable endpoint here, where the value and its origin are
+    // both still known, rather than letting undici raise a bare
+    // "TypeError: Invalid URL" from inside the first request.
+    assertUsableEndpoint(this.endpoint);
     this.apiKey = config.api_key;
     this.tenant = config.tenant ?? null;
     this.workspace = config.workspace ?? null;
+  }
+
+  /** Diagnose a transport failure against the endpoint actually in use. */
+  private transport(err: unknown): NetworkError {
+    return transportError(err, this.endpoint);
+  }
+
+  /** The endpoint this client talks to, for commands that report it. */
+  get apiEndpoint(): string {
+    return this.endpoint;
   }
 
   private headers(): Record<string, string> {
@@ -69,6 +84,7 @@ export class MiosaClient {
     res: Dispatcher.ResponseData,
     method: string,
     path: string,
+    sentBody?: unknown,
   ): Promise<never> {
     const rawBody = await res.body.text();
     const requestId = responseHeader(res, "x-request-id");
@@ -79,7 +95,13 @@ export class MiosaClient {
       body = { message: rawBody || `HTTP ${res.statusCode}` };
     }
     debugHttpError(method, path, res.statusCode, requestId, rawBody);
-    throw mapHttpError(res.statusCode, body, rawBody, requestId);
+    throw mapHttpError(
+      res.statusCode,
+      body,
+      rawBody,
+      requestId,
+      topLevelKeys(sentBody),
+    );
   }
 
   private async get<T>(path: string): Promise<T> {
@@ -90,10 +112,7 @@ export class MiosaClient {
         headers: this.headers(),
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "GET", path);
     return res.body.json() as Promise<T>;
@@ -112,12 +131,9 @@ export class MiosaClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
-    if (res.statusCode >= 400) return this.parseError(res, "POST", path);
+    if (res.statusCode >= 400) return this.parseError(res, "POST", path, body);
     return res.body.json() as Promise<T>;
   }
 
@@ -129,9 +145,7 @@ export class MiosaClient {
         headers: this.headers(),
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "DELETE", path);
     if (res.statusCode === 204) return undefined as T;
@@ -152,10 +166,7 @@ export class MiosaClient {
         headers: this.headers(),
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "GET", path);
     const chunks: Buffer[] = [];
@@ -165,22 +176,28 @@ export class MiosaClient {
     return Buffer.concat(chunks);
   }
 
-  /** Generic SSE GET for command groups that stream API events. */
-  async apiStream(path: string): Promise<Dispatcher.ResponseData> {
+  /**
+   * Generic SSE GET for command groups that stream API events.
+   *
+   * `accept` exists for routes that may still sit behind a JSON-only
+   * content-negotiation plug: sending a list keeps such a route from answering
+   * 406 while still asking for the stream first.
+   */
+  async apiStream(
+    path: string,
+    accept = "text/event-stream",
+  ): Promise<Dispatcher.ResponseData> {
     let res: Dispatcher.ResponseData;
     try {
       res = await request(this.url(path), {
         method: "GET",
         headers: {
           ...this.headers(),
-          Accept: "text/event-stream",
+          Accept: accept,
         },
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "GET", path);
     return res;
@@ -205,12 +222,9 @@ export class MiosaClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
-    if (res.statusCode >= 400) return this.parseError(res, "PUT", path);
+    if (res.statusCode >= 400) return this.parseError(res, "PUT", path, body);
     return res.body.json() as Promise<T>;
   }
 
@@ -224,12 +238,9 @@ export class MiosaClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
-    if (res.statusCode >= 400) return this.parseError(res, "PATCH", path);
+    if (res.statusCode >= 400) return this.parseError(res, "PATCH", path, body);
     return res.body.json() as Promise<T>;
   }
 
@@ -249,10 +260,7 @@ export class MiosaClient {
         headers: this.headers(),
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        "Check your connection and endpoint: miosa status",
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "DELETE", path);
     await res.body.dump();
@@ -574,9 +582,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -609,9 +615,7 @@ export class MiosaClient {
         { method: "GET", headers: this.headers() },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -656,9 +660,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       await this.parseError(
@@ -718,9 +720,7 @@ export class MiosaClient {
         { method: "GET", headers: this.headers() },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -765,9 +765,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       await this.parseError(
@@ -829,9 +827,7 @@ export class MiosaClient {
         body: JSON.stringify({ command }),
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) return this.parseError(res, "POST", path);
     return res;
@@ -881,9 +877,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -973,9 +967,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -1007,9 +999,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -1053,9 +1043,7 @@ export class MiosaClient {
         },
       );
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -1081,9 +1069,7 @@ export class MiosaClient {
         },
       });
     } catch (err) {
-      throw new NetworkError(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw this.transport(err);
     }
     if (res.statusCode >= 400) {
       return this.parseError(
@@ -1220,37 +1206,85 @@ function debugHttpError(
   }
 }
 
-// SSE parser — consumes undici body stream, yields parsed events
+/**
+ * Top-level keys of a JSON request body. Used to tell a field the CLI actually
+ * sent apart from a field the server attributed an error to on its own.
+ */
+function topLevelKeys(body: unknown): string[] {
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return [];
+  return Object.keys(body as Record<string, unknown>);
+}
+
+/**
+ * SSE parser — consumes an undici body stream and yields parsed events.
+ *
+ * Frame state (`event:` name and accumulated `data:` lines) is held across
+ * chunk boundaries. It used to be declared inside the chunk loop, so a frame
+ * split by the transport lost its accumulated state: an `event:`/`data:` pair
+ * arriving in separate chunks lost the event name, and a frame whose
+ * terminating blank line landed in the next chunk was dropped outright. The
+ * server writes each frame with one `Plug.Conn.chunk/2` call, but a TLS record
+ * boundary or a reverse proxy can split it anywhere (2026-08-26).
+ */
 export async function* parseSse(
   body: Dispatcher.ResponseData["body"],
 ): AsyncGenerator<SseEvent> {
+  const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let eventType = "";
+  let dataLines: string[] = [];
 
   for await (const chunk of body) {
-    buffer += chunk.toString();
-    const lines = buffer.split("\n");
-    // Keep last potentially incomplete line
+    // Streaming decode: a multi-byte character split across chunks would be
+    // corrupted by a per-chunk toString().
+    buffer += decoder.decode(
+      chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk)),
+      { stream: true },
+    );
+
+    // SSE line terminators are \n, \r\n, or a bare \r.
+    const lines = buffer.split(/\r\n|\r|\n/);
+    // Keep the last, possibly incomplete, line for the next chunk.
     buffer = lines.pop() ?? "";
 
-    let eventType = "";
-    let dataLines: string[] = [];
-
     for (const line of lines) {
-      if (line.startsWith("event:")) {
-        eventType = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trim());
-      } else if (line === "") {
-        // Dispatch event
+      if (line === "") {
         if (dataLines.length > 0) {
-          const raw = dataLines.join("\n");
-          yield parseSseEvent(eventType, raw);
+          yield parseSseEvent(eventType, dataLines.join("\n"));
         }
         eventType = "";
         dataLines = [];
+      } else if (line.startsWith(":")) {
+        // Comment frame, e.g. the server's ":heartbeat". Ignored per spec.
+        continue;
+      } else if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        // Spec: strip exactly one leading space, keep the rest verbatim so log
+        // indentation survives.
+        dataLines.push(stripOneLeadingSpace(line.slice(5)));
       }
     }
   }
+
+  // A server that closes right after its last frame without the terminating
+  // blank line would otherwise lose that frame.
+  buffer += decoder.decode();
+  if (buffer !== "") {
+    if (buffer.startsWith("data:")) {
+      dataLines.push(stripOneLeadingSpace(buffer.slice(5)));
+    } else if (buffer.startsWith("event:")) {
+      eventType = buffer.slice(6).trim();
+    }
+  }
+  if (dataLines.length > 0) {
+    yield parseSseEvent(eventType, dataLines.join("\n"));
+  }
+}
+
+function stripOneLeadingSpace(value: string): string {
+  return value.startsWith(" ") ? value.slice(1) : value;
 }
 
 function parseSseEvent(eventType: string, raw: string): SseEvent {
@@ -1258,7 +1292,7 @@ function parseSseEvent(eventType: string, raw: string): SseEvent {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { type: "unknown", raw };
+    return unknownEvent(eventType, raw);
   }
 
   const data = parsed as Record<string, unknown>;
@@ -1308,6 +1342,17 @@ function parseSseEvent(eventType: string, raw: string): SseEvent {
     case "ping":
       return { type: "heartbeat" };
     default:
-      return { type: "unknown", raw };
+      return unknownEvent(eventType, raw);
   }
+}
+
+/**
+ * Preserve the stream's `event:` name on frames with no dedicated variant.
+ * Discarding it meant every `event: build_event` frame arrived as an untyped
+ * blob and consumers could not tell one server event from another.
+ */
+function unknownEvent(eventType: string, raw: string): SseEvent {
+  return eventType === ""
+    ? { type: "unknown", raw }
+    : { type: "unknown", event: eventType, raw };
 }

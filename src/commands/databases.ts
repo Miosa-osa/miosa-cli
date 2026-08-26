@@ -8,7 +8,6 @@ import { spin } from "../ui/spinner.js";
 import { formatBytes } from "../ui/progress.js";
 import { formatDuration } from "../ui/render.js";
 import { handleError, isJsonMode } from "./util.js";
-import { CLI_USER_AGENT } from "../version.js";
 
 interface Database {
   id: string;
@@ -853,50 +852,16 @@ export function register(program: Command): void {
           console.log(chalk.dim(`Streaming logs for database ${id}...`));
         }
 
-        // Use undici directly to get an SSE response
-        const { request } = await import("undici");
-        const endpoint = config.endpoint;
-        const apiKey = config.api_key ?? "";
-        const url = `${endpoint.replace(/\/$/, "")}/api/v1/databases/${encodeURIComponent(id)}/logs/stream`;
-
-        const res = await request(url, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            Accept: "text/event-stream, application/json, */*",
-            "User-Agent": CLI_USER_AGENT,
-          },
-        });
-
-        if (res.statusCode >= 400) {
-          const body = await res.body.text();
-          if (isJsonMode(opts)) {
-            console.log(
-              JSON.stringify(
-                {
-                  ok: false,
-                  error: {
-                    code: `HTTP_${res.statusCode}`,
-                    message: body || `HTTP ${res.statusCode}`,
-                    retryable: res.statusCode >= 500,
-                  },
-                },
-                null,
-                2,
-              ),
-            );
-            process.exit(1);
-          }
-          console.error(chalk.red(`HTTP ${res.statusCode}: ${body}`));
-          if (res.statusCode === 406) {
-            console.error(
-              chalk.yellow(
-                "Database logs endpoint rejected the requested response format. The CLI now accepts SSE, JSON, or text; if this persists, the API route is returning a format negotiation error.",
-              ),
-            );
-          }
-          process.exit(1);
-        }
+        // Stream through the client rather than a hand-rolled undici call. The
+        // bare request below omitted X-MIOSA-Tenant and X-MIOSA-Workspace, so
+        // this one command resolved against the API key's default scope
+        // instead of the scope every other command uses. Going through
+        // apiStream also gets the endpoint diagnosis and the structured
+        // error mapping for free.
+        const res = await new MiosaClient(config).apiStream(
+          `/api/v1/databases/${encodeURIComponent(id)}/logs/stream`,
+          "text/event-stream, application/json, */*",
+        );
 
         for await (const event of parseSse(res.body)) {
           if (isJsonMode(opts)) {
