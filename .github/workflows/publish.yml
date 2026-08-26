@@ -1,5 +1,20 @@
 name: Publish
 
+# A pushed v* tag is the canonical release signal and MUST publish.
+#
+# It did not, for most of this workflow's life: the publish step was gated on
+# `github.event_name == 'workflow_dispatch'`, which a tag push can never
+# satisfy, and the complementary "verification only" step then let the job
+# report SUCCESS. Three releases were tagged, went green, and shipped nothing
+# (1.1.10, 1.1.15, 1.1.17); 1.1.10 never even had a follow-up dispatch, so the
+# skipped step is the whole story for it. `dry_run` also defaulted to true, so a
+# dispatch that did not explicitly opt in swallowed the release the same way.
+#
+# Two rules now hold:
+#   1. If this run was asked to publish, it publishes or the job FAILS.
+#   2. A run that publishes proves the version is resolvable on the registry
+#      before reporting success. The workflow does not get to trust itself.
+
 on:
   push:
     tags:
@@ -10,7 +25,7 @@ on:
         description: "Existing tag to verify or publish"
         required: true
       dry_run:
-        description: "Verify without publishing to npm"
+        description: "true = verify only, do not publish. Set false to publish."
         type: boolean
         default: true
 
@@ -38,15 +53,36 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # Decided once, up front, so every later step keys off the same answer
+      # instead of each re-deriving it from the trigger type.
+      - name: Decide whether this run publishes
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            publish=true
+            reason="pushed tag ${{ steps.release.outputs.tag }} (canonical release signal)"
+          elif [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
+            publish=true
+            reason="manual dispatch with dry_run=false"
+          else
+            publish=false
+            reason="manual dispatch with dry_run=${{ github.event.inputs.dry_run }}"
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Publish: $publish ($reason)"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.release.outputs.tag }}
           fetch-depth: 0
 
       - name: Validate release tag and version
+        id: validate
         run: |
           tag="${{ steps.release.outputs.tag }}"
           version="$(node -p "require('./package.json').version")"
+          name="$(node -p "require('./package.json').name")"
           semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
 
           if [[ ! "$version" =~ $semver_re ]]; then
@@ -68,6 +104,9 @@ jobs:
             echo "::error::Tag $tag is not reachable from origin/main"
             exit 1
           fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -91,8 +130,12 @@ jobs:
       - name: Inspect package archive
         run: npm pack --dry-run
 
+      # Fails fast and legibly on a missing or unauthenticated credential, so a
+      # later registry refusal can only mean "authenticated but not authorised"
+      # rather than leaving both possibilities open. Reaching that conclusion
+      # from a bare E404 previously required digging through raw job logs.
       - name: Verify npm credential
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
+        if: ${{ steps.mode.outputs.publish == 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -100,14 +143,87 @@ jobs:
             echo "::error::NPM_TOKEN is required for publication"
             exit 1
           fi
+          if ! identity="$(npm whoami 2>&1)"; then
+            echo "::error::NPM_TOKEN does not authenticate against the registry: $identity"
+            exit 1
+          fi
+          echo "Authenticated to npm as: $identity"
 
       - name: Publish to npm
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true' }}
-        # The existing v1.1.0 tag predates canonical repository metadata.
-        run: npm publish --access public
+        id: publish
+        if: ${{ steps.mode.outputs.publish == 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set +e
+          output="$(npm publish --access public 2>&1)"
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -ne 0 ]; then
+            # npm answers 404 rather than 403 on a PUT when the credential
+            # cannot write to the scope: it will not confirm the package exists
+            # to an unauthorised caller. Naming that here saves the next person
+            # the log archaeology it cost us on 2026-08-26.
+            if echo "$output" | grep -q "E404"; then
+              echo "::error::Registry refused the write with 404 on PUT. For a scoped package that already exists this is npm's masked authorisation failure: NPM_TOKEN authenticates but lacks write access to this scope. Rotate NPM_TOKEN to a credential with publish rights."
+            elif echo "$output" | grep -q "E403"; then
+              echo "::error::Registry refused the write with 403. Either this version already exists and cannot be overwritten, or the credential lacks publish rights."
+            fi
+            exit "$status"
+          fi
 
+      # The step that turns "reported success" into "proved it shipped". Without
+      # it the workflow only asserts that npm exited zero, which is exactly the
+      # kind of self-trust that let three releases go green while shipping
+      # nothing. Retries cover registry/CDN propagation lag.
+      - name: Prove the release is on the registry
+        id: proof
+        if: ${{ steps.mode.outputs.publish == 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          spec="${{ steps.validate.outputs.name }}@${{ steps.validate.outputs.version }}"
+          for attempt in 1 2 3 4 5 6; do
+            if resolved="$(npm view "$spec" version 2>/dev/null)"; then
+              echo "Confirmed on registry: $spec resolves to $resolved"
+              echo "Published \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Not resolvable yet (attempt $attempt/6); waiting for propagation"
+            sleep 10
+          done
+          echo "::error::$spec is NOT resolvable on the registry after publishing. The release did not ship."
+          echo "FAILED to publish \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      # A verify-only run is a legitimate success, but it must be impossible to
+      # mistake for a release.
       - name: Verification-only notice
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run == 'true' }}
-        run: echo "Verification complete; npm publication was not requested"
+        if: ${{ steps.mode.outputs.publish != 'true' }}
+        run: |
+          echo "::warning::NO PUBLISH HAPPENED. This run was verification only (${{ steps.mode.outputs.reason }}). Nothing was sent to npm."
+          {
+            echo "## Not published"
+            echo
+            echo "This run verified \`${{ steps.validate.outputs.name }}@${{ steps.validate.outputs.version }}\` and deliberately did **not** publish it."
+            echo
+            echo "Reason: ${{ steps.mode.outputs.reason }}"
+            echo
+            echo "To publish, push the \`${{ steps.release.outputs.tag }}\` tag, or re-run this workflow with \`dry_run\` set to \`false\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Backstop for the exact failure being eliminated: if this run was asked
+      # to publish, it must not be able to reach the end without the publish and
+      # the registry proof both having succeeded.
+      - name: Refuse to report a no-op release as success
+        if: ${{ always() && steps.mode.outputs.publish == 'true' }}
+        run: |
+          echo "Publish requested: ${{ steps.mode.outputs.reason }}"
+          echo "  publish step: ${{ steps.publish.outcome }}"
+          echo "  registry proof: ${{ steps.proof.outcome }}"
+          if [ "${{ steps.publish.outcome }}" != "success" ] || [ "${{ steps.proof.outcome }}" != "success" ]; then
+            echo "::error::This run was asked to publish and did not both publish and prove it. Treat the release as NOT shipped."
+            exit 1
+          fi
+          echo "Release published and confirmed resolvable on the registry."
