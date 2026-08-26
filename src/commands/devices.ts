@@ -8,7 +8,7 @@ import {
 } from "./enterprise-util.js";
 import { isJsonMode } from "../cli-env.js";
 import { renderTable } from "../ui/table.js";
-import { handleError } from "./util.js";
+import { handleError, isTransientTransportError } from "./util.js";
 
 type DeviceKind =
   "sandbox_worker" | "computer" | "local_device" | "docker_deploy_host";
@@ -345,10 +345,10 @@ function deviceListError(source: DeviceSource, err: unknown): DeviceListError {
   return {
     source,
     message,
-    retryable:
-      /fetch failed|ECONNRESET|HTTP 502|other side closed|socket hang up|bad gateway/i.test(
-        message,
-      ),
+    // Shares util.ts's classifier so the same transport failure is not called
+    // retryable by one command and permanent by another. This file used to
+    // carry its own copy of the pattern.
+    retryable: isTransientTransportError(message) || /bad gateway/i.test(message),
   };
 }
 

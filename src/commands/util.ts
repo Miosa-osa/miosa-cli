@@ -95,7 +95,7 @@ function retryableFor(err: MiosaError): boolean {
   return err.exitCode >= 70;
 }
 
-function isTransientTransportError(message: string): boolean {
+export function isTransientTransportError(message: string): boolean {
   // EAI_AGAIN is a temporary resolver failure and ETIMEDOUT/connect timeouts
   // are worth another attempt; a hard ENOTFOUND or ECONNREFUSED is not, so it
   // is deliberately absent here.

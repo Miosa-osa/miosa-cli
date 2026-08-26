@@ -176,24 +176,22 @@ export class MiosaClient {
     return Buffer.concat(chunks);
   }
 
-  /**
-   * Generic SSE GET for command groups that stream API events.
-   *
-   * `accept` exists for routes that may still sit behind a JSON-only
-   * content-negotiation plug: sending a list keeps such a route from answering
-   * 406 while still asking for the stream first.
-   */
-  async apiStream(
-    path: string,
-    accept = "text/event-stream",
-  ): Promise<Dispatcher.ResponseData> {
+  // Generic SSE GET for command groups that stream API events.
+  //
+  // Asks for `text/event-stream` and nothing else, deliberately. Widening the
+  // header to also accept `application/json` and a catch-all was a workaround
+  // for streaming routes parked in a JSON-only pipeline, and it hid the fault
+  // instead of reporting it: the route answers 200 with a JSON body, parseSse
+  // finds no frames, and the command prints nothing and exits clean. A narrow
+  // Accept turns that same misconfiguration into a loud 406 (see mapHttpError).
+  async apiStream(path: string): Promise<Dispatcher.ResponseData> {
     let res: Dispatcher.ResponseData;
     try {
       res = await request(this.url(path), {
         method: "GET",
         headers: {
           ...this.headers(),
-          Accept: accept,
+          Accept: "text/event-stream",
         },
       });
     } catch (err) {

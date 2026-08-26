@@ -853,14 +853,16 @@ export function register(program: Command): void {
         }
 
         // Stream through the client rather than a hand-rolled undici call. The
-        // bare request below omitted X-MIOSA-Tenant and X-MIOSA-Workspace, so
-        // this one command resolved against the API key's default scope
-        // instead of the scope every other command uses. Going through
-        // apiStream also gets the endpoint diagnosis and the structured
-        // error mapping for free.
+        // bare request this replaces omitted X-MIOSA-Tenant and
+        // X-MIOSA-Workspace, so this one command resolved against the API key's
+        // default scope instead of the scope every other command uses. It also
+        // sent `Accept: text/event-stream, application/json, */*` plus a
+        // bespoke 406 message, a workaround from when this route sat in a
+        // JSON-only pipeline. The route is in :public_api_sse now (no :accepts
+        // plug), so the widened Accept only served to turn a pipeline
+        // misconfiguration into silence instead of an error.
         const res = await new MiosaClient(config).apiStream(
           `/api/v1/databases/${encodeURIComponent(id)}/logs/stream`,
-          "text/event-stream, application/json, */*",
         );
 
         for await (const event of parseSse(res.body)) {

@@ -74,16 +74,20 @@ describe("SSE Accept headers", () => {
     expect(captured.accept()).toBe("text/event-stream");
   });
 
-  it("apiStream accepts an explicit multi-type Accept for negotiation-sensitive routes", async () => {
+  it("asks only for text/event-stream, never a widened Accept", async () => {
+    // The database log stream used to send
+    // `text/event-stream, application/json, */*` to dodge a JSON-only
+    // pipeline. That workaround turned a misconfigured route into a 200 with a
+    // JSON body, which yields no SSE frames and so prints nothing at all. The
+    // narrow Accept makes the same misconfiguration a loud 406 instead.
     const captured = captureAccept("/api/v1/databases/db_1/logs/stream", "GET");
 
     const res = await client().apiStream(
       "/api/v1/databases/db_1/logs/stream",
-      "text/event-stream, application/json, */*",
     );
     await res.body.dump();
 
-    expect(captured.accept()).toBe("text/event-stream, application/json, */*");
+    expect(captured.accept()).toBe("text/event-stream");
   });
 
   it("apiStream still carries the tenant and workspace scope headers", async () => {
@@ -94,7 +98,6 @@ describe("SSE Accept headers", () => {
 
     const res = await client().apiStream(
       "/api/v1/databases/db_1/logs/stream",
-      "text/event-stream, application/json, */*",
     );
     await res.body.dump();
 
