@@ -357,6 +357,27 @@ The default sandbox is `small`: 2 vCPU, 4096 MiB RAM, and 10240 MiB disk.
 The `miosa-sandbox` input is a stable alias, while catalog and create responses expose the resolved immutable `image_id` generation.
 Legacy `--cpu`, `--memory`, and `--disk` values must be supplied together and exactly match one named size.
 
+### Your own templates
+
+`miosa templates list` shows platform built-ins and the templates this workspace created in one table, with a `SOURCE` column and your own rows first.
+
+```bash
+miosa templates create --name my-scanner --dockerfile ./Dockerfile
+miosa templates list --mine --verify
+miosa templates get my-scanner
+miosa templates update my-scanner --dockerfile ./Dockerfile
+miosa templates rebuild my-scanner
+```
+
+A template row exists as soon as `create` returns, but it cannot boot a sandbox until one of its builds reaches `ready`.
+`create`, `get` and `list` therefore report `Exists` and `Usable` separately, and `create` reads the row back before claiming success.
+Add `--no-verify` to `create` to skip that follow-up read.
+
+`update` picks the mechanism the API supports for the template's current state: while the template has no usable image its stored Dockerfile is replaced in place (same ID, same name), and once it does have one the new Dockerfile is built as a new build instead.
+Either way the command prints which of the two happened.
+
+`list --mine --verify` reads each of your rows back individually. The catalog response omits the slug and creation date of custom rows, so `--verify` is the only way to see them from `list`.
+
 Agents should start from app templates instead of empty sandboxes when building common web apps. Sandboxes are persistent by default: timeout/pause preserves the filesystem and moves the session to `paused`; `destroy --force` is a legacy API extension for permanent deletion and is not in the public V1 allowlist.
 
 Sandbox placement is server-owned. The public sandbox create contract uses MIOSA-managed capacity by default and has no per-sandbox provider or placement selector. BYOC accounts, regions, and pools are configured separately with `miosa cloud`; eligible placement remains a control-plane policy decision.
