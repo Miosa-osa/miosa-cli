@@ -58,6 +58,17 @@ function productTemplates(raw: Record<string, unknown>): ProductTemplate[] {
   return rows as ProductTemplate[];
 }
 
+interface TemplateVersion {
+  version: number;
+  ref?: string;
+  build_id?: string;
+  state?: string;
+  image_id?: string | null;
+  usable?: boolean;
+  current?: boolean;
+  created_at?: string;
+}
+
 function unwrapTemplates(
   raw:
     | { data?: SandboxTemplate[]; templates?: SandboxTemplate[] }
@@ -381,6 +392,84 @@ export function register(program: Command): void {
             ),
           );
         }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  // versions
+  templates
+    .command("versions <id>")
+    .description(
+      "List a template's versions (a version is a build; specs are immutable)",
+    )
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching versions...");
+        const raw = (await client.apiGet(
+          `/api/v1/sandbox-templates/${encodeURIComponent(id)}/versions`,
+        )) as { data?: TemplateVersion[] } | TemplateVersion[];
+        spinner?.stop();
+
+        const rows: TemplateVersion[] = Array.isArray(raw) ? raw : (raw.data ?? []);
+
+        if (json) {
+          printJson(rows);
+          return;
+        }
+
+        if (rows.length === 0) {
+          console.log(chalk.dim("No versions yet."));
+          return;
+        }
+
+        renderTable(rows, [
+          {
+            header: "VERSION",
+            key: (v) => (v.current ? chalk.bold(`v${v.version} *`) : `v${v.version}`),
+            width: 10,
+          },
+          { header: "REF", key: (v) => v.ref ?? chalk.dim("-"), width: 26 },
+          {
+            header: "STATE",
+            key: (v) => fmtBuildState(v.state),
+            width: 12,
+          },
+          {
+            // Whether this version can actually be run or migrated to. A failed
+            // build is listed - you need to see it to understand why the next
+            // version is unavailable - but it is not usable.
+            header: "USABLE",
+            key: (v) => (v.usable ? chalk.green("yes") : chalk.dim("no")),
+            width: 8,
+          },
+          {
+            header: "IMAGE",
+            key: (v) => v.image_id ?? chalk.dim("-"),
+            width: 26,
+          },
+          {
+            header: "CREATED",
+            key: (v) => (v.created_at ? String(v.created_at).slice(0, 10) : chalk.dim("-")),
+            width: 12,
+          },
+        ]);
+
+        console.log();
+        console.log(
+          chalk.dim(
+            "  * = current. Specs are immutable: editing a template mints a new version,",
+          ),
+        );
+        console.log(
+          chalk.dim(
+            "  and existing sandboxes keep running the version they were created from.",
+          ),
+        );
       } catch (err) {
         handleError(err);
       }
