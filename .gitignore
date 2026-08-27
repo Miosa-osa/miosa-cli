@@ -8,3 +8,6 @@ coverage/
 # Local agent / tooling state + scratch (never commit)
 .claude/
 bench-results/
+
+# npm pack output; never belongs in git
+*.tgz

@@ -14,6 +14,18 @@ name: Publish
 #   1. If this run was asked to publish, it publishes or the job FAILS.
 #   2. A run that publishes proves the version is resolvable on the registry
 #      before reporting success. The workflow does not get to trust itself.
+#
+# To audit this class cheaply in any repo: diff the registry's version list
+# against the repo's git tags. An INTERIOR gap - 1.1.16 present, 1.1.17
+# missing, 1.1.18 present - means a per-release no-op. A genuinely stalled
+# pipeline drops the newest releases and leaves the older ones contiguous;
+# only a no-op punches holes in the middle. That signature sat unnoticed here
+# across three releases.
+#
+# This exact trap also survived a dedicated hardening pass
+# (codex/release-publication-hardening-20260720, merged to main) because the
+# trigger was never traced to the step that does the work. The comments here
+# are load-bearing; do not condense them away.
 
 on:
   push:
@@ -24,10 +36,15 @@ on:
       tag:
         description: "Existing tag to verify or publish"
         required: true
+      # Defaults to false, matching the SDK publish workflows. A dispatch is an
+      # explicit human action naming a tag, so publishing is the expected
+      # intent; defaulting to true left a second way to perform the release
+      # ritual and ship nothing. Dry-run is now an explicit opt-in and cannot
+      # be reached by omission.
       dry_run:
-        description: "true = verify only, do not publish. Set false to publish."
+        description: "Set true to verify WITHOUT publishing. Default false: this publishes."
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -58,14 +75,18 @@ jobs:
       - name: Decide whether this run publishes
         id: mode
         run: |
+          # Only an explicit dry_run=true suppresses publishing. Anything else -
+          # a tag push, a dispatch with the default, an omitted or malformed
+          # value - publishes. Every other arrangement leaves a path where the
+          # release ritual completes and nothing ships.
           if [ "${{ github.event_name }}" = "push" ]; then
             publish=true
             reason="pushed tag ${{ steps.release.outputs.tag }} (canonical release signal)"
-          elif [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
-            publish=true
-            reason="manual dispatch with dry_run=false"
-          else
+          elif [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             publish=false
+            reason="manual dispatch with an explicit dry_run=true"
+          else
+            publish=true
             reason="manual dispatch with dry_run=${{ github.event.inputs.dry_run }}"
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
@@ -127,8 +148,20 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Records the shasum of the artifact this run built, so the post-publish
+      # check can prove the registry is serving THAT artifact and not merely
+      # some artifact under the same version number.
       - name: Inspect package archive
-        run: npm pack --dry-run
+        id: pack
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const meta = require("/tmp/pack.json")[0];
+            const out = process.env.GITHUB_OUTPUT;
+            require("fs").appendFileSync(out, `shasum=${meta.shasum}\n`);
+            require("fs").appendFileSync(out, `entries=${meta.entryCount}\n`);
+            console.log(`packed ${meta.name}@${meta.version} shasum=${meta.shasum} files=${meta.entryCount}`);
+          '
 
       # Fails fast and legibly on a missing or unauthenticated credential, so a
       # later registry refusal can only mean "authenticated but not authorised"
@@ -176,25 +209,46 @@ jobs:
       # The step that turns "reported success" into "proved it shipped". Without
       # it the workflow only asserts that npm exited zero, which is exactly the
       # kind of self-trust that let three releases go green while shipping
-      # nothing. Retries cover registry/CDN propagation lag.
+      # nothing.
+      #
+      # Deliberately NOT `npm view`: on 2026-08-26 `npm view` reported 1.1.16
+      # immediately after 1.1.18 published successfully, because the npm client
+      # served a stale cached read. That is indistinguishable from a failed
+      # publish, so using it here would have turned a real release into a red
+      # job. This queries the registry HTTP API directly, which has no client
+      # cache in front of it, and cross-checks the shasum so a 200 on the right
+      # version number but the wrong artifact also fails. Retries cover genuine
+      # CDN propagation lag; only exhausting them is a failure.
       - name: Prove the release is on the registry
         id: proof
         if: ${{ steps.mode.outputs.publish == 'true' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          spec="${{ steps.validate.outputs.name }}@${{ steps.validate.outputs.version }}"
+          name='${{ steps.validate.outputs.name }}'
+          version='${{ steps.validate.outputs.version }}'
+          expected='${{ steps.pack.outputs.shasum }}'
+          encoded="$(node -p "encodeURIComponent(process.argv[1])" "$name")"
+          url="https://registry.npmjs.org/${encoded}/${version}"
+
           for attempt in 1 2 3 4 5 6; do
-            if resolved="$(npm view "$spec" version 2>/dev/null)"; then
-              echo "Confirmed on registry: $spec resolves to $resolved"
-              echo "Published \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+            code="$(curl -sS -o /tmp/registry.json -w '%{http_code}' "$url" || echo 000)"
+            if [ "$code" = "200" ]; then
+              actual="$(node -p "require('/tmp/registry.json').dist.shasum")"
+              echo "Registry served ${name}@${version} shasum=${actual}"
+              if [ "$actual" != "$expected" ]; then
+                echo "::error::Registry is serving ${name}@${version} with shasum ${actual}, but this run built ${expected}. The published artifact is not the one this run verified."
+                echo "MISMATCHED artifact for \`${name}@${version}\`" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              echo "Confirmed: ${name}@${version} is live and its shasum matches this run's artifact."
+              echo "Published \`${name}@${version}\` (shasum ${actual})" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            echo "Not resolvable yet (attempt $attempt/6); waiting for propagation"
+            echo "Registry returned HTTP ${code} (attempt ${attempt}/6); waiting for propagation"
             sleep 10
           done
-          echo "::error::$spec is NOT resolvable on the registry after publishing. The release did not ship."
-          echo "FAILED to publish \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error::${name}@${version} is NOT on the registry after publishing. The release did not ship."
+          echo "FAILED to publish \`${name}@${version}\`" >> "$GITHUB_STEP_SUMMARY"
           exit 1
 
       # A verify-only run is a legitimate success, but it must be impossible to
