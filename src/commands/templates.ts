@@ -102,6 +102,47 @@ function templateCreatedAt(template: SandboxTemplate): string | undefined {
   return template.created_at ?? template.inserted_at;
 }
 
+/**
+ * Whether a template's IMAGE is confirmed to exist.
+ *
+ * Ross/HackerAI asked for this outright: `templates list` must distinguish
+ * confirmed-absent from confirmed-present from cannot-verify. Collapsing the
+ * three is how a customer concludes "my template is gone" from a listing that
+ * merely failed to check.
+ */
+type Presence = "present" | "absent" | "unknown";
+
+function templatePresence(template: SandboxTemplate): {
+  presence: Presence;
+  why: string;
+} {
+  const state = templateState(template);
+  const image = templateImage(template);
+
+  if (image) {
+    return { presence: "present", why: `image ${image} is recorded on the template` };
+  }
+  // A draft or failed build has no image BY DEFINITION - that is a confirmed
+  // absence, not a gap in our knowledge.
+  if (state === "draft" || state === "failed" || state === "error") {
+    return { presence: "absent", why: `template is ${state}, so no image was ever published` };
+  }
+  if (state === "building" || state === "pending" || state === "queued") {
+    return { presence: "absent", why: `build is ${state}, no image published yet` };
+  }
+  // Ready, but no image recorded. We genuinely cannot tell.
+  return {
+    presence: "unknown",
+    why: `template reports ${state ?? "no state"} but records no image - cannot confirm either way`,
+  };
+}
+
+function fmtPresence(p: Presence): string {
+  if (p === "present") return chalk.green("present");
+  if (p === "absent") return chalk.yellow("absent");
+  return chalk.dim("unverified");
+}
+
 function fmtBuildState(state: string | undefined): string {
   if (!state) return chalk.dim("-");
   if (state === "success" || state === "complete") return chalk.green(state);
@@ -219,26 +260,78 @@ export function register(program: Command): void {
   // list
   templates
     .command("list")
-    .description("List sandbox templates")
+    .description(
+      "List sandbox templates, distinguishing confirmed-absent from cannot-verify",
+    )
     .option("--json", "Output raw JSON")
     .action(async (opts: { json?: boolean }) => {
-      try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const json = isJsonMode(opts);
-        const spinner = json ? null : spin("Fetching templates...");
-        const rows = unwrapTemplates(
-          await client.apiGet("/api/v1/sandbox-templates"),
-        );
-        spinner?.stop();
+      const config = loadConfig();
+      const client = new MiosaClient(config);
+      const json = isJsonMode(opts);
+      const spinner = json ? null : spin("Fetching templates...");
+      const checkedAt = new Date().toISOString();
 
+      let rows: SandboxTemplate[];
+      try {
+        rows = unwrapTemplates(await client.apiGet("/api/v1/sandbox-templates"));
+      } catch (err) {
+        // The listing could NOT be verified. This is emphatically not "no
+        // templates" - reporting an empty list here would tell a customer their
+        // templates are gone when we simply failed to ask.
+        spinner?.stop();
+        const reason = err instanceof Error ? err.message : String(err);
         if (json) {
-          printJson(rows);
+          printJson({
+            listing: {
+              state: "unverified",
+              source: "live",
+              checkedAt,
+              reason,
+            },
+            templates: null,
+          });
+        } else {
+          console.log();
+          console.log(
+            `  ${chalk.yellow("Cannot verify")} - the template list could not be retrieved.`,
+          );
+          console.log(`  ${chalk.dim(reason)}`);
+          console.log(
+            `  ${chalk.dim("This is NOT the same as having no templates. Run: miosa doctor")}`,
+          );
+        }
+        // Non-zero: a script must be able to tell an unverified listing from an
+        // empty one.
+        process.exitCode = 1;
+        return;
+      }
+      spinner?.stop();
+
+      try {
+        if (json) {
+          printJson({
+            // Never presented as current without saying when it was checked,
+            // and never cached: this is a live read every time.
+            listing: {
+              state: "confirmed",
+              source: "live",
+              checkedAt,
+              count: rows.length,
+            },
+            templates: rows.map((t) => {
+              const { presence, why } = templatePresence(t);
+              return { ...t, presence, presenceReason: why };
+            }),
+          });
           return;
         }
 
         if (rows.length === 0) {
-          console.log(chalk.dim("No templates found."));
+          console.log(
+            chalk.dim(
+              `No templates. Confirmed empty by a live read at ${checkedAt}.`,
+            ),
+          );
           return;
         }
 
@@ -252,15 +345,20 @@ export function register(program: Command): void {
           },
           {
             header: "IMAGE",
+            key: (t) => fmtPresence(templatePresence(t).presence),
+            width: 12,
+          },
+          {
+            header: "IMAGE ID",
             key: (t) => {
               const image = templateImage(t);
               return image
-                ? image.length > 32
-                  ? `${image.slice(0, 29)}...`
+                ? image.length > 26
+                  ? `${image.slice(0, 23)}...`
                   : image
                 : chalk.dim("-");
             },
-            width: 34,
+            width: 28,
           },
           {
             header: "CREATED",
@@ -271,6 +369,18 @@ export function register(program: Command): void {
             width: 12,
           },
         ]);
+
+        const unverified = rows.filter(
+          (t) => templatePresence(t).presence === "unknown",
+        );
+        if (unverified.length > 0) {
+          console.log();
+          console.log(
+            chalk.dim(
+              `  ${unverified.length} template(s) report no image and could not be confirmed either way.`,
+            ),
+          );
+        }
       } catch (err) {
         handleError(err);
       }
