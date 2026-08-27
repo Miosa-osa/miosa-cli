@@ -14,6 +14,7 @@
  */
 
 import { lookup as dnsLookup, resolve4, resolve6 } from "node:dns/promises";
+import { getServers, Resolver } from "node:dns";
 import { connect as tcpConnect } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { request } from "undici";
@@ -40,6 +41,8 @@ export interface LayerResult {
 }
 
 export interface Diagnosis {
+  /** Which DNS servers answered, and whether a configured override was applied. */
+  resolver: { applied: boolean; servers: string[]; error?: string };
   endpoint: string;
   host: string;
   port: number;
@@ -66,7 +69,59 @@ function errMessage(e: unknown): string {
   return String(e);
 }
 
-async function probeDns(host: string): Promise<LayerResult> {
+
+/**
+ * Build a resolver for explicit DNS servers.
+ *
+ * For restricted, split-horizon or corporate networks where the machine's
+ * default resolver cannot resolve the API endpoint - the situation Ross's
+ * `getaddrinfo ENOTFOUND` turned out to be. Without this the only remedy was
+ * changing OS-level DNS, which a user often cannot do on a managed laptop.
+ *
+ * Two things about Node make the naive version silently useless, and both were
+ * caught by checking the output rather than trusting it:
+ *
+ *   1. `dnsPromises.setServers()` and `dns.getServers()` read DIFFERENT
+ *      resolver state, so setting one and reading the other reports success
+ *      while nothing changed. This uses one explicit `Resolver` instance and
+ *      reads back from that same instance.
+ *   2. `dns.lookup()` goes through the OS resolver (getaddrinfo) and IGNORES
+ *      configured servers entirely. Only `resolve*()` honours them. So when an
+ *      override is configured the probe must resolve via `resolve4/resolve6`,
+ *      not `lookup`.
+ */
+export interface ResolverChoice {
+  applied: boolean;
+  servers: string[];
+  error?: string;
+  resolver?: Resolver;
+}
+
+export function applyResolver(servers: string | null | undefined): ResolverChoice {
+  if (!servers || !servers.trim()) {
+    return { applied: false, servers: getServers() };
+  }
+
+  const list = servers
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+  if (list.length === 0) return { applied: false, servers: getServers() };
+
+  try {
+    const resolver = new Resolver();
+    // Throws on a malformed address. Failing loudly is right: silently falling
+    // back to the OS resolver would make a configured override look like it
+    // worked while the fault it was meant to route around persisted.
+    resolver.setServers(list);
+    return { applied: true, servers: resolver.getServers(), resolver };
+  } catch (e) {
+    return { applied: false, servers: getServers(), error: errMessage(e) };
+  }
+}
+
+async function probeDns(host: string, choice: ResolverChoice): Promise<LayerResult> {
   // A literal IP needs no resolution; saying "ok" here would imply we tested
   // something we did not.
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
@@ -80,7 +135,35 @@ async function probeDns(host: string): Promise<LayerResult> {
 
   const start = Date.now();
   try {
-    const { address, family } = await dnsLookup(host);
+    // With an override, resolve THROUGH IT - dns.lookup() would silently use
+    // the OS resolver and the override would do nothing.
+    let address: string;
+    let family: number;
+
+    if (choice.applied && choice.resolver) {
+      const v4 = await new Promise<string[]>((res, rej) =>
+        choice.resolver!.resolve4(host, (e, a) => (e ? rej(e) : res(a))),
+      ).catch(() => [] as string[]);
+      const v6 =
+        v4.length > 0
+          ? []
+          : await new Promise<string[]>((res, rej) =>
+              choice.resolver!.resolve6(host, (e, a) => (e ? rej(e) : res(a))),
+            ).catch(() => [] as string[]);
+
+      if (v4.length === 0 && v6.length === 0) {
+        throw Object.assign(new Error(`no records from ${choice.servers.join(", ")}`), {
+          code: "ENOTFOUND",
+        });
+      }
+      address = v4[0] ?? v6[0]!;
+      family = v4.length > 0 ? 4 : 6;
+    } else {
+      const looked = await dnsLookup(host);
+      address = looked.address;
+      family = looked.family;
+    }
+
     const latencyMs = Date.now() - start;
 
     // Also report every address, so split-horizon or stale-cache faults are
@@ -99,7 +182,9 @@ async function probeDns(host: string): Promise<LayerResult> {
       layer: "dns",
       name: "DNS resolution",
       state: "ok",
-      detail: `${host} -> ${address} (IPv${family})${extra}`,
+      detail:
+        `${host} -> ${address} (IPv${family})${extra}` +
+        (choice.applied ? ` via ${choice.servers.join(", ")}` : ""),
       latencyMs,
     };
   } catch (e) {
@@ -294,7 +379,9 @@ function unknownLayer(
 export async function diagnose(
   endpoint: string,
   authProbe?: () => Promise<string>,
+  dnsServers?: string | null,
 ): Promise<Diagnosis> {
+  const resolver = applyResolver(dnsServers);
   let url: URL;
   try {
     url = new URL(endpoint);
@@ -308,6 +395,7 @@ export async function diagnose(
       fix: "Set a valid endpoint: miosa config set api_url <url>",
     };
     return {
+      resolver: { applied: false, servers: [] },
       endpoint,
       host: endpoint,
       port: 0,
@@ -330,7 +418,7 @@ export async function diagnose(
 
   const layers: LayerResult[] = [];
 
-  const dns = await probeDns(host);
+  const dns = await probeDns(host, resolver);
   layers.push(dns);
 
   if (dns.state !== "ok") {
@@ -338,7 +426,7 @@ export async function diagnose(
     layers.push(unknownLayer("tls", "TLS handshake", "DNS did not resolve"));
     layers.push(unknownLayer("http", "API health", "DNS did not resolve"));
     layers.push(unknownLayer("auth", "Authentication", "DNS did not resolve"));
-    return finalize(endpoint, host, port, protocol, layers);
+    return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
   }
 
   const tcp = await probeTcp(host, port);
@@ -348,7 +436,7 @@ export async function diagnose(
     layers.push(unknownLayer("tls", "TLS handshake", "TCP did not connect"));
     layers.push(unknownLayer("http", "API health", "TCP did not connect"));
     layers.push(unknownLayer("auth", "Authentication", "TCP did not connect"));
-    return finalize(endpoint, host, port, protocol, layers);
+    return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
   }
 
   if (protocol === "https:") {
@@ -357,7 +445,7 @@ export async function diagnose(
     if (tls.state !== "ok") {
       layers.push(unknownLayer("http", "API health", "TLS handshake failed"));
       layers.push(unknownLayer("auth", "Authentication", "TLS handshake failed"));
-      return finalize(endpoint, host, port, protocol, layers);
+      return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
     }
   } else {
     layers.push({
@@ -373,12 +461,12 @@ export async function diagnose(
 
   if (http.state !== "ok") {
     layers.push(unknownLayer("auth", "Authentication", "API health check failed"));
-    return finalize(endpoint, host, port, protocol, layers);
+    return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
   }
 
   if (!authProbe) {
     layers.push(unknownLayer("auth", "Authentication", "no credentials configured"));
-    return finalize(endpoint, host, port, protocol, layers);
+    return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
   }
 
   const start = Date.now();
@@ -402,7 +490,18 @@ export async function diagnose(
     });
   }
 
-  return finalize(endpoint, host, port, protocol, layers);
+  return finalize(endpoint, host, port, protocol, layers, publicResolver(resolver));
+}
+
+// The Resolver instance itself must never reach the JSON output.
+function publicResolver(c: ResolverChoice): {
+  applied: boolean;
+  servers: string[];
+  error?: string;
+} {
+  return c.error
+    ? { applied: c.applied, servers: c.servers, error: c.error }
+    : { applied: c.applied, servers: c.servers };
 }
 
 function finalize(
@@ -411,12 +510,17 @@ function finalize(
   port: number,
   protocol: "http:" | "https:",
   layers: LayerResult[],
+  resolver: { applied: boolean; servers: string[]; error?: string } = {
+    applied: false,
+    servers: [],
+  },
 ): Diagnosis {
   const failed = layers.find((l) => l.state === "fail");
   const summary = failed
     ? `${failed.name} failed: ${failed.detail}. Everything below it is UNVERIFIED, not healthy.`
     : `All layers healthy: DNS, TCP, TLS, /health, and credentials for ${host}.`;
   return {
+    resolver,
     endpoint,
     host,
     port,

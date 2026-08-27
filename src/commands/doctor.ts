@@ -327,6 +327,7 @@ export function register(program: Command): void {
                 return `valid (${tenant.name}, ${tenant.slug})`;
               }
             : undefined,
+          config.dns_servers,
         );
 
         for (const layer of diagnosis.layers) {
@@ -346,6 +347,25 @@ export function register(program: Command): void {
             section: layer.layer === "auth" ? "Identity" : "Network",
           });
         }
+
+        // Which resolver actually answered. On a restricted network the whole
+        // question is "am I even asking the right DNS server", and that is not
+        // inferable from a pass/fail.
+        checks.push({
+          name: "DNS servers",
+          ok: !diagnosis.resolver.error,
+          detail: diagnosis.resolver.error
+            ? `configured dns_servers rejected: ${diagnosis.resolver.error}`
+            : diagnosis.resolver.applied
+              ? `${diagnosis.resolver.servers.join(", ")} (from config dns_servers)`
+              : `${diagnosis.resolver.servers.join(", ") || "system default"} (OS resolver)`,
+          fix: diagnosis.resolver.error
+            ? "Set valid comma-separated IPs: miosa config set dns_servers 1.1.1.1,8.8.8.8"
+            : diagnosis.firstFailure === "dns" && !diagnosis.resolver.applied
+              ? "On a restricted or split-horizon network, override the resolver: miosa config set dns_servers 1.1.1.1,8.8.8.8"
+              : undefined,
+          section: "Network",
+        });
 
         // Endpoint and tenant, reported as their own line so "which cluster am
         // I even talking to" is answerable without inference.
@@ -505,6 +525,7 @@ export function register(program: Command): void {
             // null when the whole path is clean.
             firstFailure: diagnosis.firstFailure,
             summary: diagnosis.summary,
+            resolver: diagnosis.resolver,
             endpoint: {
               url: diagnosis.endpoint,
               host: diagnosis.host,

@@ -51,6 +51,12 @@ export interface ComputerExecResult {
 export interface MiosaConfig {
   endpoint: string;
   api_key: ApiKey | null;
+  /**
+   * Comma-separated DNS servers to resolve the API endpoint with, overriding
+   * the OS resolver. For restricted or split-horizon networks where the machine
+   * default cannot resolve api.miosa.ai.
+   */
+  dns_servers: string | null;
   default_host: string | null;
   region: string | null;
   output: string;
