@@ -25,15 +25,14 @@
  */
 
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 
-const args = process.argv.slice(2);
 function arg(name, fallback) {
+  const args = process.argv.slice(2);
   const i = args.indexOf(`--${name}`);
   return i === -1 ? fallback : args[i + 1];
 }
-
-const scenario = arg("scenario", "happy");
-const port = Number(arg("port", "0"));
 
 /** One built-in catalog row as render_for_catalog/1 emits it. */
 function builtIn(id, name, category) {
@@ -95,7 +94,7 @@ const BUILT_INS = [
 const CUSTOM_UUID = "9f2c1d70-4b3a-4a51-8d21-0c7e6b5a1f44";
 
 /** TemplateRegistry.render_template/1 for a tenant-owned row. */
-function renderTemplate(overrides = {}) {
+export function renderTemplate(overrides = {}) {
   return {
     id: CUSTOM_UUID,
     name: "hackerai-scanner",
@@ -139,30 +138,37 @@ function renderTemplate(overrides = {}) {
   };
 }
 
+/**
+ * The exact atom list `Templates.render/1` passes to `Map.take/2`. Exported so
+ * test/server-contract.test.ts can compare it against the real Elixir source
+ * rather than against a second hand-maintained copy.
+ */
+export const CATALOG_TAKE_KEYS = [
+  "id",
+  "name",
+  "description",
+  "image_id",
+  "category",
+  "default",
+  "built_in",
+  "status",
+  "cpu_count",
+  "memory_mb",
+  "disk_mb",
+  "workdir",
+  "preview_port",
+  "install_command",
+  "start_command",
+  "readiness_probe",
+  "runtimes",
+  "artifact_paths",
+  "tags",
+];
+
 /** Templates.render_for_catalog/1 applied to an already-rendered custom row. */
-function catalogRow(template) {
+export function catalogRow(template) {
   const taken = {};
-  for (const key of [
-    "id",
-    "name",
-    "description",
-    "image_id",
-    "category",
-    "default",
-    "built_in",
-    "status",
-    "cpu_count",
-    "memory_mb",
-    "disk_mb",
-    "workdir",
-    "preview_port",
-    "install_command",
-    "start_command",
-    "readiness_probe",
-    "runtimes",
-    "artifact_paths",
-    "tags",
-  ]) {
+  for (const key of CATALOG_TAKE_KEYS) {
     if (key in template) taken[key] = template[key];
   }
   const { category, cpu_count, memory_mb, ...rest } = taken;
@@ -174,7 +180,7 @@ function catalogRow(template) {
   };
 }
 
-function renderBuild(overrides = {}) {
+export function renderBuild(overrides = {}) {
   return {
     id: "b1d0f3a8-77c2-4a19-9a41-3f5d2c8e7b60",
     sandbox_template_id: CUSTOM_UUID,
@@ -270,128 +276,144 @@ const SCENARIOS = {
   },
 };
 
-const config = SCENARIOS[scenario];
-if (!config) {
-  process.stderr.write(`unknown scenario: ${scenario}\n`);
-  process.exit(2);
-}
+/**
+ * Everything below is the running server. It is inside main() so that
+ * importing this module for its shape definitions (see
+ * test/server-contract.test.ts) neither reads argv nor binds a port nor
+ * calls process.exit.
+ */
+function main() {
+  const scenario = arg("scenario", "happy");
+  const port = Number(arg("port", "0"));
+  const config = SCENARIOS[scenario];
+  if (!config) {
+    process.stderr.write(`unknown scenario: ${scenario}\n`);
+    process.exit(2);
+  }
 
-const templateStatus = config.templateStatus ?? "draft";
-const TEMPLATE_BY_STATUS = {
-  ready: {
-    status: "ready",
-    image_id: "sbxtpl-hackerai-scanner-01",
-    current_build_id: renderBuild().id,
-  },
-  failed: { status: "failed", current_build_id: renderBuild().id },
-  // Template stays "draft" even though its only build failed.
-  "builds-disabled": { status: "draft", current_build_id: renderBuild().id },
-};
-const template = renderTemplate(TEMPLATE_BY_STATUS[templateStatus] ?? {});
-const BUILD_BY_STATUS = {
-  ready: {
-    state: "ready",
-    image_id: "sbxtpl-hackerai-scanner-01",
-    started_at: "2026-08-26T14:02:20Z",
-    finished_at: "2026-08-26T14:05:02Z",
-    duration_ms: 162000,
-  },
-  // The live fleet condition: sandbox_template_builds_enabled is false, so
-  // fail_build/2 records the build as failed with BUILDS_TEMPORARILY_UNAVAILABLE
-  // while template_status_after_failure(:builds_disabled) keeps the template
-  // itself "draft" (miosa-compute fbd4a3f5).
-  "builds-disabled": {
-    state: "failed",
-    error_code: "BUILDS_TEMPORARILY_UNAVAILABLE",
-    error_message:
-      "Template builds are being upgraded to run inside isolated per-tenant " +
-      "microVMs and are temporarily unavailable. Your template was saved as a " +
-      "draft and will build once this ships.",
-    started_at: "2026-08-26T14:02:20Z",
-    finished_at: "2026-08-26T14:02:21Z",
-    duration_ms: 1000,
-  },
-  failed: {
-    state: "failed",
-    error_code: "BUILD_STEP_FAILED",
-    error_message: "step 3 `npm ci` exited 1: ENOENT package-lock.json",
-    started_at: "2026-08-26T14:02:20Z",
-    finished_at: "2026-08-26T14:03:40Z",
-    duration_ms: 80000,
-  },
-};
-const build = renderBuild(BUILD_BY_STATUS[templateStatus] ?? {});
+  const templateStatus = config.templateStatus ?? "draft";
+  const TEMPLATE_BY_STATUS = {
+    ready: {
+      status: "ready",
+      image_id: "sbxtpl-hackerai-scanner-01",
+      current_build_id: renderBuild().id,
+    },
+    failed: { status: "failed", current_build_id: renderBuild().id },
+    // Template stays "draft" even though its only build failed.
+    "builds-disabled": { status: "draft", current_build_id: renderBuild().id },
+  };
+  const template = renderTemplate(TEMPLATE_BY_STATUS[templateStatus] ?? {});
+  const BUILD_BY_STATUS = {
+    ready: {
+      state: "ready",
+      image_id: "sbxtpl-hackerai-scanner-01",
+      started_at: "2026-08-26T14:02:20Z",
+      finished_at: "2026-08-26T14:05:02Z",
+      duration_ms: 162000,
+    },
+    // The live fleet condition: sandbox_template_builds_enabled is false, so
+    // fail_build/2 records the build as failed with BUILDS_TEMPORARILY_UNAVAILABLE
+    // while template_status_after_failure(:builds_disabled) keeps the template
+    // itself "draft" (miosa-compute fbd4a3f5).
+    "builds-disabled": {
+      state: "failed",
+      error_code: "BUILDS_TEMPORARILY_UNAVAILABLE",
+      error_message:
+        "Template builds are being upgraded to run inside isolated per-tenant " +
+        "microVMs and are temporarily unavailable. Your template was saved as a " +
+        "draft and will build once this ships.",
+      started_at: "2026-08-26T14:02:20Z",
+      finished_at: "2026-08-26T14:02:21Z",
+      duration_ms: 1000,
+    },
+    failed: {
+      state: "failed",
+      error_code: "BUILD_STEP_FAILED",
+      error_message: "step 3 `npm ci` exited 1: ENOENT package-lock.json",
+      started_at: "2026-08-26T14:02:20Z",
+      finished_at: "2026-08-26T14:03:40Z",
+      duration_ms: 80000,
+    },
+  };
+  const build = renderBuild(BUILD_BY_STATUS[templateStatus] ?? {});
 
-const requests = [];
+  const requests = [];
 
-function send(res, status, body, headers = {}) {
-  const payload = body === null ? "" : JSON.stringify(body);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "x-request-id": "req_fake_0001",
-    ...headers,
-  });
-  res.end(payload);
-}
+  function send(res, status, body, headers = {}) {
+    const payload = body === null ? "" : JSON.stringify(body);
+    res.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "x-request-id": "req_fake_0001",
+      ...headers,
+    });
+    res.end(payload);
+  }
 
-const server = createServer((req, res) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const path = url.pathname;
-  requests.push(`${req.method} ${path}`);
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+    requests.push(`${req.method} ${path}`);
 
-  let bodyText = "";
-  req.on("data", (chunk) => {
-    bodyText += chunk;
-  });
-  req.on("end", () => {
-    if (path === "/api/v1/__requests") return send(res, 200, requests);
+    let bodyText = "";
+    req.on("data", (chunk) => {
+      bodyText += chunk;
+    });
+    req.on("end", () => {
+      if (path === "/api/v1/__requests") return send(res, 200, requests);
 
-    if (path === "/api/v1/sandbox-templates" && req.method === "GET") {
-      const rows = config.noCustom
-        ? BUILT_INS
-        : [...BUILT_INS, catalogRow(template)];
-      return send(res, 200, rows);
-    }
-
-    if (path === "/api/v1/sandbox-templates" && req.method === "POST") {
-      if (config.createStatus === 422) {
-        return send(res, 422, config.createBody);
+      if (path === "/api/v1/sandbox-templates" && req.method === "GET") {
+        const rows = config.noCustom
+          ? BUILT_INS
+          : [...BUILT_INS, catalogRow(template)];
+        return send(res, 200, rows);
       }
-      return send(res, 201, { data: template });
-    }
 
-    const showMatch = /^\/api\/v1\/sandbox-templates\/([^/]+)$/.exec(path);
-    if (showMatch && req.method === "GET") {
-      const id = decodeURIComponent(showMatch[1]);
-      if (id === template.id || id === template.slug) {
-        // :show sends the bare rendered map, with no data wrapper.
-        return send(res, 200, template);
+      if (path === "/api/v1/sandbox-templates" && req.method === "POST") {
+        if (config.createStatus === 422) {
+          return send(res, 422, config.createBody);
+        }
+        return send(res, 201, { data: template });
       }
+
+      const showMatch = /^\/api\/v1\/sandbox-templates\/([^/]+)$/.exec(path);
+      if (showMatch && req.method === "GET") {
+        const id = decodeURIComponent(showMatch[1]);
+        if (id === template.id || id === template.slug) {
+          // :show sends the bare rendered map, with no data wrapper.
+          return send(res, 200, template);
+        }
+        return send(res, 404, {
+          error: { code: "TEMPLATE_NOT_FOUND", message: "sandbox template not found" },
+        });
+      }
+
+      if (showMatch && req.method === "DELETE") {
+        if (config.deleteStatus === 409) return send(res, 409, config.deleteBody);
+        return send(res, 204, null);
+      }
+
+      const buildsMatch = /^\/api\/v1\/sandbox-templates\/([^/]+)\/builds$/.exec(path);
+      if (buildsMatch && req.method === "GET") {
+        return send(res, 200, { data: [build] });
+      }
+      if (buildsMatch && req.method === "POST") {
+        return send(res, 201, { data: renderBuild() });
+      }
+
       return send(res, 404, {
-        error: { code: "TEMPLATE_NOT_FOUND", message: "sandbox template not found" },
+        error: { code: "NOT_FOUND", message: `no fake route for ${req.method} ${path}` },
       });
-    }
-
-    if (showMatch && req.method === "DELETE") {
-      if (config.deleteStatus === 409) return send(res, 409, config.deleteBody);
-      return send(res, 204, null);
-    }
-
-    const buildsMatch = /^\/api\/v1\/sandbox-templates\/([^/]+)\/builds$/.exec(path);
-    if (buildsMatch && req.method === "GET") {
-      return send(res, 200, { data: [build] });
-    }
-    if (buildsMatch && req.method === "POST") {
-      return send(res, 201, { data: renderBuild() });
-    }
-
-    return send(res, 404, {
-      error: { code: "NOT_FOUND", message: `no fake route for ${req.method} ${path}` },
     });
   });
-});
 
-server.listen(port, "127.0.0.1", () => {
-  const address = server.address();
-  process.stdout.write(`listening http://127.0.0.1:${address.port}\n`);
-});
+  server.listen(port, "127.0.0.1", () => {
+    const address = server.address();
+    process.stdout.write(`listening http://127.0.0.1:${address.port}\n`);
+  });
+}
+
+// Only run the server when invoked directly, not when imported.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+if (invokedDirectly) main();
