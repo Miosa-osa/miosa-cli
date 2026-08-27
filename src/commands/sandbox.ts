@@ -40,7 +40,7 @@ import {
   ENV_STDIN_OPTION_HELP,
   resolveEnvInputs,
 } from "./env-input.js";
-import { handleError, isJsonMode } from "./util.js";
+import { handleError, isJsonMode, printJson } from "./util.js";
 import { renderTable } from "../ui/table.js";
 import {
   formatDuration,
@@ -92,6 +92,110 @@ export function register(program: Command): void {
     );
 
   registerSandboxDevCommands(sandbox);
+
+  // migrate — point a sandbox at a different template version.
+  //
+  // PREVIEW BY DEFAULT. Migrating replaces the sandbox's root filesystem, so
+  // the destructive path is behind an explicit --confirm rather than being what
+  // happens when you forget a flag. Ross/HackerAI asked for exactly this shape:
+  // a preview of what is preserved, explicit confirmation, the original kept
+  // until the replacement is ready, and rollback.
+  sandbox
+    .command("migrate <id>")
+    .description(
+      "Preview (default) or perform moving a Sandbox to another template version",
+    )
+    .requiredOption(
+      "--template <ref>",
+      "Target version: v3, <template>@v3, a build id, or 'latest' (latest USABLE version)",
+    )
+    .option(
+      "--confirm",
+      "Actually perform the migration. Without this, nothing is changed.",
+    )
+    .option("--json", "Output raw JSON")
+    .action(
+      async (
+        id: string,
+        opts: { template: string; confirm?: boolean; json?: boolean },
+      ) => {
+        try {
+          const json = isJsonMode(opts);
+          const body = {
+            template_version: opts.template,
+            confirm: Boolean(opts.confirm),
+          };
+
+          const res = unwrap(
+            await client().apiPost<unknown>(
+              apiPath(`/sandboxes/${enc(id)}/migrate`),
+              body,
+            ),
+          ) as Record<string, unknown>;
+
+          if (json) {
+            printJson(res);
+            return;
+          }
+
+          const plan = (res["plan"] ?? res) as Record<string, unknown>;
+          const from = (plan["from"] ?? {}) as Record<string, unknown>;
+          const to = (plan["to"] ?? {}) as Record<string, unknown>;
+
+          console.log();
+          console.log(
+            `  ${chalk.bold("Migration")} ${chalk.dim(str(from["image_id"]))} ${chalk.dim("->")} ${chalk.bold(`v${str(to["version"])}`)} ${chalk.dim(str(to["image_id"]))}`,
+          );
+
+          const preserved = (plan["preserved"] ?? []) as Array<
+            Record<string, unknown>
+          >;
+          const lost = (plan["lost"] ?? []) as Array<Record<string, unknown>>;
+
+          if (preserved.length > 0) {
+            console.log();
+            console.log(`  ${chalk.green("Preserved")}`);
+            for (const p of preserved) {
+              console.log(
+                `    ${icon.ok} ${str(p["item"])} ${chalk.dim(str(p["detail"]))}`,
+              );
+            }
+          }
+
+          // Printed with the same weight as the preserved list, deliberately.
+          // A preview that only shows survivors invites you to assume the rest
+          // survives too.
+          if (lost.length > 0) {
+            console.log();
+            console.log(`  ${chalk.red("NOT preserved")}`);
+            for (const l of lost) {
+              console.log(
+                `    ${icon.fail} ${str(l["item"])} ${chalk.dim(str(l["detail"]))}`,
+              );
+            }
+          }
+
+          const warnings = (plan["warnings"] ?? []) as string[];
+          for (const w of warnings) {
+            console.log();
+            console.log(`  ${chalk.yellow("Warning:")} ${w}`);
+          }
+
+          console.log();
+          if (!opts.confirm) {
+            console.log(
+              `  ${chalk.dim("Nothing has changed. Re-run with --confirm to perform this migration.")}`,
+            );
+          } else {
+            console.log(
+              `  ${chalk.dim(str(res["note"]) || "the original Sandbox is preserved until the replacement is ready")}`,
+            );
+          }
+        } catch (err) {
+          handleError(err);
+        }
+      },
+    );
 
   // list
   sandbox
