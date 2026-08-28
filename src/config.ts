@@ -11,6 +11,7 @@ const CONTEXTS_FILE = path.join(CONFIG_DIR, "contexts.json");
 const DEFAULTS: MiosaConfig = {
   endpoint: "https://api.miosa.ai",
   api_key: null,
+  dns_servers: null,
   default_host: null,
   region: null,
   output: "text",
@@ -40,6 +41,8 @@ export function loadConfig(): MiosaConfig {
       (process.env["MIOSA_API_KEY"] as ApiKey | undefined) ??
       fileConfig.api_key ??
       null,
+    dns_servers:
+      process.env["MIOSA_DNS_SERVERS"] ?? fileConfig.dns_servers ?? null,
     default_host: fileConfig.default_host ?? null,
     region: process.env["MIOSA_REGION"] ?? fileConfig.region ?? null,
     output: fileConfig.output ?? DEFAULTS.output,
@@ -164,13 +167,19 @@ export function clearAuthCache(): void {
 
 // ── Config key allowlist ──────────────────────────────────────────────────────
 
-export type ConfigKey = "api_url" | "region" | "output" | "default_host";
+export type ConfigKey =
+  | "api_url"
+  | "region"
+  | "output"
+  | "default_host"
+  | "dns_servers";
 
 export const CONFIG_KEYS: ConfigKey[] = [
   "api_url",
   "region",
   "output",
   "default_host",
+  "dns_servers",
 ];
 
 export const CONFIG_KEY_DESCRIPTIONS: Record<ConfigKey, string> = {
@@ -178,6 +187,8 @@ export const CONFIG_KEY_DESCRIPTIONS: Record<ConfigKey, string> = {
   region: "Default deployment region",
   output: "Output format (text | json)",
   default_host: "Default OpenComputers host",
+  dns_servers:
+    "DNS servers for resolving the API endpoint, comma-separated (restricted networks)",
 };
 
 /** Map from the user-facing key name to the internal MiosaConfig field name. */

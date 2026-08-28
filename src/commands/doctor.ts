@@ -1,11 +1,11 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { diagnose, type Diagnosis } from "../net-diagnosis.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { request } from "undici";
 import {
   configExists,
   getConfigPath,
@@ -36,6 +36,22 @@ interface Check {
   fix?: string;
   /** When true the row renders with icon.warn instead of icon.fail */
   warn?: boolean;
+  /**
+   * Stable machine-readable id for scripting. Present on the connectivity
+   * layers so a caller can branch on WHICH layer broke.
+   */
+  layer?: "dns" | "tcp" | "tls" | "http" | "auth";
+  /**
+   * True when the check could not be determined because a prerequisite failed.
+   * "We could not check this" is not "this is broken", and collapsing the two
+   * is what let the CLI report an active session while DNS was dead.
+   */
+  unknown?: boolean;
+  /** Why the check was not determined. */
+  skippedBecause?: string;
+  /** Underlying error code (ENOTFOUND, CERT_HAS_EXPIRED, HTTP_503, ...). */
+  errorCode?: string;
+  latencyMs?: number;
   /** Section this check belongs to — used to group output */
   section: "Identity" | "Network" | "Authority" | "Toolchain" | "Project";
 }
@@ -67,22 +83,6 @@ async function getCommandVersion(
     const { stdout } = await execFileAsync(cmd, args, { timeout: 3000 });
     const m = pattern.exec(stdout.trim());
     return m ? (m[1] ?? stdout.trim()) : stdout.trim();
-  } catch {
-    return null;
-  }
-}
-
-async function measureLatency(url: string): Promise<number | null> {
-  try {
-    const start = Date.now();
-    const res = await request(url, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      bodyTimeout: 5000,
-      headersTimeout: 5000,
-    });
-    await res.body.dump();
-    return Date.now() - start;
   } catch {
     return null;
   }
@@ -308,34 +308,81 @@ export function register(program: Command): void {
           section: "Identity",
         });
 
-        // ── API reachability ─────────────────────────────────────────────────
-        const healthUrl = `${config.endpoint.replace(/\/$/, "")}/health`;
-        const latencyMs = await measureLatency(healthUrl);
+        // ── Connectivity, layer by layer ─────────────────────────────────────
+        // DNS -> TCP -> TLS -> /health -> auth, each probed separately. A layer
+        // that could not run because an earlier one failed reports `unknown`,
+        // never `ok` and never `fail`: reporting a valid session while DNS was
+        // dead is the exact defect this replaces.
+        const client = hasKey ? new MiosaClient(config) : null;
+        let tenantName: string | null = null;
+        let tenantSlug: string | null = null;
+
+        const diagnosis: Diagnosis = await diagnose(
+          config.endpoint,
+          client
+            ? async () => {
+                const tenant = await client.getTenant();
+                tenantName = tenant.name;
+                tenantSlug = tenant.slug;
+                return `valid (${tenant.name}, ${tenant.slug})`;
+              }
+            : undefined,
+          config.dns_servers,
+        );
+
+        for (const layer of diagnosis.layers) {
+          checks.push({
+            name: layer.name,
+            ok: layer.state === "ok",
+            unknown: layer.state === "unknown",
+            skippedBecause: layer.skippedBecause,
+            layer: layer.layer,
+            errorCode: layer.errorCode,
+            latencyMs: layer.latencyMs,
+            detail:
+              layer.state === "unknown"
+                ? `not determined - ${layer.skippedBecause}`
+                : layer.detail,
+            fix: layer.fix,
+            section: layer.layer === "auth" ? "Identity" : "Network",
+          });
+        }
+
+        // Which resolver actually answered. On a restricted network the whole
+        // question is "am I even asking the right DNS server", and that is not
+        // inferable from a pass/fail.
         checks.push({
-          name: "API reachable",
-          ok: latencyMs !== null,
-          detail:
-            latencyMs !== null
-              ? `${config.endpoint} (${latencyMs}ms)`
-              : `${config.endpoint} (unreachable)`,
-          fix:
-            latencyMs === null
-              ? `Check connectivity or set a custom endpoint: miosa config set api_url <url>`
+          name: "DNS servers",
+          ok: !diagnosis.resolver.error,
+          detail: diagnosis.resolver.error
+            ? `configured dns_servers rejected: ${diagnosis.resolver.error}`
+            : diagnosis.resolver.applied
+              ? `${diagnosis.resolver.servers.join(", ")} (from config dns_servers)`
+              : `${diagnosis.resolver.servers.join(", ") || "system default"} (OS resolver)`,
+          fix: diagnosis.resolver.error
+            ? "Set valid comma-separated IPs: miosa config set dns_servers 1.1.1.1,8.8.8.8"
+            : diagnosis.firstFailure === "dns" && !diagnosis.resolver.applied
+              ? "On a restricted or split-horizon network, override the resolver: miosa config set dns_servers 1.1.1.1,8.8.8.8"
               : undefined,
           section: "Network",
         });
 
-        // ── Auth validation (only if we have a key and the API is reachable) ─
-        if (hasKey && latencyMs !== null) {
-          const client = new MiosaClient(config);
-          try {
-            const tenant = await client.getTenant();
-            checks.push({
-              name: "Authentication",
-              ok: true,
-              detail: `valid (${tenant.name}, ${tenant.slug})`,
-              section: "Identity",
-            });
+        // Endpoint and tenant, reported as their own line so "which cluster am
+        // I even talking to" is answerable without inference.
+        checks.push({
+          name: "Endpoint + tenant",
+          ok: true,
+          detail: tenantSlug
+            ? `${config.endpoint} (tenant ${tenantName} / ${tenantSlug})`
+            : `${config.endpoint} (tenant not resolved)`,
+          section: "Identity",
+        });
+
+        const authOk =
+          diagnosis.layers.find((l) => l.layer === "auth")?.state === "ok";
+
+        if (client && authOk) {
+          {
 
             try {
               const catalog = await new ActionAuthorityClient(client).catalog();
@@ -387,14 +434,6 @@ export function register(program: Command): void {
                 section: "Authority",
               });
             }
-          } catch (err) {
-            checks.push({
-              name: "Authentication",
-              ok: false,
-              detail: err instanceof Error ? err.message : String(err),
-              fix: "Run: miosa login",
-              section: "Identity",
-            });
           }
         }
 
@@ -477,11 +516,43 @@ export function register(program: Command): void {
         // ── Output ───────────────────────────────────────────────────────────
         if (json) {
           return printJson({
-            ok: checks.every((c) => c.ok),
+            // `ok` counts only checks that actually FAILED. A check that could
+            // not be determined is reported in `unknown`, never silently folded
+            // into a pass or a fail.
+            ok: checks.every((c) => c.ok || c.unknown),
+            unknown: checks.some((c) => c.unknown),
+            // The one field a script should branch on: which layer broke first.
+            // null when the whole path is clean.
+            firstFailure: diagnosis.firstFailure,
+            summary: diagnosis.summary,
+            resolver: diagnosis.resolver,
+            endpoint: {
+              url: diagnosis.endpoint,
+              host: diagnosis.host,
+              port: diagnosis.port,
+              protocol: diagnosis.protocol,
+              tenant: tenantSlug,
+              tenantName: tenantName,
+            },
+            connectivity: diagnosis.layers.map((l) => ({
+              layer: l.layer,
+              state: l.state,
+              detail: l.detail,
+              ...(l.latencyMs !== undefined ? { latencyMs: l.latencyMs } : {}),
+              ...(l.errorCode ? { errorCode: l.errorCode } : {}),
+              ...(l.skippedBecause ? { skippedBecause: l.skippedBecause } : {}),
+              ...(l.fix ? { fix: l.fix } : {}),
+            })),
             checks: checks.map((c) => ({
               name: c.name,
+              // Tri-state, so a consumer can tell "broken" from "not checked".
+              state: c.unknown ? "unknown" : c.ok ? "ok" : "fail",
               ok: c.ok,
               detail: c.detail,
+              ...(c.layer ? { layer: c.layer } : {}),
+              ...(c.errorCode ? { errorCode: c.errorCode } : {}),
+              ...(c.latencyMs !== undefined ? { latencyMs: c.latencyMs } : {}),
+              ...(c.skippedBecause ? { skippedBecause: c.skippedBecause } : {}),
               ...(c.fix ? { fix: c.fix } : {}),
             })),
           });
@@ -506,30 +577,55 @@ export function register(program: Command): void {
           sectionHeader(section);
           console.log(
             kvPanel(
+              // An undetermined check is dimmed, not reddened. Painting "we
+              // could not check this" the same colour as "this is broken" is
+              // what makes a diagnosis unreadable.
               group.map((c) => ({
-                icon: c.ok ? icon.ok : c.warn ? icon.warn : icon.fail,
+                icon: c.unknown
+                  ? icon.warn
+                  : c.ok
+                    ? icon.ok
+                    : c.warn
+                      ? icon.warn
+                      : icon.fail,
                 label: c.name,
-                value: c.ok
+                value: c.unknown
                   ? chalk.dim(c.detail)
-                  : c.warn
-                    ? chalk.yellow(c.detail)
-                    : chalk.red(c.detail),
+                  : c.ok
+                    ? chalk.dim(c.detail)
+                    : c.warn
+                      ? chalk.yellow(c.detail)
+                      : chalk.red(c.detail),
               })),
             ),
           );
         }
 
         // ── Summary ──────────────────────────────────────────────────────────
-        const okCount = checks.filter((c) => c.ok).length;
-        const warnCount = checks.filter((c) => !c.ok && c.warn).length;
-        const failCount = checks.filter((c) => !c.ok && !c.warn).length;
+        const okCount = checks.filter((c) => c.ok && !c.unknown).length;
+        const unknownCount = checks.filter((c) => c.unknown).length;
+        const warnCount = checks.filter((c) => !c.ok && !c.unknown && c.warn).length;
+        const failCount = checks.filter((c) => !c.ok && !c.unknown && !c.warn).length;
 
         const summaryParts: string[] = [chalk.green(`${okCount} ok`)];
         if (warnCount > 0) summaryParts.push(chalk.yellow(`${warnCount} warn`));
         if (failCount > 0) summaryParts.push(chalk.red(`${failCount} fail`));
+        if (unknownCount > 0)
+          summaryParts.push(chalk.dim(`${unknownCount} not determined`));
 
         console.log();
         console.log(`  ${summaryParts.join(chalk.dim("  /  "))}`);
+
+        // Name the broken layer outright. The whole point of the command is to
+        // answer "which layer", so it should not have to be read out of a table.
+        if (diagnosis.firstFailure) {
+          console.log();
+          console.log(`  ${chalk.red("Fault:")} ${diagnosis.summary}`);
+          const failing = diagnosis.layers.find(
+            (l) => l.layer === diagnosis.firstFailure,
+          );
+          if (failing?.fix) console.log(`  ${chalk.dim(failing.fix)}`);
+        }
 
         // ── Fix hints for hard failures only ────────────────────────────────
         const hardfails = checks.filter((c) => !c.ok && !c.warn && c.fix);

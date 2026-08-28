@@ -58,6 +58,17 @@ function productTemplates(raw: Record<string, unknown>): ProductTemplate[] {
   return rows as ProductTemplate[];
 }
 
+interface TemplateVersion {
+  version: number;
+  ref?: string;
+  build_id?: string;
+  state?: string;
+  image_id?: string | null;
+  usable?: boolean;
+  current?: boolean;
+  created_at?: string;
+}
+
 function unwrapTemplates(
   raw:
     | { data?: SandboxTemplate[]; templates?: SandboxTemplate[] }
@@ -100,6 +111,47 @@ function templateImage(template: SandboxTemplate): string | undefined {
 
 function templateCreatedAt(template: SandboxTemplate): string | undefined {
   return template.created_at ?? template.inserted_at;
+}
+
+/**
+ * Whether a template's IMAGE is confirmed to exist.
+ *
+ * Ross/HackerAI asked for this outright: `templates list` must distinguish
+ * confirmed-absent from confirmed-present from cannot-verify. Collapsing the
+ * three is how a customer concludes "my template is gone" from a listing that
+ * merely failed to check.
+ */
+type Presence = "present" | "absent" | "unknown";
+
+function templatePresence(template: SandboxTemplate): {
+  presence: Presence;
+  why: string;
+} {
+  const state = templateState(template);
+  const image = templateImage(template);
+
+  if (image) {
+    return { presence: "present", why: `image ${image} is recorded on the template` };
+  }
+  // A draft or failed build has no image BY DEFINITION - that is a confirmed
+  // absence, not a gap in our knowledge.
+  if (state === "draft" || state === "failed" || state === "error") {
+    return { presence: "absent", why: `template is ${state}, so no image was ever published` };
+  }
+  if (state === "building" || state === "pending" || state === "queued") {
+    return { presence: "absent", why: `build is ${state}, no image published yet` };
+  }
+  // Ready, but no image recorded. We genuinely cannot tell.
+  return {
+    presence: "unknown",
+    why: `template reports ${state ?? "no state"} but records no image - cannot confirm either way`,
+  };
+}
+
+function fmtPresence(p: Presence): string {
+  if (p === "present") return chalk.green("present");
+  if (p === "absent") return chalk.yellow("absent");
+  return chalk.dim("unverified");
 }
 
 function fmtBuildState(state: string | undefined): string {
@@ -219,26 +271,78 @@ export function register(program: Command): void {
   // list
   templates
     .command("list")
-    .description("List sandbox templates")
+    .description(
+      "List sandbox templates, distinguishing confirmed-absent from cannot-verify",
+    )
     .option("--json", "Output raw JSON")
     .action(async (opts: { json?: boolean }) => {
-      try {
-        const config = loadConfig();
-        const client = new MiosaClient(config);
-        const json = isJsonMode(opts);
-        const spinner = json ? null : spin("Fetching templates...");
-        const rows = unwrapTemplates(
-          await client.apiGet("/api/v1/sandbox-templates"),
-        );
-        spinner?.stop();
+      const config = loadConfig();
+      const client = new MiosaClient(config);
+      const json = isJsonMode(opts);
+      const spinner = json ? null : spin("Fetching templates...");
+      const checkedAt = new Date().toISOString();
 
+      let rows: SandboxTemplate[];
+      try {
+        rows = unwrapTemplates(await client.apiGet("/api/v1/sandbox-templates"));
+      } catch (err) {
+        // The listing could NOT be verified. This is emphatically not "no
+        // templates" - reporting an empty list here would tell a customer their
+        // templates are gone when we simply failed to ask.
+        spinner?.stop();
+        const reason = err instanceof Error ? err.message : String(err);
         if (json) {
-          printJson(rows);
+          printJson({
+            listing: {
+              state: "unverified",
+              source: "live",
+              checkedAt,
+              reason,
+            },
+            templates: null,
+          });
+        } else {
+          console.log();
+          console.log(
+            `  ${chalk.yellow("Cannot verify")} - the template list could not be retrieved.`,
+          );
+          console.log(`  ${chalk.dim(reason)}`);
+          console.log(
+            `  ${chalk.dim("This is NOT the same as having no templates. Run: miosa doctor")}`,
+          );
+        }
+        // Non-zero: a script must be able to tell an unverified listing from an
+        // empty one.
+        process.exitCode = 1;
+        return;
+      }
+      spinner?.stop();
+
+      try {
+        if (json) {
+          printJson({
+            // Never presented as current without saying when it was checked,
+            // and never cached: this is a live read every time.
+            listing: {
+              state: "confirmed",
+              source: "live",
+              checkedAt,
+              count: rows.length,
+            },
+            templates: rows.map((t) => {
+              const { presence, why } = templatePresence(t);
+              return { ...t, presence, presenceReason: why };
+            }),
+          });
           return;
         }
 
         if (rows.length === 0) {
-          console.log(chalk.dim("No templates found."));
+          console.log(
+            chalk.dim(
+              `No templates. Confirmed empty by a live read at ${checkedAt}.`,
+            ),
+          );
           return;
         }
 
@@ -252,15 +356,20 @@ export function register(program: Command): void {
           },
           {
             header: "IMAGE",
+            key: (t) => fmtPresence(templatePresence(t).presence),
+            width: 12,
+          },
+          {
+            header: "IMAGE ID",
             key: (t) => {
               const image = templateImage(t);
               return image
-                ? image.length > 32
-                  ? `${image.slice(0, 29)}...`
+                ? image.length > 26
+                  ? `${image.slice(0, 23)}...`
                   : image
                 : chalk.dim("-");
             },
-            width: 34,
+            width: 28,
           },
           {
             header: "CREATED",
@@ -271,6 +380,96 @@ export function register(program: Command): void {
             width: 12,
           },
         ]);
+
+        const unverified = rows.filter(
+          (t) => templatePresence(t).presence === "unknown",
+        );
+        if (unverified.length > 0) {
+          console.log();
+          console.log(
+            chalk.dim(
+              `  ${unverified.length} template(s) report no image and could not be confirmed either way.`,
+            ),
+          );
+        }
+      } catch (err) {
+        handleError(err);
+      }
+    });
+
+  // versions
+  templates
+    .command("versions <id>")
+    .description(
+      "List a template's versions (a version is a build; specs are immutable)",
+    )
+    .option("--json", "Output raw JSON")
+    .action(async (id: string, opts: { json?: boolean }) => {
+      try {
+        const config = loadConfig();
+        const client = new MiosaClient(config);
+        const json = isJsonMode(opts);
+        const spinner = json ? null : spin("Fetching versions...");
+        const raw = (await client.apiGet(
+          `/api/v1/sandbox-templates/${encodeURIComponent(id)}/versions`,
+        )) as { data?: TemplateVersion[] } | TemplateVersion[];
+        spinner?.stop();
+
+        const rows: TemplateVersion[] = Array.isArray(raw) ? raw : (raw.data ?? []);
+
+        if (json) {
+          printJson(rows);
+          return;
+        }
+
+        if (rows.length === 0) {
+          console.log(chalk.dim("No versions yet."));
+          return;
+        }
+
+        renderTable(rows, [
+          {
+            header: "VERSION",
+            key: (v) => (v.current ? chalk.bold(`v${v.version} *`) : `v${v.version}`),
+            width: 10,
+          },
+          { header: "REF", key: (v) => v.ref ?? chalk.dim("-"), width: 26 },
+          {
+            header: "STATE",
+            key: (v) => fmtBuildState(v.state),
+            width: 12,
+          },
+          {
+            // Whether this version can actually be run or migrated to. A failed
+            // build is listed - you need to see it to understand why the next
+            // version is unavailable - but it is not usable.
+            header: "USABLE",
+            key: (v) => (v.usable ? chalk.green("yes") : chalk.dim("no")),
+            width: 8,
+          },
+          {
+            header: "IMAGE",
+            key: (v) => v.image_id ?? chalk.dim("-"),
+            width: 26,
+          },
+          {
+            header: "CREATED",
+            key: (v) => (v.created_at ? String(v.created_at).slice(0, 10) : chalk.dim("-")),
+            width: 12,
+          },
+        ]);
+
+        console.log();
+        console.log(
+          chalk.dim(
+            "  * = current. Specs are immutable: editing a template mints a new version,",
+          ),
+        );
+        console.log(
+          chalk.dim(
+            "  and existing sandboxes keep running the version they were created from.",
+          ),
+        );
       } catch (err) {
         handleError(err);
       }
