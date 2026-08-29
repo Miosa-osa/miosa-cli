@@ -1178,7 +1178,7 @@ describe("miosa sandbox exec", () => {
     mock
       .get("https://api.miosa.ai")
       .intercept({
-        path: "/api/v1/sandboxes/sbx_123/pause",
+        path: "/api/v1/sandboxes/sbx_123/stop",
         method: "POST",
         body: JSON.stringify({}),
       })

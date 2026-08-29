@@ -728,7 +728,7 @@ Note:
       runAction(async () => {
         const stopped = unwrap(
           await client().apiPost<unknown>(
-            apiPath(`/sandboxes/${enc(id)}/pause`),
+            apiPath(`/sandboxes/${enc(id)}/stop`),
             {},
           ),
         );
