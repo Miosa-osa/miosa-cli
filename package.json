@@ -1,7 +1,7 @@
 {
   "name": "@miosa/cli",
-  "version": "1.1.19",
-  "description": "MIOSA platform CLI \u2014 projects, sandboxes, deploys, databases, more",
+  "version": "1.1.20",
+  "description": "MIOSA platform CLI — projects, sandboxes, deploys, databases, more",
   "type": "module",
   "bin": {
     "miosa": "dist/bin/miosa.js"
