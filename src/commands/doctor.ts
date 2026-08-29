@@ -256,6 +256,59 @@ async function checkMcpJson(): Promise<McpJsonCheck> {
   return { found: false, configured: false, commands: [] };
 }
 
+export interface DoctorVerdict {
+  ok: boolean;
+  firstFailure: string | null;
+  summary: string;
+  warnings: Array<{ name: string; detail: string; fix?: string }>;
+}
+
+/**
+ * Reconcile the doctor's overall verdict so `ok`, `firstFailure`, and `summary`
+ * always tell ONE story.
+ *
+ * `ok` is true iff every REQUIRED check passed. A required check is any check
+ * that is not an optional warning: transport/auth layers, config, credentials,
+ * Node version. Optional warnings (missing MCP server, action-catalog drift,
+ * absent .claude/mcp.json) are surfaced in `warnings` and must NEVER flip `ok`
+ * or set `firstFailure` - collapsing the two is what produced the reported
+ * "ok:false + firstFailure:null + 'All layers healthy'" contradiction.
+ */
+export function doctorVerdict(
+  checks: ReadonlyArray<
+    Pick<Check, "ok" | "unknown" | "warn" | "layer" | "name" | "detail" | "fix">
+  >,
+  diagnosis: Pick<Diagnosis, "firstFailure" | "summary">,
+): DoctorVerdict {
+  const hardFailures = checks.filter((c) => !c.ok && !c.unknown && !c.warn);
+  const warnings = checks.filter((c) => !c.ok && Boolean(c.warn));
+  const ok = hardFailures.length === 0;
+  // Null iff ok. Prefer the transport/auth layer the diagnosis already named;
+  // otherwise name the first required check that failed.
+  const firstFailure: string | null = ok
+    ? null
+    : (diagnosis.firstFailure ??
+      hardFailures[0]?.layer ??
+      hardFailures[0]?.name ??
+      null);
+  // Reflect the same verdict: the diagnosis summary when the fault is a
+  // transport layer (or the path is clean), otherwise name the failing check.
+  const summary =
+    ok || diagnosis.firstFailure
+      ? diagnosis.summary
+      : `${hardFailures[0]?.name} failed: ${hardFailures[0]?.detail}`;
+  return {
+    ok,
+    firstFailure,
+    summary,
+    warnings: warnings.map((c) => ({
+      name: c.name,
+      detail: c.detail,
+      ...(c.fix ? { fix: c.fix } : {}),
+    })),
+  };
+}
+
 export function register(program: Command): void {
   program
     .command("doctor")
@@ -413,6 +466,10 @@ export function register(program: Command): void {
               checks.push({
                 name: "Action authority",
                 ok: healthy,
+                // Catalog drift is an optional-tooling concern, not a broken
+                // transport: it must surface as a warning, never a hard failure
+                // that flips the overall verdict or sets firstFailure.
+                warn: !healthy,
                 detail:
                   healthy
                     ? `${catalog.length} version-pinned capabilities, exact contract match`
@@ -429,6 +486,7 @@ export function register(program: Command): void {
               checks.push({
                 name: "Action authority",
                 ok: false,
+                warn: true,
                 detail: err instanceof Error ? err.message : String(err),
                 fix: "Upgrade the control plane and run: miosa actions catalog",
                 section: "Authority",
@@ -515,16 +573,21 @@ export function register(program: Command): void {
 
         // ── Output ───────────────────────────────────────────────────────────
         if (json) {
+          // One reconciled verdict so ok / firstFailure / summary never
+          // contradict each other, with optional findings split into warnings.
+          const verdict = doctorVerdict(checks, diagnosis);
           return printJson({
-            // `ok` counts only checks that actually FAILED. A check that could
-            // not be determined is reported in `unknown`, never silently folded
-            // into a pass or a fail.
-            ok: checks.every((c) => c.ok || c.unknown),
+            // True iff every REQUIRED check passed. Optional warnings live in
+            // `warnings` below and never flip this.
+            ok: verdict.ok,
             unknown: checks.some((c) => c.unknown),
-            // The one field a script should branch on: which layer broke first.
-            // null when the whole path is clean.
-            firstFailure: diagnosis.firstFailure,
-            summary: diagnosis.summary,
+            // The one field a script should branch on: which required layer/check
+            // broke first. null iff ok is true.
+            firstFailure: verdict.firstFailure,
+            summary: verdict.summary,
+            // Optional, non-fatal findings. Present for visibility only; ignored
+            // by `ok` and `firstFailure`.
+            warnings: verdict.warnings,
             resolver: diagnosis.resolver,
             endpoint: {
               url: diagnosis.endpoint,

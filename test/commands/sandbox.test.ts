@@ -20,6 +20,7 @@ const { buildSandboxWebSocketRequest, register } = await import(
 );
 
 const originalJsonMode = process.env["MIOSA_JSON"];
+const originalExitCode = process.exitCode;
 
 function buildProgram(): Command {
   const program = new Command();
@@ -56,6 +57,9 @@ describe("miosa sandbox exec", () => {
     } else {
       process.env["MIOSA_JSON"] = originalJsonMode;
     }
+    // exec now sets process.exitCode on a nonzero remote exit; reset it so a
+    // failing-command test does not leak a nonzero status to the vitest runner.
+    process.exitCode = originalExitCode;
     vi.restoreAllMocks();
   });
 
@@ -98,6 +102,81 @@ describe("miosa sandbox exec", () => {
     ]);
 
     expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("sends --env values under the `env` body field the backend honors", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    // The backend reads env from the body key `env` and applies it to the
+    // guest via `sh -c`; the CLI must therefore send it there.
+    const expectedBody = JSON.stringify({
+      command: "echo hi",
+      env: { FOO: "bar", BAZ: "qux" },
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(200, JSON.stringify({ data: { exit_code: 0, stdout: "hi\n" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_123",
+      "--cmd",
+      "echo hi",
+      "--env",
+      "FOO=bar",
+      "--env",
+      "BAZ=qux",
+    ]);
+
+    // An empty pending list proves the body (including env) matched exactly.
+    expect(mock.pendingInterceptors()).toEqual([]);
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("sets process.exitCode to a nonzero remote exit_code", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/exec",
+        method: "POST",
+      })
+      .reply(
+        200,
+        JSON.stringify({ data: { exit_code: 7, stdout: "", stderr: "boom\n" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "exec",
+      "sbx_123",
+      "--cmd",
+      "exit 7",
+    ]);
+
+    // A remote failure must fail the CLI process so CI/`&&` chains detect it.
+    expect(process.exitCode).toBe(7);
   });
 
   it("downloads raw sandbox files without parsing them as JSON", async () => {

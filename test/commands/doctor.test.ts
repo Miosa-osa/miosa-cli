@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { detectMcpInstall } = await import("../../src/commands/doctor.js");
+const { detectMcpInstall, doctorVerdict } = await import(
+  "../../src/commands/doctor.js"
+);
 
 const tempDirs: string[] = [];
 
@@ -73,5 +75,97 @@ describe("miosa doctor MCP detection", () => {
     expect(detected.installed).toBe(true);
     expect(detected.detail).toBe("v0.2.1");
     expect(detected.source).toBe("python-scripts");
+  });
+});
+
+describe("doctorVerdict reconciles ok / firstFailure / summary", () => {
+  it("keeps ok:true with firstFailure:null when only optional warnings are present", () => {
+    // The exact reported inconsistency: soft warnings must not make ok:false.
+    const verdict = doctorVerdict(
+      [
+        { name: "API key", ok: true, detail: "msk_...redacted" },
+        { name: "DNS", ok: true, layer: "dns", detail: "resolved" },
+        { name: "Credentials", ok: true, layer: "auth", detail: "valid (Acme)" },
+        {
+          name: "miosa-mcp",
+          ok: false,
+          warn: true,
+          detail: "not installed",
+          fix: "pip install miosa-mcp",
+        },
+        { name: ".claude/mcp.json", ok: false, warn: true, detail: "not found" },
+        {
+          name: "Action authority",
+          ok: false,
+          warn: true,
+          detail: "catalog mismatch: missing 2",
+        },
+      ],
+      {
+        firstFailure: null,
+        summary:
+          "All layers healthy: DNS, TCP, TLS, /health, and credentials for api.miosa.ai.",
+      },
+    );
+
+    expect(verdict.ok).toBe(true);
+    expect(verdict.firstFailure).toBeNull();
+    expect(verdict.summary).toContain("All layers healthy");
+    expect(verdict.warnings.map((w) => w.name)).toEqual([
+      "miosa-mcp",
+      ".claude/mcp.json",
+      "Action authority",
+    ]);
+  });
+
+  it("names the failing transport layer when a required layer fails", () => {
+    const verdict = doctorVerdict(
+      [
+        { name: "DNS", ok: true, layer: "dns", detail: "resolved" },
+        {
+          name: "TLS",
+          ok: false,
+          layer: "tls",
+          detail: "certificate expired",
+          fix: "renew the certificate",
+        },
+        {
+          name: "/health",
+          ok: false,
+          unknown: true,
+          layer: "http",
+          detail: "not determined - TLS failed first",
+        },
+        { name: "miosa-mcp", ok: false, warn: true, detail: "not installed" },
+      ],
+      {
+        firstFailure: "tls",
+        summary:
+          "TLS failed: certificate expired. Everything below it is UNVERIFIED, not healthy.",
+      },
+    );
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.firstFailure).toBe("tls");
+    expect(verdict.summary).toContain("TLS failed");
+    // An unknown layer is not a hard failure and not a warning.
+    expect(verdict.warnings.map((w) => w.name)).toEqual(["miosa-mcp"]);
+  });
+
+  it("names a required non-transport check when transport is clean but it fails", () => {
+    const verdict = doctorVerdict(
+      [
+        { name: "DNS", ok: true, layer: "dns", detail: "resolved" },
+        { name: "Node.js", ok: false, detail: "v18.0.0", fix: "Node.js 20+" },
+      ],
+      {
+        firstFailure: null,
+        summary: "All layers healthy: DNS, TCP, TLS, /health, and credentials.",
+      },
+    );
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.firstFailure).toBe("Node.js");
+    expect(verdict.summary).toBe("Node.js failed: v18.0.0");
   });
 });
