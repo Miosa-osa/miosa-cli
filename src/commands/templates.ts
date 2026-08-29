@@ -205,17 +205,104 @@ function printIntegrationSnippet(t: SandboxTemplate): void {
   }
 }
 
-// Named shapes a template's default size may reference. Kept in lockstep with
-// the sandbox size vocabulary so `templates create --size` and `sandbox create
-// --size` accept the same names.
-const TEMPLATE_SIZES = ["xs", "small", "medium", "large", "xl"] as const;
+// PUBLISHED shape contracts. The backend only accepts these exact vCPU/memory
+// PAIRS - an off-tier pair (e.g. 4 vCPU / 4 GB) is rejected with a shape
+// mismatch. Kept in lockstep with the sandbox size vocabulary so `templates
+// create --size` and `sandbox create --size` accept the same names. Disk is a
+// floor the platform grows the rootfs to, so it is free-form (>= the shape's
+// floor), never a pinned pair member.
+const TEMPLATE_SIZE_CONTRACTS = {
+  xs: { cpu: 1, memory: 2_048, disk: 10_240 },
+  small: { cpu: 2, memory: 4_096, disk: 10_240 },
+  medium: { cpu: 4, memory: 8_192, disk: 20_480 },
+  large: { cpu: 8, memory: 16_384, disk: 40_960 },
+  xl: { cpu: 16, memory: 32_768, disk: 81_920 },
+} as const;
 
-function parseTemplateSize(value: string): string {
+type TemplateSize = keyof typeof TEMPLATE_SIZE_CONTRACTS;
+
+const TEMPLATE_SIZES = Object.keys(TEMPLATE_SIZE_CONTRACTS) as TemplateSize[];
+
+function parseTemplateSize(value: string): TemplateSize {
   const size = String(value).trim().toLowerCase();
-  if ((TEMPLATE_SIZES as readonly string[]).includes(size)) return size;
+  if (size in TEMPLATE_SIZE_CONTRACTS) return size as TemplateSize;
   throw new Error(
     `Invalid --size: ${value}. Expected one of: ${TEMPLATE_SIZES.join(", ")}.`,
   );
+}
+
+// The published shape closest to an off-tier request, preferring an exact vCPU
+// match, then the nearest memory. Used only to make the failure message
+// actionable ("nearest is medium ...").
+function nearestTemplateSize(cpu: number, memory: number): TemplateSize {
+  return [...TEMPLATE_SIZES].sort((a, b) => {
+    const ca = TEMPLATE_SIZE_CONTRACTS[a];
+    const cb = TEMPLATE_SIZE_CONTRACTS[b];
+    const dCpu = Math.abs(ca.cpu - cpu) - Math.abs(cb.cpu - cpu);
+    if (dCpu !== 0) return dCpu;
+    return Math.abs(ca.memory - memory) - Math.abs(cb.memory - memory);
+  })[0] as TemplateSize;
+}
+
+/**
+ * Resolve the resource fields for `templates create`, refusing off-tier
+ * vCPU/memory pairs LOCALLY instead of shipping a build the platform will
+ * reject.
+ *
+ * - No --cpu/--memory: forward only what was given (size and/or disk); the
+ *   server picks its own default shape. Never pin a pair from the CLI.
+ * - With --cpu and/or --memory: fill the missing member from --size (or small),
+ *   then require the resulting pair to be a PUBLISHED shape. A mismatch fails
+ *   fast naming the nearest size; disk stays free-form.
+ */
+function resolveTemplateResources(opts: {
+  size?: TemplateSize;
+  cpu?: number;
+  memory?: number;
+  disk?: number;
+}): { cpu?: number; memory?: number; disk?: number; size?: TemplateSize } {
+  const pinned = opts.cpu != null || opts.memory != null;
+  if (!pinned) {
+    return {
+      ...(opts.size ? { size: opts.size } : {}),
+      ...(opts.disk != null ? { disk: opts.disk } : {}),
+    };
+  }
+
+  const base = TEMPLATE_SIZE_CONTRACTS[opts.size ?? "small"];
+  const cpu = opts.cpu ?? base.cpu;
+  const memory = opts.memory ?? base.memory;
+
+  const match = TEMPLATE_SIZES.find(
+    (size) =>
+      TEMPLATE_SIZE_CONTRACTS[size].cpu === cpu &&
+      TEMPLATE_SIZE_CONTRACTS[size].memory === memory,
+  );
+  if (!match) {
+    const nearest = nearestTemplateSize(cpu, memory);
+    const near = TEMPLATE_SIZE_CONTRACTS[nearest];
+    const shapes = TEMPLATE_SIZES.map(
+      (size) =>
+        `${size} ${TEMPLATE_SIZE_CONTRACTS[size].cpu}vCPU/${TEMPLATE_SIZE_CONTRACTS[size].memory}MiB`,
+    ).join(", ");
+    throw new Error(
+      `cpu/memory ${cpu}/${memory} isn't a supported pair; nearest is ${nearest} ` +
+        `(${near.cpu} vCPU / ${near.memory} MiB); pass --size ${nearest}. ` +
+        `Supported pairs: ${shapes}. (Disk is set separately with --disk.)`,
+    );
+  }
+  if (opts.size && opts.size !== match) {
+    throw new Error(
+      `--cpu/--memory ${cpu}/${memory} match ${match}, not --size ${opts.size}.`,
+    );
+  }
+
+  return {
+    cpu,
+    memory,
+    size: match,
+    ...(opts.disk != null ? { disk: opts.disk } : {}),
+  };
 }
 
 function parseCpuCount(value: string): number {
@@ -647,13 +734,18 @@ export function register(program: Command): void {
         cpu?: number;
         memory?: number;
         disk?: number;
-        size?: string;
+        size?: TemplateSize;
         json?: boolean;
       }) => {
         // Resolve JSON mode once. In JSON mode NOTHING but the single JSON
         // payload may reach stdout - no spinner, no status lines, no hints.
         const json = isJsonMode(opts);
         try {
+          // Validate resource flags LOCALLY first: an off-tier vCPU/memory pair
+          // fails fast here with an actionable message instead of becoming a
+          // backend shape-mismatch 500 after a Dockerfile upload.
+          const resources = resolveTemplateResources(opts);
+
           let dockerfileContent: string;
           try {
             dockerfileContent = readFileSync(opts.dockerfile, "utf8");
@@ -674,17 +766,17 @@ export function register(program: Command): void {
           const client = new MiosaClient(config);
 
           // Only forward resource fields the user actually set. When none are
-          // given we omit them entirely so the server picks its own default,
-          // rather than the CLI pinning an unusable shape. vCPU and memory go
-          // as raw MiB/count integers; disk is a floor the platform grows to.
+          // given they are omitted so the server picks its own default, rather
+          // than the CLI pinning an unusable shape. vCPU/memory are a validated
+          // published pair; disk is a raw MiB floor the platform grows to.
           const body: Record<string, unknown> = {
             name: opts.name,
             dockerfile: dockerfileContent,
           };
-          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
-          if (opts.memory != null) body["memory_mb"] = opts.memory;
-          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
-          if (opts.size) body["size"] = opts.size;
+          if (resources.cpu != null) body["cpu_count"] = resources.cpu;
+          if (resources.memory != null) body["memory_mb"] = resources.memory;
+          if (resources.disk != null) body["disk_size_mb"] = resources.disk;
+          if (resources.size) body["size"] = resources.size;
 
           const spinner = json ? null : spin(`Creating template ${opts.name}...`);
           let tmpl: SandboxTemplate;
