@@ -10,6 +10,7 @@ import { handleError, isJsonMode, printJson } from "./util.js";
 interface SandboxTemplate {
   id: string;
   name: string;
+  slug?: string;
   state?: string;
   status?: string;
   image?: string;
@@ -161,6 +162,47 @@ function fmtBuildState(state: string | undefined): string {
     return chalk.yellow(state);
   if (state === "failed" || state === "error") return chalk.red(state);
   return chalk.dim(state);
+}
+
+// The whole point of a template is to reference it from your own code. Print
+// ready-to-paste create() calls for both SDKs and the CLI, using this exact
+// template's id, so a customer never has to guess the field name or hunt for
+// the id in a truncated table. If the template has no usable image yet, we say
+// so instead of implying the snippet will boot today.
+function printIntegrationSnippet(t: SandboxTemplate): void {
+  const ref = t.id;
+  const isReady = (templateState(t) ?? "") === "ready" && !!templateImage(t);
+
+  console.log(`  ${chalk.bold("Use this template")}`);
+  console.log();
+  console.log(chalk.dim("  # Python SDK"));
+  console.log("  from miosa import Miosa");
+  console.log("  client = Miosa()");
+  console.log(`  sandbox = client.sandboxes.create(template_id=${JSON.stringify(ref)})`);
+  console.log();
+  console.log(chalk.dim("  # TypeScript SDK"));
+  console.log('  import { Miosa } from "@miosa/sdk";');
+  console.log("  const client = new Miosa();");
+  console.log(
+    `  const sandbox = await client.sandboxes.create({ templateId: ${JSON.stringify(ref)} });`,
+  );
+  console.log();
+  console.log(chalk.dim("  # CLI"));
+  console.log(`  miosa sandbox create --template ${ref}`);
+  console.log();
+  if (!isReady) {
+    console.log(
+      chalk.yellow(
+        "  Note: this template has no usable image yet, so create() will not boot it",
+      ),
+    );
+    console.log(
+      chalk.dim(
+        `  until its build completes. Check: miosa templates builds ${ref}`,
+      ),
+    );
+    console.log();
+  }
 }
 
 export function register(program: Command): void {
@@ -392,6 +434,15 @@ export function register(program: Command): void {
             ),
           );
         }
+        // The ID column is truncated to keep the table readable. Point users at
+        // the one command that prints the FULL, copyable id plus paste-ready
+        // SDK/CLI code for wiring the template into their own app.
+        console.log();
+        console.log(
+          chalk.dim(
+            `  Run "miosa templates get <id>" for the full id and copy-paste integration code.`,
+          ),
+        );
       } catch (err) {
         handleError(err);
       }
@@ -501,6 +552,7 @@ export function register(program: Command): void {
         console.log();
         console.log(`  ${chalk.bold("ID")}       ${tmpl.id}`);
         console.log(`  ${chalk.bold("Name")}     ${tmpl.name}`);
+        if (tmpl.slug) console.log(`  ${chalk.bold("Slug")}     ${tmpl.slug}`);
         console.log(
           `  ${chalk.bold("State")}    ${fmtTemplateState(templateState(tmpl))}`,
         );
@@ -511,6 +563,7 @@ export function register(program: Command): void {
         if (tmpl.updated_at)
           console.log(`  ${chalk.bold("Updated")}  ${tmpl.updated_at}`);
         console.log();
+        printIntegrationSnippet(tmpl);
         console.log(
           chalk.dim(
             `  Run "miosa templates builds ${tmpl.id}" to view build history.`,
