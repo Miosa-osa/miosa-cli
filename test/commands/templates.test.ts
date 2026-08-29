@@ -126,12 +126,13 @@ describe("miosa templates create", () => {
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
 
-    // memory 4gb → 4096 MiB, disk 30gb → 30720 MiB, cpu as a raw integer.
+    // 4 vCPU / 8 GB is the published `medium` pair; memory 8gb → 8192 MiB,
+    // disk 30gb → 30720 MiB, cpu as a raw integer.
     const expectedBody = JSON.stringify({
       name: "cpu-test",
       dockerfile: "FROM alpine\n",
       cpu_count: 4,
-      memory_mb: 4096,
+      memory_mb: 8192,
       disk_size_mb: 30720,
       size: "medium",
     });
@@ -168,7 +169,7 @@ describe("miosa templates create", () => {
       "--cpu",
       "4",
       "--memory",
-      "4gb",
+      "8gb",
       "--disk",
       "30gb",
       "--size",
@@ -228,5 +229,45 @@ describe("miosa templates create", () => {
     ]);
 
     expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("rejects an off-tier cpu/memory pair before calling the API", async () => {
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    // No interceptor is registered on purpose: the CLI must fail locally and
+    // never POST a shape the platform would reject with a 500.
+
+    const output: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      output.push(args.map(String).join(" "));
+    });
+
+    // 4 vCPU / 4 GB is not a published pair (medium is 4 vCPU / 8 GB).
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "off-tier",
+      "--dockerfile",
+      dockerfile,
+      "--cpu",
+      "4",
+      "--memory",
+      "4gb",
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output.join("\n")) as {
+      ok: boolean;
+      error: { message: string };
+    };
+    expect(payload.ok).toBe(false);
+    // Naming the message proves it failed at local validation, not the network.
+    expect(payload.error.message).toContain("isn't a supported pair");
+    expect(payload.error.message).toContain("medium");
   });
 });
