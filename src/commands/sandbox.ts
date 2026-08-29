@@ -4462,6 +4462,26 @@ async function preflightSandboxConnector(
   );
 }
 
+/**
+ * Propagate a remote command's exit code to the CLI process.
+ *
+ * A `sandbox exec` whose remote command exits nonzero must make the CLI exit
+ * nonzero too, or CI and shell `&&` chains treat a failed command as a success.
+ * This applies even in --json mode: the JSON already carries `exit_code`, but a
+ * script that pipes to `jq` still relies on `$?`. Exit codes are clamped to the
+ * 1-255 range a process can actually report; any nonzero-but-unrepresentable
+ * code collapses to 1.
+ */
+function applyRemoteExitCode(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const raw = (value as Record<string, unknown>)["exit_code"];
+  if (raw == null) return;
+  const code = Number(raw);
+  if (!Number.isFinite(code) || code === 0) return;
+  const clamped = Number.isInteger(code) && code >= 1 && code <= 255 ? code : 1;
+  process.exitCode = clamped;
+}
+
 async function postSandboxExecAndPrint(
   sandboxId: string,
   opts: JsonOptions,
@@ -4475,6 +4495,7 @@ async function postSandboxExecAndPrint(
       ),
     );
     printValue(value, opts);
+    applyRemoteExitCode(value);
   } catch (err) {
     if (err instanceof ApiResponseError && err.code === "SANDBOX_NOT_RUNNING") {
       throw await enrichSandboxLifecycleError(sandboxId, err);
@@ -5160,6 +5181,9 @@ async function runFollowExec(
   if (!isJsonMode(opts) && exitCode !== 0) {
     console.error(chalk.red(`\nexit code: ${exitCode}`));
   }
+  // Streamed commands must fail the CLI process on a nonzero remote exit too,
+  // so `--follow` in CI behaves the same as a plain exec.
+  applyRemoteExitCode({ exit_code: exitCode });
 }
 
 async function waitForInternalHttp(

@@ -205,6 +205,45 @@ function printIntegrationSnippet(t: SandboxTemplate): void {
   }
 }
 
+// Named shapes a template's default size may reference. Kept in lockstep with
+// the sandbox size vocabulary so `templates create --size` and `sandbox create
+// --size` accept the same names.
+const TEMPLATE_SIZES = ["xs", "small", "medium", "large", "xl"] as const;
+
+function parseTemplateSize(value: string): string {
+  const size = String(value).trim().toLowerCase();
+  if ((TEMPLATE_SIZES as readonly string[]).includes(size)) return size;
+  throw new Error(
+    `Invalid --size: ${value}. Expected one of: ${TEMPLATE_SIZES.join(", ")}.`,
+  );
+}
+
+function parseCpuCount(value: string): number {
+  const n = Number.parseInt(String(value).trim(), 10);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid --cpu: ${value}. Expected a positive integer.`);
+  }
+  return n;
+}
+
+// Parse a memory/disk size to an integer number of MiB. Accepts a bare number
+// (already MiB), or a value suffixed with a unit: mb/m/mib are treated as MiB,
+// gb/g/gib as GiB (1 GiB = 1024 MiB). Examples: "4gb", "4096", "4096mib".
+function parseToMib(value: string, flag: string): number {
+  const match = String(value)
+    .trim()
+    .match(/^(\d+)\s*(mib|gib|mb|gb|m|g)?$/i);
+  if (!match) {
+    throw new Error(
+      `Invalid ${flag} value: ${value}. Use e.g. 4gb, 4096, or 4096mib.`,
+    );
+  }
+  const amount = Number(match[1]);
+  const unit = (match[2] ?? "mib").toLowerCase();
+  if (unit === "gb" || unit === "g" || unit === "gib") return amount * 1024;
+  return amount; // mb / m / mib → MiB
+}
+
 export function register(program: Command): void {
   const templates = program
     .command("templates")
@@ -584,35 +623,83 @@ export function register(program: Command): void {
       "--dockerfile <path>",
       "Path to Dockerfile to build the template from",
     )
+    .option("--cpu <n>", "vCPU count for the template's default shape", parseCpuCount)
+    .option(
+      "--memory <val>",
+      "Memory for the default shape, e.g. 4gb, 4096, or 4096mib",
+      (v: string) => parseToMib(v, "--memory"),
+    )
+    .option(
+      "--disk <val>",
+      "Disk floor for the default shape, e.g. 30gb or 30720",
+      (v: string) => parseToMib(v, "--disk"),
+    )
+    .option(
+      "--size <name>",
+      `Named default shape: ${TEMPLATE_SIZES.join(", ")}`,
+      parseTemplateSize,
+    )
     .option("--json", "Output raw JSON")
     .action(
-      async (opts: { name: string; dockerfile: string; json?: boolean }) => {
+      async (opts: {
+        name: string;
+        dockerfile: string;
+        cpu?: number;
+        memory?: number;
+        disk?: number;
+        size?: string;
+        json?: boolean;
+      }) => {
+        // Resolve JSON mode once. In JSON mode NOTHING but the single JSON
+        // payload may reach stdout - no spinner, no status lines, no hints.
+        const json = isJsonMode(opts);
         try {
           let dockerfileContent: string;
           try {
             dockerfileContent = readFileSync(opts.dockerfile, "utf8");
           } catch (err) {
-            console.error(
-              chalk.red(
-                `Cannot read Dockerfile at ${opts.dockerfile}: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-            );
+            const message = `Cannot read Dockerfile at ${opts.dockerfile}: ${err instanceof Error ? err.message : String(err)}`;
+            if (json) {
+              printJson({
+                ok: false,
+                error: { code: "DOCKERFILE_UNREADABLE", message },
+              });
+            } else {
+              console.error(chalk.red(message));
+            }
             process.exit(1);
           }
 
           const config = loadConfig();
           const client = new MiosaClient(config);
-          const spinner = spin(`Creating template ${opts.name}...`);
-          const tmpl = unwrapTemplate(
-            await client.apiPost("/api/v1/sandbox-templates", {
-              name: opts.name,
-              dockerfile: dockerfileContent,
-            }),
-          );
-          spinner.succeed(`Created template ${tmpl.name}`);
 
-          if (opts.json) {
-            console.log(JSON.stringify(tmpl, null, 2));
+          // Only forward resource fields the user actually set. When none are
+          // given we omit them entirely so the server picks its own default,
+          // rather than the CLI pinning an unusable shape. vCPU and memory go
+          // as raw MiB/count integers; disk is a floor the platform grows to.
+          const body: Record<string, unknown> = {
+            name: opts.name,
+            dockerfile: dockerfileContent,
+          };
+          if (opts.cpu != null) body["cpu_count"] = opts.cpu;
+          if (opts.memory != null) body["memory_mb"] = opts.memory;
+          if (opts.disk != null) body["disk_size_mb"] = opts.disk;
+          if (opts.size) body["size"] = opts.size;
+
+          const spinner = json ? null : spin(`Creating template ${opts.name}...`);
+          let tmpl: SandboxTemplate;
+          try {
+            tmpl = unwrapTemplate(
+              await client.apiPost("/api/v1/sandbox-templates", body),
+            );
+          } catch (err) {
+            spinner?.stop();
+            throw err;
+          }
+          spinner?.succeed(`Created template ${tmpl.name}`);
+
+          if (json) {
+            printJson(tmpl);
             return;
           }
 
@@ -630,7 +717,7 @@ export function register(program: Command): void {
           );
           console.log();
         } catch (err) {
-          handleError(err);
+          handleError(err, { json });
         }
       },
     );

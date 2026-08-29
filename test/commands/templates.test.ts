@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { MockAgent, setGlobalDispatcher } from "undici";
 import { parse } from "yaml";
@@ -101,5 +102,131 @@ describe("miosa templates product catalog", () => {
         }),
       }),
     ]);
+  });
+});
+
+describe("miosa templates create", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function writeDockerfile(content: string): string {
+    const dir = mkdtempSync(join(os.tmpdir(), "miosa-tmpl-"));
+    const file = join(dir, "Dockerfile");
+    writeFileSync(file, content, "utf8");
+    return file;
+  }
+
+  it("forwards resource flags as integers and emits exactly one JSON payload", async () => {
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    // memory 4gb → 4096 MiB, disk 30gb → 30720 MiB, cpu as a raw integer.
+    const expectedBody = JSON.stringify({
+      name: "cpu-test",
+      dockerfile: "FROM alpine\n",
+      cpu_count: 4,
+      memory_mb: 4096,
+      disk_size_mb: 30720,
+      size: "medium",
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandbox-templates",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { id: "tmpl_1", name: "cpu-test", state: "building" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const output: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      output.push(args.map(String).join(" "));
+    });
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "cpu-test",
+      "--dockerfile",
+      dockerfile,
+      "--cpu",
+      "4",
+      "--memory",
+      "4gb",
+      "--disk",
+      "30gb",
+      "--size",
+      "medium",
+      "--json",
+    ]);
+
+    // An empty pending list proves the exact request body matched.
+    expect(mock.pendingInterceptors()).toEqual([]);
+    // stdout must be a single, clean JSON document - no spinner or status text.
+    expect(JSON.parse(output.join("\n"))).toEqual({
+      id: "tmpl_1",
+      name: "cpu-test",
+      state: "building",
+    });
+  });
+
+  it("omits resource fields entirely when no flags are given", async () => {
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    // No cpu_count / memory_mb / disk_size_mb / size: let the server default.
+    const expectedBody = JSON.stringify({
+      name: "default-shape",
+      dockerfile: "FROM alpine\n",
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandbox-templates",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { id: "tmpl_2", name: "default-shape", state: "building" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "default-shape",
+      "--dockerfile",
+      dockerfile,
+      "--json",
+    ]);
+
+    expect(mock.pendingInterceptors()).toEqual([]);
   });
 });
