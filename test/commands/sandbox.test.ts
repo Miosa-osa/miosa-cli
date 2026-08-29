@@ -977,6 +977,50 @@ describe("miosa sandbox exec", () => {
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
+  it("combines a named size with a custom disk floor", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          size: "small",
+          cpu_count: 2,
+          memory_mb: 4096,
+          disk_size_mb: 20480,
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_small20", state: "running" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--size",
+      "small",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+
   it("rejects partial legacy resource overrides before making a request", async () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
@@ -998,7 +1042,7 @@ describe("miosa sandbox exec", () => {
 
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(logged.join("\n")).toContain(
-      "require --cpu, --memory, and --disk together",
+      "does not match a sandbox shape",
     );
     expect(mock.pendingInterceptors()).toHaveLength(0);
   });
