@@ -1100,14 +1100,37 @@ describe("miosa sandbox exec", () => {
   });
 
 
-  it("rejects partial legacy resource overrides before making a request", async () => {
+  it("passes a partial custom cpu override through unchanged (memory fills from the default size)", async () => {
+    // 4 vCPU / 4096 MiB (memory filled from the default "small" size) is not
+    // a published pair (medium is 4 vCPU / 8192 MiB), but it is a valid
+    // custom shape and must reach the server as-is -- no rejection, no
+    // snapping to the nearest tier, no synthesized `size`. Disk falls back
+    // to the default size's floor (small = 10240) since neither --disk nor
+    // --size was given.
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
-    const logged: string[] = [];
-    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-      logged.push(args.map(String).join(" "));
-    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox",
+          cpu_count: 4,
+          memory_mb: 4096,
+          disk_size_mb: 10240,
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_custom", state: "running" } }),
+        { headers: { "content-type": "application/json" } },
+      );
 
     await buildProgram().parseAsync([
       "node",
@@ -1119,10 +1142,59 @@ describe("miosa sandbox exec", () => {
       "--json",
     ]);
 
-    expect(process.exit).toHaveBeenCalledWith(1);
-    expect(logged.join("\n")).toContain(
-      "does not match a sandbox shape",
-    );
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+    expect(mock.pendingInterceptors()).toHaveLength(0);
+  });
+
+  it("passes HackerAI's off-tier cpu/memory/disk triple through the flag path unchanged, matching --data", async () => {
+    // Ross/HackerAI finding #4: `sandbox create --cpu 4 --memory 4gb --disk
+    // 20gb` was rejected with "does not match a sandbox shape" while
+    // `--data '{"cpu_count":4,"memory_mb":4096,"disk_size_mb":20480}'` and the
+    // SDK's cpuCount/memoryMb/diskSizeMb succeeded. The flag path must send
+    // the identical wire shape: no `size` field synthesized for an off-tier
+    // triple.
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes",
+        method: "POST",
+        body: JSON.stringify({
+          template_id: "miosa-sandbox-docker",
+          cpu_count: 4,
+          memory_mb: 4096,
+          disk_size_mb: 20480,
+          timeout_sec: 3600,
+          idle_timeout_sec: 0,
+          persistent: true,
+        }),
+      })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_ross", state: "running" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    await buildProgram().parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "miosa-sandbox-docker",
+      "--cpu",
+      "4",
+      "--memory",
+      "4gb",
+      "--disk",
+      "20gb",
+      "--json",
+    ]);
+
+    expect(process.exit).not.toHaveBeenCalledWith(1);
     expect(mock.pendingInterceptors()).toHaveLength(0);
   });
 
