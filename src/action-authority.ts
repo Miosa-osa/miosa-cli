@@ -77,9 +77,17 @@ interface DataEnvelope<T> {
 }
 
 export interface ActionCatalogConformance {
+  /**
+   * True when the CLI can safely operate against this control plane: no
+   * `missing` and no `stale` capabilities. `unexpected` (server-ahead) does not
+   * clear `ok` because it is benign forward-compatible drift.
+   */
   ok: boolean;
+  /** Capabilities the CLI pins that the live catalog does not advertise. */
   missing: string[];
+  /** Shared capabilities whose live version/fingerprint differs from the pin. */
   stale: string[];
+  /** Live capabilities the CLI does not pin (server ahead of CLI; informational). */
   unexpected: string[];
 }
 
@@ -107,8 +115,16 @@ export function actionCatalogConformance(
     .map(([name]) => name);
   const unexpected = [...live.keys()].filter((name) => !expected.has(name));
 
+  // `unexpected` (the control plane advertises capabilities this CLI does not
+  // pin) is benign, forward-compatible drift: the CLI never invokes a
+  // capability it has no name for, and the server denies unknown capabilities
+  // regardless. A control plane that is merely ahead of the CLI is the normal
+  // state during a rollout and must not fail conformance. Only `missing` (the
+  // CLI expects a capability the server will not honor) and `stale` (the two
+  // sides disagree on a shared capability's version or fingerprint) are genuine
+  // CLI<->server contract hazards, so only they clear `ok`.
   return {
-    ok: missing.length === 0 && stale.length === 0 && unexpected.length === 0,
+    ok: missing.length === 0 && stale.length === 0,
     missing,
     stale,
     unexpected,

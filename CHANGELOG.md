@@ -2,6 +2,24 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.3.1] - 2026-09-01
+
+### Fixed
+- `miosa doctor` no longer reports the "Action authority / catalog mismatch"
+  warning when the control plane simply advertises capabilities newer than the
+  CLI. A server that is only *ahead* of the CLI is benign, forward-compatible
+  drift: the CLI never invokes a capability it has no name for, and the control
+  plane denies unknown capabilities regardless. Only `missing` and `stale`
+  capabilities (genuine CLI<->server contract hazards) now affect the check;
+  server-ahead capabilities are reported informationally.
+
+### Changed
+- Synced the pinned action-capability catalog with the control plane, adding the
+  client-facing `computer.list.apps`, `computer.list.surfaces`,
+  `computer.scroll.to`, `computer.set.value`, and `computer.triple.click`
+  capabilities. Platform-internal `admin.*` capabilities remain excluded from
+  the CLI contract.
+
 ## [1.0.67] - 2026-06-14
 
 ### Fixed

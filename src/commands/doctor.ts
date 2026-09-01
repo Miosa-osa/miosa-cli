@@ -450,15 +450,20 @@ export function register(program: Command): void {
               );
               const conformance = actionCatalogConformance(catalog);
               const healthy = complete && conformance.ok;
+              // A control plane that advertises capabilities newer than this CLI
+              // is expected during a rollout and is never a hazard, so it is
+              // reported for visibility but kept out of the mismatch summary
+              // that warns.
+              const serverAhead =
+                conformance.unexpected.length > 0
+                  ? `${conformance.unexpected.length} newer control-plane capabilities (informational, not yet pinned by this CLI)`
+                  : null;
               const mismatch = [
                 conformance.missing.length > 0
                   ? `missing ${conformance.missing.length}`
                   : null,
                 conformance.stale.length > 0
                   ? `stale ${conformance.stale.length}`
-                  : null,
-                conformance.unexpected.length > 0
-                  ? `unexpected ${conformance.unexpected.length}`
                   : null,
               ]
                 .filter((item): item is string => item !== null)
@@ -472,7 +477,9 @@ export function register(program: Command): void {
                 warn: !healthy,
                 detail:
                   healthy
-                    ? `${catalog.length} version-pinned capabilities, exact contract match`
+                    ? serverAhead
+                      ? `${catalog.length} version-pinned capabilities; ${serverAhead}`
+                      : `${catalog.length} version-pinned capabilities, exact contract match`
                     : complete
                       ? `catalog mismatch: ${mismatch}`
                       : "catalog is empty or malformed",

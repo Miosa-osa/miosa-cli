@@ -192,6 +192,11 @@ export const ACTION_CAPABILITY_IDENTITIES = [
     "fingerprint": "sha256:a2768d37e4a55d495d12233e7e5049599f6629736d4741137d03ba6f7c4d7759"
   },
   {
+    "name": "computer.list.apps",
+    "version": "1.0.0",
+    "fingerprint": "sha256:520f915c1c842ff750281e6b3b6775df5285022b2676a209a94e0a2d15f433ae"
+  },
+  {
     "name": "computer.list.files",
     "version": "1.0.0",
     "fingerprint": "sha256:75da591f5b97eab930b223b70d34f78b660911a7e3ac0fa8f4129d8f63ed4044"
@@ -205,6 +210,11 @@ export const ACTION_CAPABILITY_IDENTITIES = [
     "name": "computer.list.regions",
     "version": "1.0.0",
     "fingerprint": "sha256:43c3ff98fbc595b751e2f542bb442ac604ccdb25c7956951cf45cd71792975c9"
+  },
+  {
+    "name": "computer.list.surfaces",
+    "version": "1.0.0",
+    "fingerprint": "sha256:cdb6430549d23e7bdea85c791299a222fe3e2aa9df8710dee4c5f7a887e3e48e"
   },
   {
     "name": "computer.logs",
@@ -297,6 +307,11 @@ export const ACTION_CAPABILITY_IDENTITIES = [
     "fingerprint": "sha256:fa23b244733c40f3ee2203735e130e4ab5d530343ec3c823cfa0702ceb16dcbc"
   },
   {
+    "name": "computer.scroll.to",
+    "version": "1.0.0",
+    "fingerprint": "sha256:afeb484e737c086ec7dc48eb0aa7a1ae34f9e8a52af0344d9ff60ec5658af75f"
+  },
+  {
     "name": "computer.service.create",
     "version": "1.0.0",
     "fingerprint": "sha256:f4f0aed8b20df4c67049cf714994a7659b219f66effac5ca543aa6a3c53936f0"
@@ -337,6 +352,11 @@ export const ACTION_CAPABILITY_IDENTITIES = [
     "fingerprint": "sha256:b7e080d159a7ee93cc881c00742dead1c71c456905e125090141d41e5d44ff65"
   },
   {
+    "name": "computer.set.value",
+    "version": "1.0.0",
+    "fingerprint": "sha256:812d6214f8968e468ffa1130a6b1536fce6cef3eb305c09d3cd33833274aff14"
+  },
+  {
     "name": "computer.set.wallpaper",
     "version": "1.0.0",
     "fingerprint": "sha256:34eb0ff709503e3b7099bf68eb48277dc9c546b6bd6bad7628ed5f02e5cbb1b9"
@@ -375,6 +395,11 @@ export const ACTION_CAPABILITY_IDENTITIES = [
     "name": "computer.template.list",
     "version": "1.0.0",
     "fingerprint": "sha256:40c1e4b44d8d5f902a74694a9ad1fb48aecd61677085ce2285a629ec3fbe0bb5"
+  },
+  {
+    "name": "computer.triple.click",
+    "version": "1.0.0",
+    "fingerprint": "sha256:8dade18cc40742e367d9d45c5a2ebb1f0bafc06fa6e3dfde2a103bc5e8627072"
   },
   {
     "name": "computer.type",

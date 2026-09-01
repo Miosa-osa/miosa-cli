@@ -148,4 +148,34 @@ describe("ActionAuthorityClient", () => {
       unexpected: ["unexpected.capability"],
     });
   });
+
+  it("treats a server that is merely ahead (unexpected only) as conformant", () => {
+    // The exact HackerAI/Ross scenario: the control plane advertises every
+    // capability this CLI pins, plus newer ones the CLI has not synced yet.
+    // A server that is only ahead is benign forward-compatible drift - the CLI
+    // never invokes a capability it has no name for, and the server denies
+    // unknown capabilities regardless - so this must not fail conformance.
+    const liveCatalog = [
+      ...ACTION_CAPABILITY_IDENTITIES.map((identity) => ({
+        ...identity,
+        risk: "read" as const,
+        scope: "workspace" as const,
+        approval: "never" as const,
+      })),
+      ...Array.from({ length: 16 }, (_, index) => ({
+        name: `server.ahead.capability.${index}`,
+        version: "1.0.0",
+        fingerprint: `sha256:${"c".repeat(64)}`,
+        risk: "read" as const,
+        scope: "workspace" as const,
+        approval: "never" as const,
+      })),
+    ];
+
+    const conformance = actionCatalogConformance(liveCatalog);
+    expect(conformance.ok).toBe(true);
+    expect(conformance.missing).toEqual([]);
+    expect(conformance.stale).toEqual([]);
+    expect(conformance.unexpected).toHaveLength(16);
+  });
 });
