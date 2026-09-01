@@ -231,27 +231,47 @@ describe("miosa templates create", () => {
     expect(mock.pendingInterceptors()).toEqual([]);
   });
 
-  it("rejects an off-tier cpu/memory pair before calling the API", async () => {
+  it("passes a custom off-tier cpu/memory pair through unchanged", async () => {
+    // MIOSA bills for the exact resources consumed -- 4 vCPU / 4096 MiB is
+    // not a published pair (medium is 4 vCPU / 8192 MiB), but it is a valid
+    // custom shape and must reach the server as-is: no rejection, no
+    // snapping to the nearest tier, no synthesized `size`.
     const dockerfile = writeDockerfile("FROM alpine\n");
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
-    // No interceptor is registered on purpose: the CLI must fail locally and
-    // never POST a shape the platform would reject with a 500.
 
-    const output: string[] = [];
-    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
-      output.push(args.map(String).join(" "));
+    const expectedBody = JSON.stringify({
+      name: "custom-shape",
+      dockerfile: "FROM alpine\n",
+      cpu_count: 4,
+      memory_mb: 4096,
     });
 
-    // 4 vCPU / 4 GB is not a published pair (medium is 4 vCPU / 8 GB).
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandbox-templates",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { id: "tmpl_custom", name: "custom-shape", state: "building" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
     await program().parseAsync([
       "node",
       "miosa",
       "templates",
       "create",
       "--name",
-      "off-tier",
+      "custom-shape",
       "--dockerfile",
       dockerfile,
       "--cpu",
@@ -261,13 +281,151 @@ describe("miosa templates create", () => {
       "--json",
     ]);
 
+    // An empty pending list proves the exact request body matched -- no
+    // `size` field was synthesized and the raw pair was not rejected.
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("passes a fully custom cpu/memory/disk triple through unchanged", async () => {
+    // HackerAI's requested shape: 4 vCPU / 4096 MiB / a custom disk floor.
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const expectedBody = JSON.stringify({
+      name: "custom-triple",
+      dockerfile: "FROM alpine\n",
+      cpu_count: 4,
+      memory_mb: 4096,
+      disk_size_mb: 30720,
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandbox-templates",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { id: "tmpl_triple", name: "custom-triple", state: "building" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "custom-triple",
+      "--dockerfile",
+      dockerfile,
+      "--cpu",
+      "4",
+      "--memory",
+      "4096",
+      "--disk",
+      "30720",
+      "--json",
+    ]);
+
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("still resolves a raw pair that matches a published tier to a named size", async () => {
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    // 4 vCPU / 8192 MiB is exactly `medium` -- still fine, and the wire may
+    // still carry the resolved `size` alongside the raw pair.
+    const expectedBody = JSON.stringify({
+      name: "on-tier",
+      dockerfile: "FROM alpine\n",
+      cpu_count: 4,
+      memory_mb: 8192,
+      size: "medium",
+    });
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandbox-templates",
+        method: "POST",
+        body: expectedBody,
+      })
+      .reply(
+        200,
+        JSON.stringify({
+          data: { id: "tmpl_ontier", name: "on-tier", state: "building" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "on-tier",
+      "--dockerfile",
+      dockerfile,
+      "--cpu",
+      "4",
+      "--memory",
+      "8gb",
+      "--json",
+    ]);
+
+    expect(mock.pendingInterceptors()).toEqual([]);
+  });
+
+  it("rejects an explicit --size that conflicts with an explicit raw pair", async () => {
+    const dockerfile = writeDockerfile("FROM alpine\n");
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    // No interceptor is registered on purpose: the conflict must be caught
+    // locally, before any network call.
+
+    const output: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      output.push(args.map(String).join(" "));
+    });
+
+    // --size small (2 vCPU / 4096 MiB) disagrees with the explicit 4 vCPU.
+    await program().parseAsync([
+      "node",
+      "miosa",
+      "templates",
+      "create",
+      "--name",
+      "conflict",
+      "--dockerfile",
+      dockerfile,
+      "--cpu",
+      "4",
+      "--size",
+      "small",
+      "--json",
+    ]);
+
     const payload = JSON.parse(output.join("\n")) as {
       ok: boolean;
       error: { message: string };
     };
     expect(payload.ok).toBe(false);
-    // Naming the message proves it failed at local validation, not the network.
-    expect(payload.error.message).toContain("isn't a supported pair");
-    expect(payload.error.message).toContain("medium");
+    expect(payload.error.message).toContain("small");
   });
 });

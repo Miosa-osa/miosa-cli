@@ -205,12 +205,13 @@ function printIntegrationSnippet(t: SandboxTemplate): void {
   }
 }
 
-// PUBLISHED shape contracts. The backend only accepts these exact vCPU/memory
-// PAIRS - an off-tier pair (e.g. 4 vCPU / 4 GB) is rejected with a shape
-// mismatch. Kept in lockstep with the sandbox size vocabulary so `templates
-// create --size` and `sandbox create --size` accept the same names. Disk is a
-// floor the platform grows the rootfs to, so it is free-form (>= the shape's
-// floor), never a pinned pair member.
+// PUBLISHED named-size shortcuts, kept in lockstep with the sandbox size
+// vocabulary so `templates create --size` and `sandbox create --size` accept
+// the same names. MIOSA bills per resource consumed (vCPU-hr + GB-RAM-hr +
+// GB-disk), never a forced tier -- an off-tier vCPU/memory pair (e.g. 4 vCPU
+// / 4096 MiB) is a genuinely custom shape and is passed through to the
+// server as-is (see {@link resolveTemplateResources}), not rejected or
+// snapped to the nearest named size. Disk is always free-form.
 const TEMPLATE_SIZE_CONTRACTS = {
   xs: { cpu: 1, memory: 2_048, disk: 10_240 },
   small: { cpu: 2, memory: 4_096, disk: 10_240 },
@@ -231,29 +232,25 @@ function parseTemplateSize(value: string): TemplateSize {
   );
 }
 
-// The published shape closest to an off-tier request, preferring an exact vCPU
-// match, then the nearest memory. Used only to make the failure message
-// actionable ("nearest is medium ...").
-function nearestTemplateSize(cpu: number, memory: number): TemplateSize {
-  return [...TEMPLATE_SIZES].sort((a, b) => {
-    const ca = TEMPLATE_SIZE_CONTRACTS[a];
-    const cb = TEMPLATE_SIZE_CONTRACTS[b];
-    const dCpu = Math.abs(ca.cpu - cpu) - Math.abs(cb.cpu - cpu);
-    if (dCpu !== 0) return dCpu;
-    return Math.abs(ca.memory - memory) - Math.abs(cb.memory - memory);
-  })[0] as TemplateSize;
-}
-
 /**
- * Resolve the resource fields for `templates create`, refusing off-tier
- * vCPU/memory pairs LOCALLY instead of shipping a build the platform will
- * reject.
+ * Resolve the resource fields for `templates create`.
+ *
+ * MIOSA bills per resource consumed, not per named tier: any cpu/memory/disk
+ * triple is valid. A raw --cpu/--memory pair is passed through to the create
+ * request UNCHANGED, whether or not it happens to match a published named
+ * size -- it is never rejected, snapped to the nearest tier, or forced into
+ * a size. `size` is only ever sent when a pinned pair happens to exactly
+ * match one (a convenience label, not a requirement), or when the caller
+ * asked for it directly via --size.
  *
  * - No --cpu/--memory: forward only what was given (size and/or disk); the
  *   server picks its own default shape. Never pin a pair from the CLI.
- * - With --cpu and/or --memory: fill the missing member from --size (or small),
- *   then require the resulting pair to be a PUBLISHED shape. A mismatch fails
- *   fast naming the nearest size; disk stays free-form.
+ * - With --cpu and/or --memory: fill the missing member from --size (or
+ *   small), then forward the resulting pair as-is. If it happens to match a
+ *   published size, that size is also sent. The one guard kept is a
+ *   genuine caller contradiction: an explicit --size that disagrees with an
+ *   explicit --cpu/--memory pair still fails fast, since the caller named
+ *   two different shapes.
  */
 function resolveTemplateResources(opts: {
   size?: TemplateSize;
@@ -278,29 +275,18 @@ function resolveTemplateResources(opts: {
       TEMPLATE_SIZE_CONTRACTS[size].cpu === cpu &&
       TEMPLATE_SIZE_CONTRACTS[size].memory === memory,
   );
-  if (!match) {
-    const nearest = nearestTemplateSize(cpu, memory);
-    const near = TEMPLATE_SIZE_CONTRACTS[nearest];
-    const shapes = TEMPLATE_SIZES.map(
-      (size) =>
-        `${size} ${TEMPLATE_SIZE_CONTRACTS[size].cpu}vCPU/${TEMPLATE_SIZE_CONTRACTS[size].memory}MiB`,
-    ).join(", ");
-    throw new Error(
-      `cpu/memory ${cpu}/${memory} isn't a supported pair; nearest is ${nearest} ` +
-        `(${near.cpu} vCPU / ${near.memory} MiB); pass --size ${nearest}. ` +
-        `Supported pairs: ${shapes}. (Disk is set separately with --disk.)`,
-    );
-  }
+
   if (opts.size && opts.size !== match) {
     throw new Error(
-      `--cpu/--memory ${cpu}/${memory} match ${match}, not --size ${opts.size}.`,
+      `--cpu/--memory ${cpu}/${memory} match ${match ?? "no published size"}, ` +
+        `not --size ${opts.size}.`,
     );
   }
 
   return {
     cpu,
     memory,
-    size: match,
+    ...(match ? { size: match } : {}),
     ...(opts.disk != null ? { disk: opts.disk } : {}),
   };
 }
@@ -741,9 +727,10 @@ export function register(program: Command): void {
         // payload may reach stdout - no spinner, no status lines, no hints.
         const json = isJsonMode(opts);
         try {
-          // Validate resource flags LOCALLY first: an off-tier vCPU/memory pair
-          // fails fast here with an actionable message instead of becoming a
-          // backend shape-mismatch 500 after a Dockerfile upload.
+          // Resolve resource flags. A pinned --cpu/--memory pair is passed
+          // through as-is (any triple is a valid billable shape); the only
+          // local check kept is a genuine contradiction between an explicit
+          // --size and an explicit --cpu/--memory pair.
           const resources = resolveTemplateResources(opts);
 
           let dockerfileContent: string;
@@ -766,9 +753,10 @@ export function register(program: Command): void {
           const client = new MiosaClient(config);
 
           // Only forward resource fields the user actually set. When none are
-          // given they are omitted so the server picks its own default, rather
-          // than the CLI pinning an unusable shape. vCPU/memory are a validated
-          // published pair; disk is a raw MiB floor the platform grows to.
+          // given they are omitted so the server picks its own default. The
+          // server bills for exact resources consumed, so cpu/memory/disk are
+          // sent as-is even off a published tier; `size` is only present when
+          // the pair happens to resolve to one, or the caller asked for it.
           const body: Record<string, unknown> = {
             name: opts.name,
             dockerfile: dockerfileContent,
