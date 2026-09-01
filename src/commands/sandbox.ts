@@ -553,7 +553,7 @@ Note:
           };
           if (opts.name) body["name"] = opts.name;
           const resources = resolveSandboxResources(opts);
-          body["size"] = resources.size;
+          if (resources.size) body["size"] = resources.size;
           if (resources.legacy) {
             body["cpu_count"] = resources.legacy.cpu;
             body["memory_mb"] = resources.legacy.memory;
@@ -5598,13 +5598,36 @@ function parseSandboxSize(value: string): SandboxSize {
   );
 }
 
+/**
+ * Resolve the resource fields for `sandbox create`.
+ *
+ * MIOSA bills per resource consumed, not per named tier: any cpu/memory/disk
+ * triple is a valid custom shape. A raw --cpu/--memory pair is passed through
+ * to the create request UNCHANGED, whether or not it happens to match a
+ * published named size (xs/small/medium/large/xl) -- it is never rejected,
+ * snapped to the nearest tier, or forced into a size. This mirrors the
+ * `--data` path (and the SDK's cpuCount/memoryMb/diskSizeMb), which already
+ * accept an off-tier pair; the flag path must behave identically.
+ *
+ * - No --cpu/--memory/--disk: forward only the named size (or small); the
+ *   server picks the concrete shape. Never pin a pair from the CLI.
+ * - With --cpu and/or --memory: fill the missing member from --size (or
+ *   small), then forward the resulting pair as-is. If it happens to match a
+ *   published size, that size is also sent as a convenience label. Disk is a
+ *   floor the platform grows the rootfs to: `--disk` overrides the size's
+ *   floor on top of any pair (`--size small --disk 20gb` -> a 2 vCPU / 4 GB
+ *   box with a 20 GB disk).
+ * - The one guard kept is a genuine caller contradiction: an explicit --size
+ *   that disagrees with the resolved shape of an explicit --cpu/--memory
+ *   pair still fails fast, since the caller named two different shapes.
+ */
 function resolveSandboxResources(opts: {
   size?: SandboxSize;
   cpu?: number;
   memory?: number;
   disk?: number;
 }): {
-  size: SandboxSize;
+  size?: SandboxSize;
   legacy?: { cpu: number; memory: number; disk: number };
 } {
   // No explicit resource flags → just the named size (or small).
@@ -5612,9 +5635,6 @@ function resolveSandboxResources(opts: {
     opts.cpu != null || opts.memory != null || opts.disk != null;
   if (!anyExplicit) return { size: opts.size ?? "small" };
 
-  // vCPU and memory are PINS: they must name a real shape. Disk is a FLOOR the
-  // platform grows the rootfs to, so `--disk` overrides it on top of a size.
-  // `--size small --disk 20gb` → a 2 vCPU / 4 GB box with a 20 GB disk.
   const sizeBase = SANDBOX_SIZE_CONTRACTS[opts.size ?? "small"];
   const cpu = opts.cpu ?? sizeBase.cpu;
   const memory = opts.memory ?? sizeBase.memory;
@@ -5622,23 +5642,17 @@ function resolveSandboxResources(opts: {
   const shapeEntry = Object.entries(SANDBOX_SIZE_CONTRACTS).find(
     ([, contract]) => contract.cpu === cpu && contract.memory === memory,
   );
-  if (!shapeEntry) {
-    const shapes = Object.entries(SANDBOX_SIZE_CONTRACTS)
-      .map(([id, c]) => `${id}=${c.cpu}vCPU/${c.memory}MB`)
-      .join(", ");
-    throw new UserError(
-      `--cpu ${cpu} / --memory ${memory} does not match a sandbox shape. ` +
-        `Valid shapes: ${shapes}. (Disk is set separately with --disk.)`,
-    );
-  }
-  const shape = shapeEntry[0] as SandboxSize;
+  const shape = shapeEntry ? (shapeEntry[0] as SandboxSize) : undefined;
+
   if (opts.size && opts.size !== shape) {
     throw new UserError(
-      `Legacy resource overrides match ${shape}, not requested size ${opts.size}.`,
+      `--cpu/--memory ${cpu}/${memory} match ${shape ?? "no published size"}, ` +
+        `not requested size ${opts.size}.`,
     );
   }
 
-  const disk = opts.disk ?? SANDBOX_SIZE_CONTRACTS[shape].disk;
+  const disk =
+    opts.disk ?? (shape ? SANDBOX_SIZE_CONTRACTS[shape].disk : sizeBase.disk);
   return { size: shape, legacy: { cpu, memory, disk } };
 }
 
