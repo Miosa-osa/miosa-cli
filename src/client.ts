@@ -173,7 +173,7 @@ export class MiosaClient {
         method: "GET",
         headers: {
           ...this.headers(),
-          Accept: "text/event-stream",
+          Accept: "text/event-stream, application/json, */*",
         },
       });
     } catch (err) {
@@ -568,7 +568,7 @@ export class MiosaClient {
           method: "POST",
           headers: {
             ...this.headers(),
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
           },
           body: JSON.stringify({ ...params, stream: true }),
         },
@@ -824,7 +824,7 @@ export class MiosaClient {
         method: "POST",
         headers: {
           ...this.headers(),
-          Accept: "text/event-stream",
+          Accept: "text/event-stream, application/json, */*",
         },
         body: JSON.stringify({ command }),
       });
@@ -875,7 +875,7 @@ export class MiosaClient {
           method: "POST",
           headers: {
             ...this.headers(),
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
           },
           body: JSON.stringify(params),
         },
@@ -968,7 +968,7 @@ export class MiosaClient {
           method: "GET",
           headers: {
             ...this.headers(),
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
           },
         },
       );
@@ -1002,7 +1002,7 @@ export class MiosaClient {
           method: "GET",
           headers: {
             ...this.headers(),
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
           },
         },
       );
@@ -1048,7 +1048,7 @@ export class MiosaClient {
           method: "GET",
           headers: {
             ...this.headers(),
-            Accept: "text/event-stream",
+            Accept: "text/event-stream, application/json, */*",
           },
         },
       );
@@ -1077,7 +1077,7 @@ export class MiosaClient {
         method: "GET",
         headers: {
           ...this.headers(),
-          Accept: "text/event-stream",
+          Accept: "text/event-stream, application/json, */*",
         },
       });
     } catch (err) {
@@ -1269,14 +1269,17 @@ function parseSseEvent(eventType: string, raw: string): SseEvent {
 
   switch (type) {
     case "stdout":
+      // Sandbox exec/stream frames are `data: {"line": "..."}` (see
+      // apps/web/lib/web/controllers/sandboxes/execution_controller.ex);
+      // `data`/`output` are kept as fallbacks for other stream producers.
       return {
         type: "stdout",
-        data: String(data["data"] ?? data["output"] ?? ""),
+        data: String(data["line"] ?? data["data"] ?? data["output"] ?? ""),
       };
     case "stderr":
       return {
         type: "stderr",
-        data: String(data["data"] ?? data["output"] ?? ""),
+        data: String(data["line"] ?? data["data"] ?? data["output"] ?? ""),
       };
     case "exit":
       return {

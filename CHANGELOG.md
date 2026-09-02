@@ -2,6 +2,23 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.3.2] - 2026-09-01
+
+### Fixed
+- The shared SSE parser (`parseSse`, used by `exec`, `watch`, `logs`, `up`,
+  `runs`, `builds`, `shell`, `databases`, and `deploy`) read a `data`/`output`
+  field for `stdout`/`stderr` frames, but the sandbox `exec/stream` endpoint
+  sends `data: {"line": "..."}`. Every stdout/stderr line from a sandbox
+  exec/stream call silently became an empty string — indistinguishable from
+  the stream producing zero events. It now reads `line` first, falling back
+  to `data`/`output` for any other producer.
+- Every SSE request in `MiosaClient` (`apiStream`, `streamJob`, `computerExec`,
+  `dispatchAgent`, `streamDeploymentLogs`, `streamBuildLogs`, `watchEvents`,
+  `watchComputerEvents`) now sends `Accept: text/event-stream, application/json, */*`
+  instead of a bare `text/event-stream`, matching the fix already applied to
+  the databases stream route and defensively preventing the same 406 class of
+  bug everywhere else.
+
 ## [1.3.1] - 2026-09-01
 
 ### Fixed
