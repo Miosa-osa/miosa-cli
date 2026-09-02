@@ -66,20 +66,32 @@ describe("public sandbox contract conformance", () => {
     const mock = new MockAgent();
     mock.disableNetConnect();
     setGlobalDispatcher(mock);
+    let sentBody: Record<string, unknown> | undefined;
     mock
       .get("https://api.miosa.ai")
       .intercept({
         path: `/api/v1${contract.path}`,
         method: contract.method.toUpperCase(),
-        body: JSON.stringify(contract.body),
       })
-      .reply(201, JSON.stringify({ id: "sbx_fork", state: "provisioning" }), {
-        headers: { "content-type": "application/json" },
-      });
+      .reply(
+        201,
+        (opts: { body?: unknown }) => {
+          sentBody = JSON.parse(String(opts.body ?? "{}")) as Record<
+            string,
+            unknown
+          >;
+          return JSON.stringify({ id: "sbx_fork", state: "provisioning" });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
 
     await program().parseAsync(["node", "miosa", "sandbox", "create", "--json"]);
 
     expect(process.exit).not.toHaveBeenCalledWith(1);
+    // The create body carries at least the canonical contract fields (plus the
+    // CLI's resolved defaults like size/timeout).
+    expect(sentBody).toMatchObject(contract.body as Record<string, unknown>);
+    // And an auto-generated Idempotency-Key makes create retry-safe.
   });
 
   it("uses the allowlisted pause, resume, extend, usage, and fork routes", async () => {

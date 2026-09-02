@@ -19,6 +19,7 @@
 
 import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
 import { request } from "undici";
 import chalk from "chalk";
@@ -2726,7 +2727,17 @@ export async function dispatchMcpTool(
       body["size"] = resolveSandboxSize(args["size"]);
       if (args["timeout_sec"] !== undefined)
         body["timeout_sec"] = args["timeout_sec"];
-      const result = await client.apiPost<unknown>("/api/v1/sandboxes", body);
+      // Auto-generate an Idempotency-Key (or honor a caller-supplied one) and
+      // retry on 429/5xx with the SAME key, so a retried create dedups instead
+      // of billing a duplicate sandbox.
+      const idempotencyKey =
+        (args["idempotency_key"] ? String(args["idempotency_key"]) : "") ||
+        randomUUID();
+      const result = await client.apiPostWithRetry<unknown>(
+        "/api/v1/sandboxes",
+        body,
+        { "Idempotency-Key": idempotencyKey },
+      );
       const data = unwrapData(result) as Record<string, unknown>;
       const sid = String(data["id"] ?? "");
       return ok(`Created sandbox '${data["name"] ?? sid}' (id=${sid}).`);

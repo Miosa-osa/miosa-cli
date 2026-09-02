@@ -2,6 +2,15 @@
 
 All notable changes to @miosa/cli will be documented in this file.
 
+## [1.3.3] - 2026-09-02
+
+### Added
+- `sandbox create` now sends an auto-generated UUID `Idempotency-Key` (unless `--idempotency-key` is given). The same key is reused across all retries so a retried create dedups to the same sandbox instead of billing a duplicate VM. Applies to `sandbox create` (typed flags and `--data`) and the `mcp serve` `sandbox_create` tool.
+- Bounded exponential-backoff retry (429/500/502/503/504, matching the SDK policy) on the `sandbox create` POST — now safe because the create carries a stable idempotency key. `MiosaClient.apiPostWithRetry()` provides the shared retry transport.
+
+### Changed
+- `sandbox create --wait` and `sandbox wait` now confirm **command-readiness** (all platform readiness components attached, via `GET /sandboxes/:id/readiness`, mirroring the server's `command_path_ready?`) after the sandbox reaches `running`, so a successful wait guarantees `exec` will not return `409 SANDBOX_NOT_COMMAND_READY`. A missing readiness endpoint on older servers is tolerated.
+
 ## [1.3.2] - 2026-09-01
 
 ### Fixed
