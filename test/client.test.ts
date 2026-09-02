@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
-import { MiosaClient } from "../src/client.js";
+import { MiosaClient, parseSse } from "../src/client.js";
 import {
   ApiResponseError,
   AuthError,
@@ -453,6 +453,106 @@ describe("MiosaClient", () => {
       const client = new MiosaClient(makeConfig());
       await expect(client.getTenant()).rejects.toThrow(UserError);
     });
+  });
+});
+
+// Async-iterable of raw SSE bytes/text, standing in for an undici response
+// body so parseSse() can be exercised without a real HTTP round trip.
+async function* sseBody(chunks: string[]): AsyncGenerator<string> {
+  for (const chunk of chunks) yield chunk;
+}
+
+describe("apiStream Accept header", () => {
+  // A bare `Accept: text/event-stream` 406s on any `:accepts`-guarded route
+  // (seen live on the databases stream route). Combining json/`*/*` as
+  // fallbacks costs nothing when the server does return SSE.
+  it("sends the combined Accept header, not a bare text/event-stream", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/events",
+        method: "GET",
+        headers: (headers) =>
+          headers["accept"] === "text/event-stream, application/json, */*",
+      })
+      .reply(200, "", { headers: { "content-type": "text/event-stream" } });
+
+    const client = new MiosaClient(makeConfig());
+    const res = await client.apiStream("/api/v1/sandboxes/sbx_123/events");
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("parseSse", () => {
+  // The sandbox exec/stream endpoint frames output as
+  // `event: stdout\ndata: {"line":"..."}` — no `data`/`output` key exists on
+  // that payload. Reading the wrong field silently turned every stdout/stderr
+  // line into an empty string (indistinguishable from "the stream produced
+  // zero events").
+  it("reads the `line` field from sandbox exec/stream stdout frames", async () => {
+    const events = [];
+    for await (const event of parseSse(
+      sseBody(['event: stdout\ndata: {"line":"hello world\\n"}\n\n']),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([{ type: "stdout", data: "hello world\n" }]);
+  });
+
+  it("reads the `line` field from sandbox exec/stream stderr frames", async () => {
+    const events = [];
+    for await (const event of parseSse(
+      sseBody(['event: stderr\ndata: {"line":"warning: oops\\n"}\n\n']),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([{ type: "stderr", data: "warning: oops\n" }]);
+  });
+
+  it("parses the exit frame's exit_code", async () => {
+    const events = [];
+    for await (const event of parseSse(
+      sseBody(['event: exit\ndata: {"exit_code":1}\n\n']),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([{ type: "exit", exit_code: 1 }]);
+  });
+
+  it("falls back to `data`/`output` for producers that use those field names instead of `line`", async () => {
+    const events = [];
+    for await (const event of parseSse(
+      sseBody(['event: stdout\ndata: {"output":"legacy shape"}\n\n']),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([{ type: "stdout", data: "legacy shape" }]);
+  });
+
+  it("streams multiple frames across chunk boundaries in order", async () => {
+    const events = [];
+    for await (const event of parseSse(
+      sseBody([
+        'event: stdout\ndata: {"line":"a"}\n\nevent: std',
+        'out\ndata: {"line":"b"}\n\nevent: exit\ndata: {"exit_code":0}\n\n',
+      ]),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "stdout", data: "a" },
+      { type: "stdout", data: "b" },
+      { type: "exit", exit_code: 0 },
+    ]);
   });
 });
 
