@@ -28,6 +28,23 @@ import { AuthError, mapHttpError, NetworkError, UserError } from "./errors.js";
 import { isDebugMode } from "./cli-env.js";
 import { CLI_USER_AGENT } from "./version.js";
 
+// Retry policy for idempotent POSTs — mirrors the TS/Python SDK transports.
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const DEFAULT_CREATE_MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelay(attempt: number, retryAfter: string | null): number {
+  if (retryAfter !== null) {
+    const seconds = parseInt(retryAfter, 10);
+    if (!Number.isNaN(seconds)) return seconds * 1000;
+  }
+  return RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 100;
+}
+
 export class MiosaClient {
   private readonly endpoint: string;
   private readonly apiKey: string;
@@ -193,6 +210,64 @@ export class MiosaClient {
     headers?: Record<string, string>,
   ): Promise<T> {
     return this.post<T>(path, body, headers);
+  }
+
+  /**
+   * POST with bounded exponential-backoff retry on 429/500/502/503/504 and
+   * transient network errors — matching the TS/Python SDK retry policy.
+   *
+   * The request headers (including any ``Idempotency-Key``) are built ONCE and
+   * re-sent unchanged on every retry, so this is only safe for idempotent
+   * calls. Callers that need dedup MUST pass an ``Idempotency-Key`` header; a
+   * retried create without one could spawn a duplicate, billable sandbox.
+   */
+  async apiPostWithRetry<T>(
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+    opts: { maxRetries?: number } = {},
+  ): Promise<T> {
+    const maxRetries = opts.maxRetries ?? DEFAULT_CREATE_MAX_RETRIES;
+    // Built once — the same headers (and Idempotency-Key) are reused on every
+    // retry so the server dedups instead of creating duplicates.
+    const headers = { ...this.headers(), ...extraHeaders };
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let res: Dispatcher.ResponseData;
+      try {
+        res = await request(this.url(path), {
+          method: "POST",
+          headers,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+      } catch (err) {
+        if (attempt < maxRetries) {
+          await sleep(retryDelay(attempt, null));
+          continue;
+        }
+        throw new NetworkError(
+          `Network error: ${err instanceof Error ? err.message : String(err)}`,
+          "Check your connection and endpoint: miosa status",
+        );
+      }
+
+      if (RETRY_STATUS.has(res.statusCode) && attempt < maxRetries) {
+        const retryAfter = responseHeader(res, "retry-after");
+        // Drain the body so the socket can be reused for the retry.
+        await res.body.dump();
+        await sleep(retryDelay(attempt, retryAfter));
+        continue;
+      }
+
+      if (res.statusCode >= 400) return this.parseError(res, "POST", path);
+      return res.body.json() as Promise<T>;
+    }
+
+    // Unreachable: the loop either returns or throws on the final attempt.
+    throw new NetworkError(
+      "Max retries exceeded",
+      "Check your connection and endpoint: miosa status",
+    );
   }
 
   /** Generic PUT for command groups that map directly to stable API routes. */

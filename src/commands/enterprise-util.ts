@@ -15,6 +15,7 @@ export type ApiClient = Pick<
   | "apiGetBinary"
   | "apiStream"
   | "apiPost"
+  | "apiPostWithRetry"
   | "apiPut"
   | "apiPatch"
   | "apiDelete"

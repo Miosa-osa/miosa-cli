@@ -29,6 +29,18 @@ function buildProgram(): Command {
   return program;
 }
 
+/** Case-insensitive header lookup for undici MockAgent reply callbacks. */
+function readHeader(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const target = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+    if (k.toLowerCase() === target) {
+      return Array.isArray(v) ? String(v[0]) : v == null ? undefined : String(v);
+    }
+  }
+  return undefined;
+}
+
 function mockSandboxSshKey(): void {
   const existsSync = fs.existsSync.bind(fs);
   const readFileSync = fs.readFileSync.bind(fs);
@@ -797,6 +809,7 @@ describe("miosa sandbox exec", () => {
         body: JSON.stringify({
           template_id: "nextjs",
           name: "throwaway",
+          size: "small",
           timeout_sec: 3600,
           idle_timeout_sec: 0,
           persistent: false,
@@ -846,7 +859,9 @@ describe("miosa sandbox exec", () => {
         body: JSON.stringify({
           template_id: "nextjs",
           name: "attributed",
+          size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           external_workspace_id: "clinic-iq",
           external_user_id: "founder-1",
           external_project_id: "landing-page",
@@ -901,7 +916,9 @@ describe("miosa sandbox exec", () => {
         body: JSON.stringify({
           template_id: "nextjs",
           name: "unattributed",
+          size: "small",
           timeout_sec: 3600,
+          idle_timeout_sec: 0,
           persistent: true,
         }),
       })
@@ -931,6 +948,181 @@ describe("miosa sandbox exec", () => {
       "--json",
     ]);
 
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+  });
+
+  it("sends an auto-generated Idempotency-Key header on create", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    let capturedKey: string | undefined;
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+      .reply(
+        201,
+        (opts: { headers: unknown }) => {
+          capturedKey = readHeader(opts.headers, "idempotency-key");
+          return JSON.stringify({
+            data: { id: "sbx_idem", state: "running" },
+          });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--json",
+    ]);
+
+    expect(capturedKey).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it("reuses the same Idempotency-Key across a 503 create retry", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+
+    const keys: (string | undefined)[] = [];
+    const pool = mock.get("https://api.miosa.ai");
+    pool
+      .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+      .reply(
+        503,
+        (opts: { headers: unknown }) => {
+          keys.push(readHeader(opts.headers, "idempotency-key"));
+          return JSON.stringify({ error: { message: "try again" } });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+      .reply(
+        201,
+        (opts: { headers: unknown }) => {
+          keys.push(readHeader(opts.headers, "idempotency-key"));
+          return JSON.stringify({
+            data: { id: "sbx_retry", state: "running" },
+          });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--json",
+    ]);
+
+    expect(keys.length).toBe(2);
+    expect(keys[0]).toBeTruthy();
+    // The retry must re-send the SAME key or the server would create a
+    // duplicate, billable sandbox.
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("create --wait does not report success until command-ready", async () => {
+    const mock = new MockAgent();
+    mock.disableNetConnect();
+    setGlobalDispatcher(mock);
+    const pool = mock.get("https://api.miosa.ai");
+
+    pool
+      .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+      .reply(
+        201,
+        JSON.stringify({ data: { id: "sbx_cr", state: "provisioning" } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    pool
+      .intercept({ path: "/api/v1/sandboxes/sbx_cr", method: "GET" })
+      .reply(200, JSON.stringify({ data: { id: "sbx_cr", state: "running" } }), {
+        headers: { "content-type": "application/json" },
+      });
+
+    let readinessCalls = 0;
+    // First readiness probe: running but command agent NOT attached.
+    pool
+      .intercept({ path: "/api/v1/sandboxes/sbx_cr/readiness", method: "GET" })
+      .reply(
+        200,
+        () => {
+          readinessCalls += 1;
+          return JSON.stringify({
+            state: "running",
+            ready: false,
+            readiness: {
+              status: "pending",
+              components: { command_agent: { status: "pending" } },
+            },
+          });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+    // Second readiness probe: command-ready.
+    pool
+      .intercept({ path: "/api/v1/sandboxes/sbx_cr/readiness", method: "GET" })
+      .reply(
+        200,
+        () => {
+          readinessCalls += 1;
+          return JSON.stringify({
+            state: "running",
+            ready: false,
+            readiness: {
+              status: "ready",
+              components: {
+                command_agent: { status: "ready" },
+                process_control: { status: "ready" },
+                resource_contract: { status: "ready" },
+                clock: { status: "ready" },
+                identity: { status: "ready" },
+                durability: { status: "ready" },
+                filesystem: { status: "ready" },
+                internal_probe: { status: "ready" },
+              },
+            },
+          });
+        },
+        { headers: { "content-type": "application/json" } },
+      );
+
+    const logged: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+
+    const program = buildProgram();
+    await program.parseAsync([
+      "node",
+      "miosa",
+      "sandbox",
+      "create",
+      "--template",
+      "nextjs",
+      "--wait",
+      "--json",
+    ]);
+
+    // The first (not-command-ready) probe must not resolve the wait.
+    expect(readinessCalls).toBeGreaterThanOrEqual(2);
+    const parsed = JSON.parse(logged.join("\n"));
+    expect(parsed.id).toBe("sbx_cr");
+    expect(parsed.ready).toBe(true);
     expect(process.exit).not.toHaveBeenCalledWith(1);
   });
 
@@ -1298,6 +1490,18 @@ describe("miosa sandbox exec", () => {
         }),
         { headers: { "content-type": "application/json" } },
       );
+
+    // After state=running, the wait confirms command-readiness against
+    // GET /readiness before reporting success.
+    mock
+      .get("https://api.miosa.ai")
+      .intercept({
+        path: "/api/v1/sandboxes/sbx_123/readiness",
+        method: "GET",
+      })
+      .reply(200, JSON.stringify({ ready: true, state: "running" }), {
+        headers: { "content-type": "application/json" },
+      });
 
     const logged: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {

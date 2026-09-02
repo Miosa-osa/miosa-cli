@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
+import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { Socket } from "node:net";
@@ -25,6 +26,7 @@ import {
   deleteAndPrint,
   enc,
   getAndPrint,
+  parseData,
   postAndPrint,
   printValue,
   runAction,
@@ -68,6 +70,58 @@ import {
 const DEFAULT_INTERACTIVE_SANDBOX_TIMEOUT_SEC = 3_600;
 const DEFAULT_CREATE_WAIT_TIMEOUT_SEC = 120;
 const EXPIRING_SANDBOX_THRESHOLD_SEC = 5 * 60;
+
+// How long, after a sandbox reaches `running`, to keep polling for
+// command-readiness before `--wait` gives up.
+const COMMAND_READY_WAIT_TIMEOUT_SEC = 60;
+const COMMAND_READY_POLL_INTERVAL_MS = 500;
+
+// Platform readiness components that gate command execution. Mirrors the
+// server's `Engine.Sandbox.Readiness` platform set: `exec` returns
+// `409 SANDBOX_NOT_COMMAND_READY` until all of these report `ready`. Excludes
+// the template `application_probe` (the workload), which is started BY exec.
+const PLATFORM_READINESS_COMPONENTS = [
+  "command_agent",
+  "process_control",
+  "resource_contract",
+  "clock",
+  "identity",
+  "durability",
+  "filesystem",
+  "internal_probe",
+] as const;
+
+/**
+ * True when a sandbox is command-ready — `exec` will succeed rather than return
+ * `409 SANDBOX_NOT_COMMAND_READY`. Accepts a readiness payload
+ * (`GET /sandboxes/:id/readiness`) or a sandbox record. Mirrors the server's
+ * `command_path_ready?/1`: the aggregate `ready` flag short-circuits, otherwise
+ * every platform component must report `ready`.
+ */
+function isCommandReady(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  if (p["ready"] === true) return true;
+  const readiness = p["readiness"] as Record<string, unknown> | undefined;
+  const components = (readiness?.["components"] ??
+    p["components"] ??
+    p["readiness_components"]) as Record<string, unknown> | undefined;
+  if (!components || typeof components !== "object") return false;
+  return PLATFORM_READINESS_COMPONENTS.every((name) => {
+    const comp = components[name] as { status?: unknown } | string | undefined;
+    const status = typeof comp === "string" ? comp : comp?.status;
+    return status === "ready";
+  });
+}
+
+/**
+ * Generate a create Idempotency-Key. Generated once per logical `create` and
+ * re-sent unchanged on every retry (see `MiosaClient.apiPostWithRetry`), so a
+ * retried create dedups to the same sandbox instead of billing a duplicate VM.
+ */
+function generateIdempotencyKey(): string {
+  return randomUUID();
+}
 const SANDBOX_SIZE_CONTRACTS = {
   xs: { cpu: 1, memory: 2_048, disk: 10_240 },
   small: { cpu: 2, memory: 4_096, disk: 10_240 },
@@ -537,14 +591,23 @@ Note:
           const json = !!isJsonMode(opts) || process.env["MIOSA_JSON"] === "1";
 
           if (opts.data) {
+            // Raw --data/--input/--file body — still idempotent and retry-safe.
+            const idempotencyKey =
+              opts.idempotencyKey ?? generateIdempotencyKey();
+            const dataBody =
+              parseData(opts.data, opts.input, opts.file) ?? {};
+            const value = unwrap(
+              await client().apiPostWithRetry<unknown>(
+                apiPath("/sandboxes"),
+                dataBody,
+                { "Idempotency-Key": idempotencyKey },
+              ),
+            );
             if (json) {
-              await postAndPrint("/sandboxes", opts, {});
+              printValue(value, opts);
               return;
             }
-            const raw = unwrap(
-              await client().apiPost<unknown>(apiPath("/sandboxes"), {}),
-            );
-            renderCreateSuccess(raw, Date.now() - t0);
+            renderCreateSuccess(value, Date.now() - t0);
             return;
           }
 
@@ -599,14 +662,15 @@ Note:
           body["persistent"] = opts.nonPersistent ? false : true;
           if (opts.autoStart) body["auto_start"] = true;
 
+          // Auto-generate an Idempotency-Key when none is supplied, and retry
+          // on 429/5xx with the SAME key so a retried create dedups to one
+          // sandbox instead of billing a duplicate.
+          const idempotencyKey =
+            opts.idempotencyKey ?? generateIdempotencyKey();
           const raw = unwrap(
-            await client().apiPost<unknown>(
-              apiPath("/sandboxes"),
-              body,
-              opts.idempotencyKey
-                ? { "Idempotency-Key": opts.idempotencyKey }
-                : undefined,
-            ),
+            await client().apiPostWithRetry<unknown>(apiPath("/sandboxes"), body, {
+              "Idempotency-Key": idempotencyKey,
+            }),
           );
           const sb = (raw ?? {}) as Record<string, unknown>;
           const id = String(sb["id"] ?? "");
@@ -652,6 +716,8 @@ Note:
                 Math.min(timeoutSec, DEFAULT_CREATE_WAIT_TIMEOUT_SEC),
                 30,
               ),
+              // create --wait must guarantee exec works before returning.
+              true,
             );
             Object.assign(sb, latest, { ready: true });
           }
@@ -3513,7 +3579,14 @@ async function waitSandboxVmReady(
     url: null;
   }
 > {
-  const sandbox = await waitForSandboxRunning(client(), sandboxId, timeoutSec);
+  // `sandbox wait` reports readiness for use — confirm command-readiness so a
+  // successful wait guarantees exec works.
+  const sandbox = await waitForSandboxRunning(
+    client(),
+    sandboxId,
+    timeoutSec,
+    true,
+  );
   return {
     ...sandbox,
     sandbox_id: sandboxId,
@@ -4396,6 +4469,10 @@ async function waitForSandboxRunning(
   c: ReturnType<typeof client>,
   sandboxId: string,
   timeoutSec: number,
+  // Off by default so existing callers (e.g. `sandbox deploy`, which has its
+  // own downstream recovery) keep their behavior. The explicit user-facing
+  // waits (`create --wait`, `sandbox wait`) opt in.
+  requireCommandReady = false,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutSec * 1000;
   while (Date.now() < deadline) {
@@ -4405,7 +4482,15 @@ async function waitForSandboxRunning(
     const state = String(
       sandbox["state"] ?? sandbox["status"] ?? "",
     ).toLowerCase();
-    if (state === "running" || state === "active") return sandbox;
+    if (state === "running" || state === "active") {
+      // A running VM is not proof that exec will work: the command agent may
+      // not be attached yet (409 SANDBOX_NOT_COMMAND_READY). Confirm
+      // command-readiness so `--wait` only reports success once exec works.
+      if (requireCommandReady) {
+        await confirmCommandReady(c, sandboxId, deadline);
+      }
+      return sandbox;
+    }
     if (state === "error" || state === "failed") {
       throw sandboxStateError(sandboxId, sandbox, state);
     }
@@ -4417,6 +4502,46 @@ async function waitForSandboxRunning(
   throw new UserError(
     `Sandbox ${sandboxId} did not become running within ${timeoutSec}s.`,
   );
+}
+
+/**
+ * After a sandbox reaches `running`, poll `GET /sandboxes/:id/readiness` until
+ * it is command-ready (exec will succeed). Bounded by the running-wait
+ * `deadline`, extended by a command-ready grace window. A missing readiness
+ * endpoint (`NOT_FOUND`, older servers) is tolerated — return without blocking.
+ * Throws when command-readiness is not reached before the deadline.
+ */
+async function confirmCommandReady(
+  c: ReturnType<typeof client>,
+  sandboxId: string,
+  runningDeadline: number,
+): Promise<void> {
+  const deadline = Math.max(
+    runningDeadline,
+    Date.now() + COMMAND_READY_WAIT_TIMEOUT_SEC * 1000,
+  );
+  for (;;) {
+    try {
+      const readiness = unwrap(
+        await c.apiGet<unknown>(
+          apiPath(`/sandboxes/${enc(sandboxId)}/readiness`),
+        ),
+      );
+      if (isCommandReady(readiness)) return;
+    } catch (err) {
+      // Older servers may not expose the readiness endpoint. Don't block the
+      // create — treat a missing endpoint as best-effort success.
+      if (err instanceof ApiResponseError && err.code === "NOT_FOUND") return;
+      // Other transient errors: keep polling until the deadline.
+    }
+    if (Date.now() >= deadline) {
+      throw new UserError(
+        `Sandbox ${sandboxId} reached running but its command agent did not attach in time; exec may return SANDBOX_NOT_COMMAND_READY.`,
+        "Retry the command, or poll `miosa sandbox get <id>` before exec.",
+      );
+    }
+    await sleep(COMMAND_READY_POLL_INTERVAL_MS);
+  }
 }
 
 async function resumeSandboxAndPrint(
