@@ -154,6 +154,32 @@ describe("MiosaClient", () => {
       expect((err as ApiResponseError).retryable).toBe(false);
     });
 
+    it("does not mark structured 501 responses as retryable", async () => {
+      const mock = new MockAgent();
+      mock.disableNetConnect();
+      setGlobalDispatcher(mock);
+
+      mock
+        .get("https://api.miosa.ai")
+        .intercept({ path: "/api/v1/sandboxes", method: "POST" })
+        .reply(
+          501,
+          JSON.stringify({
+            error: {
+              code: "NOT_IMPLEMENTED",
+              message: "feature is not available",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+
+      const client = new MiosaClient(makeConfig());
+      const error = await client.apiPost("/api/v1/sandboxes", {}).catch((value: unknown) => value);
+
+      expect(error).toBeInstanceOf(ApiResponseError);
+      expect(error).toMatchObject({ code: "NOT_IMPLEMENTED", retryable: false });
+    });
+
     it("preserves structured 422 validation details without debug mode", async () => {
       const mock = new MockAgent();
       mock.disableNetConnect();

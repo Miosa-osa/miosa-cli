@@ -42,6 +42,10 @@ export class UserError extends MiosaError {
   }
 }
 
+function isRetryableStatus(statusCode: number): boolean {
+  return statusCode === 429 || (statusCode >= 500 && statusCode <= 599 && statusCode !== 501);
+}
+
 export class ServerError extends MiosaError {
   constructor(
     message: string,
@@ -54,7 +58,7 @@ export class ServerError extends MiosaError {
   }
 
   get retryable(): boolean {
-    return this.statusCode >= 500 && this.statusCode <= 599;
+    return isRetryableStatus(this.statusCode);
   }
 }
 
@@ -96,7 +100,7 @@ export function mapHttpError(
       apiCode,
       msg,
       status >= 500 ? EXIT_SERVER_ERROR : EXIT_USER_ERROR,
-      status === 429 || status >= 500,
+      isRetryableStatus(status),
       undefined,
       apiDetails ?? rawBody,
       requestId,
