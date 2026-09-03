@@ -52,6 +52,10 @@ export class ServerError extends MiosaError {
   ) {
     super(message, EXIT_SERVER_ERROR, hint, body, requestId);
   }
+
+  get retryable(): boolean {
+    return this.statusCode >= 500 && this.statusCode <= 599;
+  }
 }
 
 export class ApiResponseError extends MiosaError {

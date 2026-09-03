@@ -201,5 +201,14 @@ describe("handleError", () => {
       const { error } = jsonOutput();
       expect(error["details"]).toBeUndefined();
     });
+
+    it("marks uncoded 503s as retryable and preserves their request ID", () => {
+      process.env["MIOSA_JSON"] = "1";
+      handleError(new ServerError("HTTP 503", 503, undefined, "req_503"));
+
+      const { error } = jsonOutput();
+      expect(error["retryable"]).toBe(true);
+      expect(error["request_id"]).toBe("req_503");
+    });
   });
 });
