@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.4] - 2026-09-04
+
+### Fixed
+- JSON error output preserves the server's retryability: 429 and 5xx stay `retryable: true`, 501 is no longer reported as retryable, and `request_id` is preserved (#103).
+
 All notable changes to @miosa/cli will be documented in this file.
 
 ## [1.3.3] - 2026-09-02
