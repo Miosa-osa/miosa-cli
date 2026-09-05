@@ -1,0 +1,27 @@
+name: Version policy
+
+# The package version is derived, never typed.
+# This check fails any pull request that changes package.json's version outside a
+# `chore(release):` commit produced by scripts/release.mjs, or whose new version is
+# not exactly one derived step above the base branch, or whose CHANGELOG.md top
+# section does not match. See CONTRIBUTING.md, "Releasing".
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  version-policy:
+    name: Derived version and changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check version derivation against the base branch
+        run: node scripts/release.mjs --check --base "origin/${{ github.base_ref }}"
